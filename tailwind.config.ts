@@ -13,6 +13,10 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ['Inter', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -46,6 +50,14 @@ export default {
         card: {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
+        },
+        graph: {
+          bg: "hsl(var(--graph-bg))",
+          grid: "hsl(var(--graph-grid))",
+          eis: "hsl(var(--graph-line-eis))",
+          fet: "hsl(var(--graph-line-fet))",
+          alt: "hsl(var(--graph-line-alt))",
+          dot: "hsl(var(--graph-dot))",
         },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
