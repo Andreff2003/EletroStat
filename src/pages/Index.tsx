@@ -6,79 +6,131 @@ import BodePlot from "@/components/BodePlot";
 import FETTransferPlot from "@/components/FETTransferPlot";
 import FETTimePlot from "@/components/FETTimePlot";
 import StatusIndicator from "@/components/StatusIndicator";
+import ConnectionPanel from "@/components/ConnectionPanel";
 import {
   useSimulatedEIS,
   useSimulatedFETTransfer,
   useSimulatedFETTime,
 } from "@/hooks/useSimulatedData";
-
-/**
- * ============================================================
- * HELPSTAT BIOSENSOR DASHBOARD
- * ============================================================
- * Main page with two measurement modes:
- * 
- * 1. EIS Mode — Nyquist plot + Bode plot
- *    For electrochemical impedance spectroscopy
- * 
- * 2. BioFET Mode — Transfer curve + Time response
- *    For cortisol detection using aptamers or MIPs
- * 
- * >>> REAL HARDWARE CONNECTION >>>
- * To connect to ESP32-S3 via WiFi:
- * 1. ESP32 runs a WebSocket server (e.g., on port 81)
- * 2. Connect from this app: new WebSocket("ws://ESP32_IP:81")
- * 3. Parse incoming JSON data and feed to the plots
- * 4. See useSimulatedData.ts for the data format expected
- * ============================================================
- */
+import { useWebSocketData } from "@/hooks/useWebSocketData";
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
+  const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
 
-  // EIS simulation hooks
+  // Simulated data hooks
   const eis = useSimulatedEIS(150);
-
-  // BioFET simulation hooks
   const fetTransfer = useSimulatedFETTransfer(80);
   const fetTime = useSimulatedFETTime(150);
 
-  const handleStartEIS = () => eis.start();
-  const handleResetEIS = () => eis.reset();
+  // Live WebSocket data hook
+  const ws = useWebSocketData();
+
+  // Pick the right data based on source
+  const eisData = dataSource === "simulated" ? eis.data : ws.eisData;
+  const fetBaselineData = dataSource === "simulated" ? fetTransfer.baseline : ws.fetBaseline;
+  const fetAnalyteData = dataSource === "simulated" ? fetTransfer.withAnalyte : ws.fetAnalyte;
+  const fetTimeDataArr = dataSource === "simulated" ? fetTime.data : ws.fetTimeData;
+
+  const handleStartEIS = () => {
+    if (dataSource === "simulated") {
+      eis.start();
+    } else {
+      ws.clearEIS();
+      ws.sendCommand("start_eis");
+    }
+  };
+
+  const handleResetEIS = () => {
+    if (dataSource === "simulated") {
+      eis.reset();
+    } else {
+      ws.clearEIS();
+      ws.sendCommand("stop");
+    }
+  };
 
   const handleStartFET = () => {
-    fetTransfer.start();
-    fetTime.start();
-  };
-  const handleResetFET = () => {
-    fetTransfer.reset();
-    fetTime.reset();
+    if (dataSource === "simulated") {
+      fetTransfer.start();
+      fetTime.start();
+    } else {
+      ws.clearFET();
+      ws.sendCommand("start_fet");
+    }
   };
 
-  const isEISRunning = eis.isRunning;
-  const isFETRunning = fetTransfer.isRunning || fetTime.isRunning;
+  const handleResetFET = () => {
+    if (dataSource === "simulated") {
+      fetTransfer.reset();
+      fetTime.reset();
+    } else {
+      ws.clearFET();
+      ws.sendCommand("stop");
+    }
+  };
+
+  const isEISRunning = dataSource === "simulated" ? eis.isRunning : ws.status === "connected";
+  const isFETRunning = dataSource === "simulated"
+    ? fetTransfer.isRunning || fetTime.isRunning
+    : ws.status === "connected";
+
+  const handleChangeSource = (source: "simulated" | "live") => {
+    // Reset everything when switching
+    eis.reset();
+    fetTransfer.reset();
+    fetTime.reset();
+    ws.clearEIS();
+    ws.clearFET();
+    if (source === "simulated" && ws.status === "connected") {
+      ws.disconnect();
+    }
+    setDataSource(source);
+  };
+
+  const sourceLabel = dataSource === "simulated" ? "Simulated Data" : (
+    ws.status === "connected" ? "Live — Connected" : "Live — Not Connected"
+  );
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
       {/* Header */}
-      <header className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <header className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-foreground tracking-tight font-mono">
             HelpStat
             <span className="text-primary ml-2 text-sm font-normal">Biosensor Dashboard</span>
           </h1>
           <p className="text-xs text-muted-foreground mt-1">
-            ESP32-S3 / AD5941 — Simulated Data Mode
+            ESP32-S3 / AD5941 — {sourceLabel}
           </p>
         </div>
 
-        {/* Connection status — will be useful for real hardware */}
         <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
-          <div className="w-2 h-2 rounded-full bg-graph-alt" />
-          <span>Simulated</span>
-          {/* >>> REAL HARDWARE >>> Change to "Connected" when WebSocket is open */}
+          <div className={`w-2 h-2 rounded-full ${
+            dataSource === "simulated"
+              ? "bg-graph-alt"
+              : ws.status === "connected"
+                ? "bg-graph-primary"
+                : ws.status === "error"
+                  ? "bg-destructive"
+                  : "bg-muted-foreground"
+          }`} />
+          <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
         </div>
       </header>
+
+      {/* Connection Panel */}
+      <div className="mb-4">
+        <ConnectionPanel
+          dataSource={dataSource}
+          onChangeSource={handleChangeSource}
+          connectionStatus={ws.status}
+          errorMessage={ws.errorMessage}
+          onConnect={ws.connect}
+          onDisconnect={ws.disconnect}
+        />
+      </div>
 
       {/* Mode selection */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -105,7 +157,12 @@ const Index = () => {
         <div className="flex gap-2">
           {mode === "eis" ? (
             <>
-              <Button size="sm" onClick={handleStartEIS} disabled={isEISRunning} className="font-mono text-xs">
+              <Button
+                size="sm"
+                onClick={handleStartEIS}
+                disabled={dataSource === "simulated" ? isEISRunning : ws.status !== "connected"}
+                className="font-mono text-xs"
+              >
                 ▶ Start EIS
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetEIS} className="font-mono text-xs">
@@ -114,7 +171,12 @@ const Index = () => {
             </>
           ) : (
             <>
-              <Button size="sm" onClick={handleStartFET} disabled={isFETRunning} className="font-mono text-xs">
+              <Button
+                size="sm"
+                onClick={handleStartFET}
+                disabled={dataSource === "simulated" ? isFETRunning : ws.status !== "connected"}
+                className="font-mono text-xs"
+              >
                 ▶ Start FET
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetFET} className="font-mono text-xs">
@@ -134,29 +196,28 @@ const Index = () => {
               <TabsTrigger value="bode" className="font-mono text-xs">Bode Plot</TabsTrigger>
             </TabsList>
             <StatusIndicator
-              isRunning={isEISRunning}
-              label={isEISRunning ? "Sweeping..." : "Idle"}
-              dataPoints={eis.data.length}
+              isRunning={isEISRunning && eisData.length > 0}
+              label={isEISRunning && eisData.length > 0 ? "Sweeping..." : "Idle"}
+              dataPoints={eisData.length}
             />
           </div>
 
           <div className="rounded-lg border border-border bg-card p-3">
             <TabsContent value="nyquist" className="mt-0 h-[400px] md:h-[500px]">
-              <NyquistPlot data={eis.data} />
+              <NyquistPlot data={eisData} />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
-              <BodePlot data={eis.data} />
+              <BodePlot data={eisData} />
             </TabsContent>
           </div>
 
-          {/* Data info panel */}
-          {eis.data.length > 0 && (
+          {eisData.length > 0 && (
             <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
-                { label: "Rs (Solution)", value: `${eis.data[0]?.zReal.toFixed(0)} Ω` },
-                { label: "Rct (Charge Transfer)", value: `~500 Ω` },
-                { label: "Freq Range", value: "0.1 Hz – 100 kHz" },
-                { label: "Points", value: `${eis.data.length}` },
+                { label: "Rs (Solution)", value: `${eisData[0]?.zReal.toFixed(0)} Ω` },
+                { label: "Rct (Charge Transfer)", value: dataSource === "simulated" ? "~500 Ω" : "—" },
+                { label: "Freq Range", value: dataSource === "simulated" ? "0.1 Hz – 100 kHz" : `${eisData[0]?.frequency.toFixed(1)} – ${eisData[eisData.length - 1]?.frequency.toFixed(1)} Hz` },
+                { label: "Points", value: `${eisData.length}` },
               ].map((item) => (
                 <div key={item.label} className="bg-secondary rounded-md p-2">
                   <div className="text-[10px] text-muted-foreground font-mono uppercase">{item.label}</div>
@@ -171,44 +232,41 @@ const Index = () => {
       {/* BIOFET MODE */}
       {mode === "fet" && (
         <div className="space-y-4">
-          {/* Transfer Curve */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Transfer Curve — Id vs Vg</h2>
               <StatusIndicator
-                isRunning={fetTransfer.isRunning}
-                label={fetTransfer.isRunning ? "Sweeping Vg..." : "Idle"}
-                dataPoints={fetTransfer.baseline.length}
+                isRunning={isFETRunning && fetBaselineData.length > 0}
+                label={isFETRunning && fetBaselineData.length > 0 ? "Sweeping Vg..." : "Idle"}
+                dataPoints={fetBaselineData.length}
               />
             </div>
             <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTransferPlot baseline={fetTransfer.baseline} withAnalyte={fetTransfer.withAnalyte} />
+              <FETTransferPlot baseline={fetBaselineData} withAnalyte={fetAnalyteData} />
             </div>
           </div>
 
-          {/* Time Response */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Time Response — Id vs Time</h2>
               <StatusIndicator
-                isRunning={fetTime.isRunning}
-                label={fetTime.isRunning ? "Recording..." : "Idle"}
-                dataPoints={fetTime.data.length}
+                isRunning={isFETRunning && fetTimeDataArr.length > 0}
+                label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
+                dataPoints={fetTimeDataArr.length}
               />
             </div>
             <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTimePlot data={fetTime.data} />
+              <FETTimePlot data={fetTimeDataArr} />
             </div>
           </div>
 
-          {/* Info panel */}
-          {fetTransfer.baseline.length > 0 && (
+          {fetBaselineData.length > 0 && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
-                { label: "Vth (Baseline)", value: "0.30 V" },
-                { label: "Vth Shift (Cortisol)", value: "+0.15 V" },
-                { label: "Baseline Id", value: "~25 µA" },
-                { label: "Signal Drop", value: "~8 µA" },
+                { label: "Vth (Baseline)", value: dataSource === "simulated" ? "0.30 V" : "—" },
+                { label: "Vth Shift (Cortisol)", value: dataSource === "simulated" ? "+0.15 V" : "—" },
+                { label: "Baseline Id", value: dataSource === "simulated" ? "~25 µA" : "—" },
+                { label: "Signal Drop", value: dataSource === "simulated" ? "~8 µA" : "—" },
               ].map((item) => (
                 <div key={item.label} className="bg-secondary rounded-md p-2">
                   <div className="text-[10px] text-muted-foreground font-mono uppercase">{item.label}</div>
@@ -220,9 +278,8 @@ const Index = () => {
         </div>
       )}
 
-      {/* Footer */}
       <footer className="mt-8 text-center text-[10px] text-muted-foreground font-mono">
-        HelpStat Biosensor v0.1 — Simulated Mode — Connect ESP32-S3 via WebSocket for live data
+        HelpStat Biosensor v0.2 — {dataSource === "simulated" ? "Simulated Mode" : "Live Mode"} — ESP32-S3 WebSocket
       </footer>
     </div>
   );
