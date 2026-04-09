@@ -12,6 +12,7 @@ import {
   useSimulatedFETTransfer,
   useSimulatedFETTime,
 } from "@/hooks/useSimulatedData";
+import { exportEISData, exportFETTransferData, exportFETTimeData } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 
 const Index = () => {
