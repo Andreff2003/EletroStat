@@ -12,6 +12,7 @@ import {
   useSimulatedFETTransfer,
   useSimulatedFETTime,
 } from "@/hooks/useSimulatedData";
+import { exportEISData, exportFETTransferData, exportFETTimeData } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 
 const Index = () => {
@@ -168,6 +169,15 @@ const Index = () => {
               <Button size="sm" variant="secondary" onClick={handleResetEIS} className="font-mono text-xs">
                 ↺ Reset
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => exportEISData(eisData)}
+                disabled={eisData.length === 0}
+                className="font-mono text-xs"
+              >
+                ⬇ Export CSV
+              </Button>
             </>
           ) : (
             <>
@@ -181,6 +191,18 @@ const Index = () => {
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetFET} className="font-mono text-xs">
                 ↺ Reset
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  exportFETTransferData(fetBaselineData, fetAnalyteData);
+                  if (fetTimeDataArr.length > 0) exportFETTimeData(fetTimeDataArr);
+                }}
+                disabled={fetBaselineData.length === 0 && fetTimeDataArr.length === 0}
+                className="font-mono text-xs"
+              >
+                ⬇ Export CSV
               </Button>
             </>
           )}
