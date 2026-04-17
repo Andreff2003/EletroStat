@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# Welcome to your Helpstat connection guide
 
-TODO: Document your project here
+Word guide
