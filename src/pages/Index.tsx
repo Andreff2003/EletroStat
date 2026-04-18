@@ -14,10 +14,18 @@ import {
 } from "@/hooks/useSimulatedData";
 import { exportEISData, exportFETTransferData, exportFETTimeData } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
+import ParametersPanel, {
+  DEFAULT_EIS_PARAMS,
+  DEFAULT_FET_PARAMS,
+  type EISParams,
+  type FETParams,
+} from "@/components/ParametersPanel";
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
   const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
+  const [eisParams, setEisParams] = useState<EISParams>(DEFAULT_EIS_PARAMS);
+  const [fetParams, setFetParams] = useState<FETParams>(DEFAULT_FET_PARAMS);
 
   // Simulated data hooks
   const eis = useSimulatedEIS(150);
