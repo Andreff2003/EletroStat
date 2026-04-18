@@ -151,6 +151,18 @@ const Index = () => {
         />
       </div>
 
+      {/* Measurement Parameters */}
+      <div className="mb-4">
+        <ParametersPanel
+          mode={mode}
+          eisParams={eisParams}
+          fetParams={fetParams}
+          onChangeEIS={setEisParams}
+          onChangeFET={setFetParams}
+          disabled={mode === "eis" ? isEISRunning : isFETRunning}
+        />
+      </div>
+
       {/* Mode selection */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex gap-2">
