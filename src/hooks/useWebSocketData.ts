@@ -47,7 +47,7 @@ interface UseWebSocketDataReturn {
   clearFET: () => void;
 
   // Send commands to ESP32
-  sendCommand: (command: string) => void;
+  sendCommand: (command: string, payload?: Record<string, unknown>) => void;
 }
 
 export function useWebSocketData(): UseWebSocketDataReturn {
