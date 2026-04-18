@@ -47,7 +47,7 @@ interface UseWebSocketDataReturn {
   clearFET: () => void;
 
   // Send commands to ESP32
-  sendCommand: (command: string) => void;
+  sendCommand: (command: string, payload?: Record<string, unknown>) => void;
 }
 
 export function useWebSocketData(): UseWebSocketDataReturn {
@@ -140,9 +140,9 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     }
   }, []);
 
-  const sendCommand = useCallback((command: string) => {
+  const sendCommand = useCallback((command: string, payload?: Record<string, unknown>) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ command }));
+      socketRef.current.send(JSON.stringify({ command, ...(payload ?? {}) }));
     }
   }, []);
 

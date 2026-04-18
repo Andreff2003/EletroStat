@@ -14,10 +14,18 @@ import {
 } from "@/hooks/useSimulatedData";
 import { exportEISData, exportFETTransferData, exportFETTimeData } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
+import ParametersPanel, {
+  DEFAULT_EIS_PARAMS,
+  DEFAULT_FET_PARAMS,
+  type EISParams,
+  type FETParams,
+} from "@/components/ParametersPanel";
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
   const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
+  const [eisParams, setEisParams] = useState<EISParams>(DEFAULT_EIS_PARAMS);
+  const [fetParams, setFetParams] = useState<FETParams>(DEFAULT_FET_PARAMS);
 
   // Simulated data hooks
   const eis = useSimulatedEIS(150);
@@ -38,7 +46,12 @@ const Index = () => {
       eis.start();
     } else {
       ws.clearEIS();
-      ws.sendCommand("start_eis");
+      ws.sendCommand("start_eis", {
+        freqMin: eisParams.freqMin,
+        freqMax: eisParams.freqMax,
+        points: eisParams.points,
+        amplitude: eisParams.amplitude,
+      });
     }
   };
 
@@ -57,7 +70,12 @@ const Index = () => {
       fetTime.start();
     } else {
       ws.clearFET();
-      ws.sendCommand("start_fet");
+      ws.sendCommand("start_fet", {
+        vgMin: fetParams.vgMin,
+        vgMax: fetParams.vgMax,
+        vgStep: fetParams.vgStep / 1000, // mV → V
+        intervalMs: fetParams.intervalMs,
+      });
     }
   };
 
@@ -130,6 +148,18 @@ const Index = () => {
           errorMessage={ws.errorMessage}
           onConnect={ws.connect}
           onDisconnect={ws.disconnect}
+        />
+      </div>
+
+      {/* Measurement Parameters */}
+      <div className="mb-4">
+        <ParametersPanel
+          mode={mode}
+          eisParams={eisParams}
+          fetParams={fetParams}
+          onChangeEIS={setEisParams}
+          onChangeFET={setFetParams}
+          disabled={mode === "eis" ? isEISRunning : isFETRunning}
         />
       </div>
 
