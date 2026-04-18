@@ -46,7 +46,12 @@ const Index = () => {
       eis.start();
     } else {
       ws.clearEIS();
-      ws.sendCommand("start_eis");
+      ws.sendCommand("start_eis", {
+        freqMin: eisParams.freqMin,
+        freqMax: eisParams.freqMax,
+        points: eisParams.points,
+        amplitude: eisParams.amplitude,
+      });
     }
   };
 
@@ -65,7 +70,12 @@ const Index = () => {
       fetTime.start();
     } else {
       ws.clearFET();
-      ws.sendCommand("start_fet");
+      ws.sendCommand("start_fet", {
+        vgMin: fetParams.vgMin,
+        vgMax: fetParams.vgMax,
+        vgStep: fetParams.vgStep / 1000, // mV → V
+        intervalMs: fetParams.intervalMs,
+      });
     }
   };
 
