@@ -117,7 +117,11 @@ export function useSimulatedEIS(speed: number = 200) {
     indexRef.current = 0;
   }, []);
 
-  return { data, isRunning, start, reset };
+  const stop = useCallback(() => {
+    setIsRunning(false);
+  }, []);
+
+  return { data, isRunning, start, reset, stop };
 }
 
 /**
@@ -194,7 +198,11 @@ export function useSimulatedFETTransfer(speed: number = 100) {
     indexRef.current = 0;
   }, []);
 
-  return { baseline, withAnalyte, isRunning, start, reset };
+  const stop = useCallback(() => {
+    setIsRunning(false);
+  }, []);
+
+  return { baseline, withAnalyte, isRunning, start, reset, stop };
 }
 
 /**
@@ -261,5 +269,9 @@ export function useSimulatedFETTime(speed: number = 200) {
     timeRef.current = 0;
   }, []);
 
-  return { data, isRunning, start, reset };
+  const stop = useCallback(() => {
+    setIsRunning(false);
+  }, []);
+
+  return { data, isRunning, start, reset, stop };
 }
