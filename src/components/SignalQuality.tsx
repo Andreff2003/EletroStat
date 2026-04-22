@@ -28,6 +28,7 @@ interface SignalQualityProps {
   mode: "eis" | "fet";
   eisData: EISDataPoint[];
   fetBaseline: FETTransferPoint[];
+  fetAnalyte: FETTransferPoint[];
 }
 
 // ---- helpers ----
@@ -61,9 +62,10 @@ const lightClass = (level: Level, active: boolean) => {
 
 /** Compute EIS quality metrics. */
 function computeEISMetrics(data: EISDataPoint[]) {
-  if (data.length < 3) {
+  if (data.length < 10) {
     return {
       level: "idle" as Level,
+      ready: false,
       semicircleFit: 0,
       pointNoise: 0,
       rsStability: 0,
@@ -75,60 +77,47 @@ function computeEISMetrics(data: EISDataPoint[]) {
     };
   }
 
-  // Rs ≈ leftmost Z' (smallest real part)
-  const rs = Math.min(...data.map((d) => d.zReal));
+  const reals = data.map((d) => d.zReal);
+  const maxR = Math.max(...reals);
+  const minR = Math.min(...reals);
 
-  // Point noise: average Euclidean jump between consecutive (Z', Z'') points
-  let noiseSum = 0;
-  for (let i = 1; i < data.length; i++) {
-    const dx = data[i].zReal - data[i - 1].zReal;
-    const dy = data[i].zImag - data[i - 1].zImag;
-    noiseSum += Math.sqrt(dx * dx + dy * dy);
-  }
-  const pointNoise = noiseSum / (data.length - 1);
+  // 1. Semicircle Fit (%) — center at midpoint of Z' axis, radius = half-width
+  const centerX = (maxR + minR) / 2;
+  const centerY = 0;
+  const R = (maxR - minR) / 2;
+  const distances = data.map((d) =>
+    Math.sqrt((d.zReal - centerX) ** 2 + (d.zImag - centerY) ** 2)
+  );
+  const meanD = distances.reduce((a, b) => a + b, 0) / distances.length;
+  const variance =
+    distances.reduce((a, b) => a + (b - meanD) ** 2, 0) / distances.length;
+  const stdDev = Math.sqrt(variance);
+  const fitPct = R > 1e-6
+    ? Math.max(0, Math.min(100, 100 - (stdDev / R) * 100))
+    : 0;
 
-  // Semicircle fit: fit a circle through (Z', -Z'') and measure RMS residual
-  // as a percentage of the radius. 100% = perfect circle.
-  const xs = data.map((d) => d.zReal);
-  const ys = data.map((d) => -d.zImag); // Nyquist convention
-  const n = xs.length;
-  const meanX = xs.reduce((a, b) => a + b, 0) / n;
-  const meanY = ys.reduce((a, b) => a + b, 0) / n;
-  // Algebraic circle fit (Kåsa method)
-  let Sxx = 0, Syy = 0, Sxy = 0, Sxz = 0, Syz = 0;
-  for (let i = 0; i < n; i++) {
-    const u = xs[i] - meanX;
-    const v = ys[i] - meanY;
-    const z = u * u + v * v;
-    Sxx += u * u;
-    Syy += v * v;
-    Sxy += u * v;
-    Sxz += u * z;
-    Syz += v * z;
-  }
-  const det = Sxx * Syy - Sxy * Sxy;
-  let fitPct = 0;
-  if (Math.abs(det) > 1e-9) {
-    const uc = (Sxz * Syy - Syz * Sxy) / (2 * det);
-    const vc = (Sxx * Syz - Sxy * Sxz) / (2 * det);
-    const cx = uc + meanX;
-    const cy = vc + meanY;
-    const r = Math.sqrt(uc * uc + vc * vc + (Sxx + Syy) / n);
-    let resSum = 0;
-    for (let i = 0; i < n; i++) {
-      const d = Math.sqrt((xs[i] - cx) ** 2 + (ys[i] - cy) ** 2) - r;
-      resSum += d * d;
+  // 2. Point Noise (Ω) — avg consecutive Euclidean delta (need ≥5 points)
+  let pointNoise = 0;
+  if (data.length >= 5) {
+    let noiseSum = 0;
+    for (let i = 1; i < data.length; i++) {
+      const dx = data[i].zReal - data[i - 1].zReal;
+      const dy = data[i].zImag - data[i - 1].zImag;
+      noiseSum += Math.sqrt(dx * dx + dy * dy);
     }
-    const rms = Math.sqrt(resSum / n);
-    fitPct = Math.max(0, Math.min(100, (1 - rms / Math.max(r, 1e-6)) * 100));
+    pointNoise = noiseSum / (data.length - 1);
   }
+
+  // 3. Rs Stability — minimum Z' (typical 50–2000 Ω)
+  const rs = minR;
 
   // Per-metric levels
   const semicircleLevel: Level =
     fitPct > 85 ? "green" : fitPct > 65 ? "yellow" : "red";
   const noiseLevel: Level =
     pointNoise < 15 ? "green" : pointNoise < 30 ? "yellow" : "red";
-  const rsLevel: Level = rs > 0 && rs < 1e5 ? "green" : "yellow";
+  const rsLevel: Level =
+    rs >= 50 && rs <= 2000 ? "green" : rs > 0 && rs < 5000 ? "yellow" : "red";
   const pointsLevel: Level = data.length >= 20 ? "green" : "yellow";
 
   // Overall traffic light
@@ -138,6 +127,7 @@ function computeEISMetrics(data: EISDataPoint[]) {
 
   return {
     level,
+    ready: true,
     semicircleFit: fitPct,
     pointNoise,
     rsStability: rs,
@@ -149,11 +139,12 @@ function computeEISMetrics(data: EISDataPoint[]) {
   };
 }
 
-/** Compute BioFET quality metrics from baseline transfer curve. */
-function computeFETMetrics(data: FETTransferPoint[]) {
-  if (data.length < 5) {
+/** Compute BioFET quality metrics from analyte + baseline curves. */
+function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoint[]) {
+  if (analyte.length < 10) {
     return {
       level: "idle" as Level,
+      ready: false,
       ionIoff: 0,
       subthresholdSlope: 0,
       ioff: 0,
@@ -165,33 +156,59 @@ function computeFETMetrics(data: FETTransferPoint[]) {
     };
   }
 
-  const ids = data.map((d) => Math.abs(d.id));
-  const ion = Math.max(...ids);
-  const ioff = Math.max(Math.min(...ids), 1e-6); // avoid div-by-zero
-  const ionIoff = ion / ioff;
+  const ids = analyte.map((d) => Math.abs(d.id));
 
-  // Subthreshold slope: dVg / d(log10(Id)) in mV/dec, computed in subthreshold region
-  // Use the lower 30% of currents (excluding the absolute minimum noise band).
-  const sortedByVg = [...data].sort((a, b) => a.vg - b.vg);
-  const subThreshold = sortedByVg.filter((p) => {
-    const ratio = Math.abs(p.id) / ion;
-    return ratio > 0.001 && ratio < 0.3;
+  // 1. Ion / Ioff Ratio (clamp Ioff at 0.01 to avoid div-by-zero)
+  const ion = Math.max(...ids);
+  const ioffRaw = Math.min(...ids);
+  const ioffSafe = Math.max(ioffRaw, 0.01);
+  const ionIoff = ion / ioffSafe;
+
+  // 2. Subthreshold Slope (mV/dec)
+  // Region: id between Ioff and 10% of Ion
+  const sortedByVg = [...analyte].sort((a, b) => a.vg - b.vg);
+  const subRegion = sortedByVg.filter((p) => {
+    const v = Math.abs(p.id);
+    return v >= ioffRaw && v <= 0.1 * ion;
   });
   let ss = 0;
-  if (subThreshold.length >= 2) {
-    const first = subThreshold[0];
-    const last = subThreshold[subThreshold.length - 1];
-    const dVg = (last.vg - first.vg) * 1000; // V → mV
-    const dLog = Math.log10(Math.abs(last.id)) - Math.log10(Math.abs(first.id));
-    if (Math.abs(dLog) > 1e-6) ss = Math.abs(dVg / dLog);
+  if (subRegion.length >= 2) {
+    const lo = subRegion[0];
+    const hi = subRegion[subRegion.length - 1];
+    const idLow = Math.max(Math.abs(lo.id), 1e-9);
+    const idHigh = Math.max(Math.abs(hi.id), 1e-9);
+    const dLog = Math.log10(idHigh) - Math.log10(idLow);
+    if (Math.abs(dLog) > 1e-6) {
+      ss = Math.abs(((hi.vg - lo.vg) / dLog) * 1000);
+    }
   }
 
-  // Baseline stability: 100 * (1 - stdev/mean) of the OFF region (lowest 20% currents)
-  const offBand = [...ids].sort((a, b) => a - b).slice(0, Math.max(3, Math.floor(ids.length * 0.2)));
-  const mean = offBand.reduce((a, b) => a + b, 0) / offBand.length;
-  const variance = offBand.reduce((a, b) => a + (b - mean) ** 2, 0) / offBand.length;
-  const std = Math.sqrt(variance);
-  const stability = mean > 0 ? Math.max(0, Math.min(100, (1 - std / mean) * 100)) : 0;
+  // 3. Ioff (µA) — minimum id in analyte
+  const ioff = ioffRaw;
+
+  // 4. Baseline Stability (%) — flat region = first 20% of vg range where id < 5% of Ion
+  let stability = 0;
+  if (baseline.length >= 5) {
+    const baseSorted = [...baseline].sort((a, b) => a.vg - b.vg);
+    const vgMin = baseSorted[0].vg;
+    const vgMax = baseSorted[baseSorted.length - 1].vg;
+    const vgCutoff = vgMin + 0.2 * (vgMax - vgMin);
+    const baseIon = Math.max(...baseline.map((d) => Math.abs(d.id)));
+    const flatRegion = baseSorted.filter(
+      (p) => p.vg <= vgCutoff && Math.abs(p.id) < 0.05 * baseIon
+    );
+    if (flatRegion.length >= 2) {
+      const flatIds = flatRegion.map((p) => Math.abs(p.id));
+      const mean = flatIds.reduce((a, b) => a + b, 0) / flatIds.length;
+      const variance =
+        flatIds.reduce((a, b) => a + (b - mean) ** 2, 0) / flatIds.length;
+      const std = Math.sqrt(variance);
+      stability =
+        mean > 1e-9
+          ? Math.max(0, Math.min(100, 100 - (std / mean) * 100))
+          : 0;
+    }
+  }
 
   const ionLevel: Level = ionIoff > 100 ? "green" : ionIoff > 20 ? "yellow" : "red";
   const ssLevel: Level = ss > 0 && ss < 200 ? "green" : ss < 400 ? "yellow" : "red";
@@ -204,6 +221,7 @@ function computeFETMetrics(data: FETTransferPoint[]) {
 
   return {
     level,
+    ready: true,
     ionIoff,
     subthresholdSlope: ss,
     ioff,
@@ -245,12 +263,17 @@ const MetricRow = ({ label, value, level }: MetricRowProps) => (
   </div>
 );
 
-const SignalQuality = ({ mode, eisData, fetBaseline }: SignalQualityProps) => {
+const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte }: SignalQualityProps) => {
   const eisMetrics = useMemo(() => computeEISMetrics(eisData), [eisData]);
-  const fetMetrics = useMemo(() => computeFETMetrics(fetBaseline), [fetBaseline]);
+  const fetMetrics = useMemo(
+    () => computeFETMetrics(fetAnalyte, fetBaseline),
+    [fetAnalyte, fetBaseline]
+  );
 
   const m = mode === "eis" ? eisMetrics : fetMetrics;
   const level: Level = m.level;
+  const ready = m.ready;
+  const pending = "Calculating...";
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -286,17 +309,17 @@ const SignalQuality = ({ mode, eisData, fetBaseline }: SignalQualityProps) => {
           <>
             <MetricRow
               label="Semicircle Fit"
-              value={`${eisMetrics.semicircleFit.toFixed(1)} %`}
+              value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending}
               level={eisMetrics.semicircleLevel}
             />
             <MetricRow
               label="Point Noise"
-              value={`${eisMetrics.pointNoise.toFixed(1)} Ω`}
+              value={ready ? `${eisMetrics.pointNoise.toFixed(1)} Ω` : pending}
               level={eisMetrics.noiseLevel}
             />
             <MetricRow
               label="Rs Stability"
-              value={`${eisMetrics.rsStability.toFixed(0)} Ω`}
+              value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending}
               level={eisMetrics.rsLevel}
             />
             <MetricRow
@@ -309,22 +332,28 @@ const SignalQuality = ({ mode, eisData, fetBaseline }: SignalQualityProps) => {
           <>
             <MetricRow
               label="Ion / Ioff Ratio"
-              value={fetMetrics.ionIoff > 0 ? fetMetrics.ionIoff.toFixed(1) : "—"}
+              value={ready ? fetMetrics.ionIoff.toFixed(1) : pending}
               level={fetMetrics.ionLevel}
             />
             <MetricRow
               label="Subthreshold Slope"
-              value={fetMetrics.subthresholdSlope > 0 ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec` : "—"}
+              value={
+                ready
+                  ? fetMetrics.subthresholdSlope > 0
+                    ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec`
+                    : "—"
+                  : pending
+              }
               level={fetMetrics.ssLevel}
             />
             <MetricRow
               label="Ioff Current"
-              value={`${fetMetrics.ioff.toFixed(2)} µA`}
+              value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending}
               level={fetMetrics.ioffLevel}
             />
             <MetricRow
               label="Baseline Stability"
-              value={`${fetMetrics.baselineStability.toFixed(1)} %`}
+              value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending}
               level={fetMetrics.stabilityLevel}
             />
           </>
