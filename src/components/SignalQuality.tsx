@@ -263,12 +263,17 @@ const MetricRow = ({ label, value, level }: MetricRowProps) => (
   </div>
 );
 
-const SignalQuality = ({ mode, eisData, fetBaseline }: SignalQualityProps) => {
+const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte }: SignalQualityProps) => {
   const eisMetrics = useMemo(() => computeEISMetrics(eisData), [eisData]);
-  const fetMetrics = useMemo(() => computeFETMetrics(fetBaseline), [fetBaseline]);
+  const fetMetrics = useMemo(
+    () => computeFETMetrics(fetAnalyte, fetBaseline),
+    [fetAnalyte, fetBaseline]
+  );
 
   const m = mode === "eis" ? eisMetrics : fetMetrics;
   const level: Level = m.level;
+  const ready = m.ready;
+  const pending = "Calculating...";
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -304,17 +309,17 @@ const SignalQuality = ({ mode, eisData, fetBaseline }: SignalQualityProps) => {
           <>
             <MetricRow
               label="Semicircle Fit"
-              value={`${eisMetrics.semicircleFit.toFixed(1)} %`}
+              value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending}
               level={eisMetrics.semicircleLevel}
             />
             <MetricRow
               label="Point Noise"
-              value={`${eisMetrics.pointNoise.toFixed(1)} Ω`}
+              value={ready ? `${eisMetrics.pointNoise.toFixed(1)} Ω` : pending}
               level={eisMetrics.noiseLevel}
             />
             <MetricRow
               label="Rs Stability"
-              value={`${eisMetrics.rsStability.toFixed(0)} Ω`}
+              value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending}
               level={eisMetrics.rsLevel}
             />
             <MetricRow
@@ -327,22 +332,28 @@ const SignalQuality = ({ mode, eisData, fetBaseline }: SignalQualityProps) => {
           <>
             <MetricRow
               label="Ion / Ioff Ratio"
-              value={fetMetrics.ionIoff > 0 ? fetMetrics.ionIoff.toFixed(1) : "—"}
+              value={ready ? fetMetrics.ionIoff.toFixed(1) : pending}
               level={fetMetrics.ionLevel}
             />
             <MetricRow
               label="Subthreshold Slope"
-              value={fetMetrics.subthresholdSlope > 0 ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec` : "—"}
+              value={
+                ready
+                  ? fetMetrics.subthresholdSlope > 0
+                    ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec`
+                    : "—"
+                  : pending
+              }
               level={fetMetrics.ssLevel}
             />
             <MetricRow
               label="Ioff Current"
-              value={`${fetMetrics.ioff.toFixed(2)} µA`}
+              value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending}
               level={fetMetrics.ioffLevel}
             />
             <MetricRow
               label="Baseline Stability"
-              value={`${fetMetrics.baselineStability.toFixed(1)} %`}
+              value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending}
               level={fetMetrics.stabilityLevel}
             />
           </>
