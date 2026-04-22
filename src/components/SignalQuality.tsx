@@ -62,9 +62,10 @@ const lightClass = (level: Level, active: boolean) => {
 
 /** Compute EIS quality metrics. */
 function computeEISMetrics(data: EISDataPoint[]) {
-  if (data.length < 3) {
+  if (data.length < 10) {
     return {
       level: "idle" as Level,
+      ready: false,
       semicircleFit: 0,
       pointNoise: 0,
       rsStability: 0,
@@ -76,60 +77,47 @@ function computeEISMetrics(data: EISDataPoint[]) {
     };
   }
 
-  // Rs ≈ leftmost Z' (smallest real part)
-  const rs = Math.min(...data.map((d) => d.zReal));
+  const reals = data.map((d) => d.zReal);
+  const maxR = Math.max(...reals);
+  const minR = Math.min(...reals);
 
-  // Point noise: average Euclidean jump between consecutive (Z', Z'') points
-  let noiseSum = 0;
-  for (let i = 1; i < data.length; i++) {
-    const dx = data[i].zReal - data[i - 1].zReal;
-    const dy = data[i].zImag - data[i - 1].zImag;
-    noiseSum += Math.sqrt(dx * dx + dy * dy);
-  }
-  const pointNoise = noiseSum / (data.length - 1);
+  // 1. Semicircle Fit (%) — center at midpoint of Z' axis, radius = half-width
+  const centerX = (maxR + minR) / 2;
+  const centerY = 0;
+  const R = (maxR - minR) / 2;
+  const distances = data.map((d) =>
+    Math.sqrt((d.zReal - centerX) ** 2 + (d.zImag - centerY) ** 2)
+  );
+  const meanD = distances.reduce((a, b) => a + b, 0) / distances.length;
+  const variance =
+    distances.reduce((a, b) => a + (b - meanD) ** 2, 0) / distances.length;
+  const stdDev = Math.sqrt(variance);
+  const fitPct = R > 1e-6
+    ? Math.max(0, Math.min(100, 100 - (stdDev / R) * 100))
+    : 0;
 
-  // Semicircle fit: fit a circle through (Z', -Z'') and measure RMS residual
-  // as a percentage of the radius. 100% = perfect circle.
-  const xs = data.map((d) => d.zReal);
-  const ys = data.map((d) => -d.zImag); // Nyquist convention
-  const n = xs.length;
-  const meanX = xs.reduce((a, b) => a + b, 0) / n;
-  const meanY = ys.reduce((a, b) => a + b, 0) / n;
-  // Algebraic circle fit (Kåsa method)
-  let Sxx = 0, Syy = 0, Sxy = 0, Sxz = 0, Syz = 0;
-  for (let i = 0; i < n; i++) {
-    const u = xs[i] - meanX;
-    const v = ys[i] - meanY;
-    const z = u * u + v * v;
-    Sxx += u * u;
-    Syy += v * v;
-    Sxy += u * v;
-    Sxz += u * z;
-    Syz += v * z;
-  }
-  const det = Sxx * Syy - Sxy * Sxy;
-  let fitPct = 0;
-  if (Math.abs(det) > 1e-9) {
-    const uc = (Sxz * Syy - Syz * Sxy) / (2 * det);
-    const vc = (Sxx * Syz - Sxy * Sxz) / (2 * det);
-    const cx = uc + meanX;
-    const cy = vc + meanY;
-    const r = Math.sqrt(uc * uc + vc * vc + (Sxx + Syy) / n);
-    let resSum = 0;
-    for (let i = 0; i < n; i++) {
-      const d = Math.sqrt((xs[i] - cx) ** 2 + (ys[i] - cy) ** 2) - r;
-      resSum += d * d;
+  // 2. Point Noise (Ω) — avg consecutive Euclidean delta (need ≥5 points)
+  let pointNoise = 0;
+  if (data.length >= 5) {
+    let noiseSum = 0;
+    for (let i = 1; i < data.length; i++) {
+      const dx = data[i].zReal - data[i - 1].zReal;
+      const dy = data[i].zImag - data[i - 1].zImag;
+      noiseSum += Math.sqrt(dx * dx + dy * dy);
     }
-    const rms = Math.sqrt(resSum / n);
-    fitPct = Math.max(0, Math.min(100, (1 - rms / Math.max(r, 1e-6)) * 100));
+    pointNoise = noiseSum / (data.length - 1);
   }
+
+  // 3. Rs Stability — minimum Z' (typical 50–2000 Ω)
+  const rs = minR;
 
   // Per-metric levels
   const semicircleLevel: Level =
     fitPct > 85 ? "green" : fitPct > 65 ? "yellow" : "red";
   const noiseLevel: Level =
     pointNoise < 15 ? "green" : pointNoise < 30 ? "yellow" : "red";
-  const rsLevel: Level = rs > 0 && rs < 1e5 ? "green" : "yellow";
+  const rsLevel: Level =
+    rs >= 50 && rs <= 2000 ? "green" : rs > 0 && rs < 5000 ? "yellow" : "red";
   const pointsLevel: Level = data.length >= 20 ? "green" : "yellow";
 
   // Overall traffic light
@@ -139,6 +127,7 @@ function computeEISMetrics(data: EISDataPoint[]) {
 
   return {
     level,
+    ready: true,
     semicircleFit: fitPct,
     pointNoise,
     rsStability: rs,
