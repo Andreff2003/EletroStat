@@ -7,6 +7,7 @@ import FETTransferPlot from "@/components/FETTransferPlot";
 import FETTimePlot from "@/components/FETTimePlot";
 import StatusIndicator from "@/components/StatusIndicator";
 import ConnectionPanel from "@/components/ConnectionPanel";
+import SignalQuality from "@/components/SignalQuality";
 import {
   useSimulatedEIS,
   useSimulatedFETTransfer,
@@ -241,6 +242,7 @@ const Index = () => {
 
       {/* EIS MODE */}
       {mode === "eis" && (
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <Tabs defaultValue="nyquist" className="w-full">
           <div className="flex items-center justify-between mb-3">
             <TabsList className="bg-secondary">
@@ -279,10 +281,13 @@ const Index = () => {
             </div>
           )}
         </Tabs>
+        <SignalQuality mode="eis" eisData={eisData} fetBaseline={fetBaselineData} />
+        </div>
       )}
 
       {/* BIOFET MODE */}
       {mode === "fet" && (
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <div className="space-y-4">
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -327,6 +332,8 @@ const Index = () => {
               ))}
             </div>
           )}
+        </div>
+        <SignalQuality mode="fet" eisData={eisData} fetBaseline={fetBaselineData} />
         </div>
       )}
 
