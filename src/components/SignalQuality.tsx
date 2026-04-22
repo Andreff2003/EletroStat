@@ -28,6 +28,7 @@ interface SignalQualityProps {
   mode: "eis" | "fet";
   eisData: EISDataPoint[];
   fetBaseline: FETTransferPoint[];
+  fetAnalyte: FETTransferPoint[];
 }
 
 // ---- helpers ----
