@@ -35,7 +35,7 @@ interface SignalQualityProps {
 const dotClass = (level: Level) => {
   switch (level) {
     case "green":
-      return "bg-graph-primary shadow-[0_0_8px_hsl(var(--graph-line-eis))]";
+      return "bg-graph-eis shadow-[0_0_8px_hsl(var(--graph-line-eis))]";
     case "yellow":
       return "bg-graph-alt shadow-[0_0_8px_hsl(var(--graph-line-alt))]";
     case "red":
@@ -49,7 +49,7 @@ const lightClass = (level: Level, active: boolean) => {
   if (!active) return "bg-muted/40";
   switch (level) {
     case "green":
-      return "bg-graph-primary shadow-[0_0_20px_hsl(var(--graph-line-eis))]";
+      return "bg-graph-eis shadow-[0_0_20px_hsl(var(--graph-line-eis))]";
     case "yellow":
       return "bg-graph-alt shadow-[0_0_20px_hsl(var(--graph-line-alt))]";
     case "red":
