@@ -281,7 +281,7 @@ const Index = () => {
             </div>
           )}
         </Tabs>
-        <SignalQuality mode="eis" eisData={eisData} fetBaseline={fetBaselineData} />
+        <SignalQuality mode="eis" eisData={eisData} fetBaseline={fetBaselineData} fetAnalyte={fetAnalyteData} />
         </div>
       )}
 
@@ -333,7 +333,7 @@ const Index = () => {
             </div>
           )}
         </div>
-        <SignalQuality mode="fet" eisData={eisData} fetBaseline={fetBaselineData} />
+        <SignalQuality mode="fet" eisData={eisData} fetBaseline={fetBaselineData} fetAnalyte={fetAnalyteData} />
         </div>
       )}
 
