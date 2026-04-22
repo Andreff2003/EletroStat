@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
+import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import NyquistPlot from "@/components/NyquistPlot";
@@ -8,6 +9,7 @@ import FETTimePlot from "@/components/FETTimePlot";
 import StatusIndicator from "@/components/StatusIndicator";
 import ConnectionPanel from "@/components/ConnectionPanel";
 import SignalQuality from "@/components/SignalQuality";
+import SweepProgress, { type SweepStatus } from "@/components/SweepProgress";
 import {
   useSimulatedEIS,
   useSimulatedFETTransfer,
@@ -28,6 +30,15 @@ const Index = () => {
   const [eisParams, setEisParams] = useState<EISParams>(DEFAULT_EIS_PARAMS);
   const [fetParams, setFetParams] = useState<FETParams>(DEFAULT_FET_PARAMS);
 
+  // Sweep status tracks completion separately from "is running"
+  const [eisStatus, setEisStatus] = useState<SweepStatus>("idle");
+  const [fetStatus, setFetStatus] = useState<SweepStatus>("idle");
+
+  // Frozen snapshots for Signal Quality after sweep completes / stops
+  const [frozenEis, setFrozenEis] = useState<ReturnType<typeof useWebSocketData>["eisData"] | null>(null);
+  const [frozenFetBaseline, setFrozenFetBaseline] = useState<ReturnType<typeof useWebSocketData>["fetBaseline"] | null>(null);
+  const [frozenFetAnalyte, setFrozenFetAnalyte] = useState<ReturnType<typeof useWebSocketData>["fetAnalyte"] | null>(null);
+
   // Simulated data hooks
   const eis = useSimulatedEIS(150);
   const fetTransfer = useSimulatedFETTransfer(80);
@@ -42,7 +53,26 @@ const Index = () => {
   const fetAnalyteData = dataSource === "simulated" ? fetTransfer.withAnalyte : ws.fetAnalyte;
   const fetTimeDataArr = dataSource === "simulated" ? fetTime.data : ws.fetTimeData;
 
+  // Expected counts based on configured parameters
+  const expectedEisPoints = eisParams.points;
+  const expectedFetTransferPoints = useMemo(
+    () => Math.max(1, Math.round((fetParams.vgMax - fetParams.vgMin) / (fetParams.vgStep / 1000)) + 1),
+    [fetParams.vgMin, fetParams.vgMax, fetParams.vgStep]
+  );
+  const expectedFetTimePoints = 60;
+  const expectedFetTotal =
+    expectedFetTransferPoints * 2 + expectedFetTimePoints;
+  const fetReceivedTotal =
+    fetBaselineData.length + fetAnalyteData.length + fetTimeDataArr.length;
+
+  // Avoid double-firing the auto-stop
+  const eisAutoStopFiredRef = useRef(false);
+  const fetAutoStopFiredRef = useRef(false);
+
   const handleStartEIS = () => {
+    eisAutoStopFiredRef.current = false;
+    setFrozenEis(null);
+    setEisStatus("running");
     if (dataSource === "simulated") {
       eis.start();
     } else {
@@ -57,6 +87,9 @@ const Index = () => {
   };
 
   const handleResetEIS = () => {
+    eisAutoStopFiredRef.current = false;
+    setFrozenEis(null);
+    setEisStatus("idle");
     if (dataSource === "simulated") {
       eis.reset();
     } else {
@@ -66,6 +99,10 @@ const Index = () => {
   };
 
   const handleStartFET = () => {
+    fetAutoStopFiredRef.current = false;
+    setFrozenFetBaseline(null);
+    setFrozenFetAnalyte(null);
+    setFetStatus("running");
     if (dataSource === "simulated") {
       fetTransfer.start();
       fetTime.start();
@@ -81,6 +118,10 @@ const Index = () => {
   };
 
   const handleResetFET = () => {
+    fetAutoStopFiredRef.current = false;
+    setFrozenFetBaseline(null);
+    setFrozenFetAnalyte(null);
+    setFetStatus("idle");
     if (dataSource === "simulated") {
       fetTransfer.reset();
       fetTime.reset();
@@ -90,10 +131,94 @@ const Index = () => {
     }
   };
 
-  const isEISRunning = dataSource === "simulated" ? eis.isRunning : ws.status === "connected";
-  const isFETRunning = dataSource === "simulated"
-    ? fetTransfer.isRunning || fetTime.isRunning
-    : ws.status === "connected";
+  // Manual stop (mid-sweep)
+  const handleStopEIS = () => {
+    if (eisStatus !== "running") return;
+    eisAutoStopFiredRef.current = true;
+    if (dataSource === "simulated") {
+      eis.stop();
+    } else {
+      ws.sendCommand("stop");
+    }
+    setFrozenEis(eisData);
+    setEisStatus("stopped");
+    toast(`Stopped at ${eisData.length} / ${expectedEisPoints} points`);
+  };
+
+  const handleStopFET = () => {
+    if (fetStatus !== "running") return;
+    fetAutoStopFiredRef.current = true;
+    if (dataSource === "simulated") {
+      fetTransfer.stop();
+      fetTime.stop();
+    } else {
+      ws.sendCommand("stop");
+    }
+    setFrozenFetBaseline(fetBaselineData);
+    setFrozenFetAnalyte(fetAnalyteData);
+    setFetStatus("stopped");
+    toast(`Stopped at ${fetReceivedTotal} / ${expectedFetTotal} points`);
+  };
+
+  // Auto-completion detection — EIS
+  useEffect(() => {
+    if (eisStatus !== "running") return;
+    if (eisAutoStopFiredRef.current) return;
+    if (eisData.length >= expectedEisPoints && expectedEisPoints > 0) {
+      eisAutoStopFiredRef.current = true;
+      if (dataSource === "simulated") {
+        eis.stop();
+      } else {
+        ws.sendCommand("stop");
+      }
+      setFrozenEis(eisData);
+      setEisStatus("complete");
+      toast.success(`Sweep complete — ${eisData.length} points collected`);
+    }
+  }, [eisData, eisStatus, expectedEisPoints, dataSource, eis, ws]);
+
+  // Auto-completion detection — BioFET (all 3 phases done)
+  useEffect(() => {
+    if (fetStatus !== "running") return;
+    if (fetAutoStopFiredRef.current) return;
+    const baselineDone = fetBaselineData.length >= expectedFetTransferPoints;
+    const analyteDone = fetAnalyteData.length >= expectedFetTransferPoints;
+    const timeDone = fetTimeDataArr.length >= expectedFetTimePoints;
+    if (baselineDone && analyteDone && timeDone) {
+      fetAutoStopFiredRef.current = true;
+      if (dataSource === "simulated") {
+        fetTransfer.stop();
+        fetTime.stop();
+      } else {
+        ws.sendCommand("stop");
+      }
+      setFrozenFetBaseline(fetBaselineData);
+      setFrozenFetAnalyte(fetAnalyteData);
+      setFetStatus("complete");
+      toast.success(`Sweep complete — ${fetReceivedTotal} points collected`);
+    }
+  }, [
+    fetBaselineData,
+    fetAnalyteData,
+    fetTimeDataArr,
+    fetStatus,
+    expectedFetTransferPoints,
+    expectedFetTimePoints,
+    fetReceivedTotal,
+    dataSource,
+    fetTransfer,
+    fetTime,
+    ws,
+  ]);
+
+  // "Running" now means status === running, not just connected/animating
+  const isEISRunning = eisStatus === "running";
+  const isFETRunning = fetStatus === "running";
+
+  // Data shown in Signal Quality (frozen after stop/complete)
+  const sqEisData = frozenEis ?? eisData;
+  const sqFetBaseline = frozenFetBaseline ?? fetBaselineData;
+  const sqFetAnalyte = frozenFetAnalyte ?? fetAnalyteData;
 
   const handleChangeSource = (source: "simulated" | "live") => {
     // Reset everything when switching
@@ -102,6 +227,13 @@ const Index = () => {
     fetTime.reset();
     ws.clearEIS();
     ws.clearFET();
+    setEisStatus("idle");
+    setFetStatus("idle");
+    setFrozenEis(null);
+    setFrozenFetBaseline(null);
+    setFrozenFetAnalyte(null);
+    eisAutoStopFiredRef.current = false;
+    fetAutoStopFiredRef.current = false;
     if (source === "simulated" && ws.status === "connected") {
       ws.disconnect();
     }
@@ -192,10 +324,22 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={handleStartEIS}
-                disabled={dataSource === "simulated" ? isEISRunning : ws.status !== "connected"}
+                disabled={
+                  isEISRunning ||
+                  (dataSource === "live" && ws.status !== "connected")
+                }
                 className="font-mono text-xs"
               >
                 ▶ Start EIS
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleStopEIS}
+                disabled={!isEISRunning}
+                className="font-mono text-xs"
+              >
+                ■ Stop
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetEIS} className="font-mono text-xs">
                 ↺ Reset
@@ -215,10 +359,22 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={handleStartFET}
-                disabled={dataSource === "simulated" ? isFETRunning : ws.status !== "connected"}
+                disabled={
+                  isFETRunning ||
+                  (dataSource === "live" && ws.status !== "connected")
+                }
                 className="font-mono text-xs"
               >
                 ▶ Start FET
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleStopFET}
+                disabled={!isFETRunning}
+                className="font-mono text-xs"
+              >
+                ■ Stop
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetFET} className="font-mono text-xs">
                 ↺ Reset
@@ -265,6 +421,12 @@ const Index = () => {
             </TabsContent>
           </div>
 
+          <SweepProgress
+            status={eisStatus}
+            current={eisData.length}
+            expected={expectedEisPoints}
+          />
+
           {eisData.length > 0 && (
             <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
@@ -281,7 +443,7 @@ const Index = () => {
             </div>
           )}
         </Tabs>
-        <SignalQuality mode="eis" eisData={eisData} fetBaseline={fetBaselineData} fetAnalyte={fetAnalyteData} />
+        <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
         </div>
       )}
 
@@ -317,6 +479,17 @@ const Index = () => {
             </div>
           </div>
 
+          <SweepProgress
+            status={fetStatus}
+            current={fetReceivedTotal}
+            expected={expectedFetTotal}
+            phases={[
+              { label: "Baseline", current: fetBaselineData.length, expected: expectedFetTransferPoints },
+              { label: "Analyte", current: fetAnalyteData.length, expected: expectedFetTransferPoints },
+              { label: "Time response", current: fetTimeDataArr.length, expected: expectedFetTimePoints },
+            ]}
+          />
+
           {fetBaselineData.length > 0 && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
@@ -333,7 +506,7 @@ const Index = () => {
             </div>
           )}
         </div>
-        <SignalQuality mode="fet" eisData={eisData} fetBaseline={fetBaselineData} fetAnalyte={fetAnalyteData} />
+        <SignalQuality mode="fet" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
         </div>
       )}
 
