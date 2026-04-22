@@ -324,10 +324,22 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={handleStartEIS}
-                disabled={dataSource === "simulated" ? isEISRunning : ws.status !== "connected"}
+                disabled={
+                  isEISRunning ||
+                  (dataSource === "live" && ws.status !== "connected")
+                }
                 className="font-mono text-xs"
               >
                 ▶ Start EIS
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleStopEIS}
+                disabled={!isEISRunning}
+                className="font-mono text-xs"
+              >
+                ■ Stop
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetEIS} className="font-mono text-xs">
                 ↺ Reset
@@ -347,10 +359,22 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={handleStartFET}
-                disabled={dataSource === "simulated" ? isFETRunning : ws.status !== "connected"}
+                disabled={
+                  isFETRunning ||
+                  (dataSource === "live" && ws.status !== "connected")
+                }
                 className="font-mono text-xs"
               >
                 ▶ Start FET
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleStopFET}
+                disabled={!isFETRunning}
+                className="font-mono text-xs"
+              >
+                ■ Stop
               </Button>
               <Button size="sm" variant="secondary" onClick={handleResetFET} className="font-mono text-xs">
                 ↺ Reset
@@ -397,6 +421,12 @@ const Index = () => {
             </TabsContent>
           </div>
 
+          <SweepProgress
+            status={eisStatus}
+            current={eisData.length}
+            expected={expectedEisPoints}
+          />
+
           {eisData.length > 0 && (
             <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
@@ -413,7 +443,7 @@ const Index = () => {
             </div>
           )}
         </Tabs>
-        <SignalQuality mode="eis" eisData={eisData} fetBaseline={fetBaselineData} fetAnalyte={fetAnalyteData} />
+        <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
         </div>
       )}
 
@@ -449,6 +479,17 @@ const Index = () => {
             </div>
           </div>
 
+          <SweepProgress
+            status={fetStatus}
+            current={fetReceivedTotal}
+            expected={expectedFetTotal}
+            phases={[
+              { label: "Baseline", current: fetBaselineData.length, expected: expectedFetTransferPoints },
+              { label: "Analyte", current: fetAnalyteData.length, expected: expectedFetTransferPoints },
+              { label: "Time response", current: fetTimeDataArr.length, expected: expectedFetTimePoints },
+            ]}
+          />
+
           {fetBaselineData.length > 0 && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
@@ -465,7 +506,7 @@ const Index = () => {
             </div>
           )}
         </div>
-        <SignalQuality mode="fet" eisData={eisData} fetBaseline={fetBaselineData} fetAnalyte={fetAnalyteData} />
+        <SignalQuality mode="fet" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
         </div>
       )}
 
