@@ -23,12 +23,22 @@ import ParametersPanel, {
   type EISParams,
   type FETParams,
 } from "@/components/ParametersPanel";
+import CalibrationPanel, {
+  type CalibrationPoint,
+  computeEISParams,
+  computeFETVt,
+} from "@/components/CalibrationPanel";
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
   const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
   const [eisParams, setEisParams] = useState<EISParams>(DEFAULT_EIS_PARAMS);
   const [fetParams, setFetParams] = useState<FETParams>(DEFAULT_FET_PARAMS);
+
+  // Concentration & Calibration state (per mode)
+  const [concentration, setConcentration] = useState<number>(0);
+  const [eisCalibration, setEisCalibration] = useState<CalibrationPoint[]>([]);
+  const [fetCalibration, setFetCalibration] = useState<CalibrationPoint[]>([]);
 
   // Sweep status tracks completion separately from "is running"
   const [eisStatus, setEisStatus] = useState<SweepStatus>("idle");
@@ -174,6 +184,22 @@ const Index = () => {
       setFrozenEis(eisData);
       setEisStatus("complete");
       toast.success(`Sweep complete — ${eisData.length} points collected`);
+      // Add calibration point
+      const params = computeEISParams(eisData);
+      if (params) {
+        const baseline = eisCalibration.find((p) => p.concentration === 0);
+        const deltaRct =
+          concentration === 0 ? 0 : params.rct - (baseline?.raw ?? params.rct);
+        setEisCalibration((prev) => [
+          ...prev.filter((p) => p.concentration !== concentration),
+          {
+            concentration,
+            signal: deltaRct,
+            raw: params.rct,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
     }
   }, [eisData, eisStatus, expectedEisPoints, dataSource, eis, ws]);
 
@@ -196,6 +222,22 @@ const Index = () => {
       setFrozenFetAnalyte(fetAnalyteData);
       setFetStatus("complete");
       toast.success(`Sweep complete — ${fetReceivedTotal} points collected`);
+      // Add calibration point — use analyte curve as the "sample" reading
+      const vt = computeFETVt(fetAnalyteData);
+      if (vt != null) {
+        const baseline = fetCalibration.find((p) => p.concentration === 0);
+        const deltaVt =
+          concentration === 0 ? 0 : (vt - (baseline?.raw ?? vt)) * 1000;
+        setFetCalibration((prev) => [
+          ...prev.filter((p) => p.concentration !== concentration),
+          {
+            concentration,
+            signal: deltaVt,
+            raw: vt,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
     }
   }, [
     fetBaselineData,
@@ -219,6 +261,29 @@ const Index = () => {
   const sqEisData = frozenEis ?? eisData;
   const sqFetBaseline = frozenFetBaseline ?? fetBaselineData;
   const sqFetAnalyte = frozenFetAnalyte ?? fetAnalyteData;
+
+  // Live computed parameters for the calibration panel
+  const liveEisParams = useMemo(() => computeEISParams(sqEisData), [sqEisData]);
+  const liveFetVt = useMemo(() => computeFETVt(sqFetAnalyte), [sqFetAnalyte]);
+
+  // Export calibration table as CSV
+  const exportCalibrationCSV = () => {
+    const list = mode === "eis" ? eisCalibration : fetCalibration;
+    if (list.length === 0) return;
+    const unit = mode === "eis" ? "DeltaRct (Ohms)" : "DeltaVt (mV)";
+    const header = `Concentration (nM),${unit},Timestamp\n`;
+    const rows = [...list]
+      .sort((a, b) => a.concentration - b.concentration)
+      .map((p) => `${p.concentration},${p.signal.toFixed(3)},${new Date(p.timestamp).toISOString()}`)
+      .join("\n");
+    const blob = new Blob([header + rows], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `calibration_${mode}_${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleChangeSource = (source: "simulated" | "live") => {
     // Reset everything when switching
