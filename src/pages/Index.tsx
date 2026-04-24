@@ -508,7 +508,19 @@ const Index = () => {
             </div>
           )}
         </Tabs>
-        <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
+        <div className="space-y-4">
+          <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
+          <CalibrationPanel
+            mode="eis"
+            concentration={concentration}
+            onChangeConcentration={setConcentration}
+            points={eisCalibration}
+            onClear={() => setEisCalibration([])}
+            onExport={exportCalibrationCSV}
+            currentRs={liveEisParams?.rs}
+            currentRct={liveEisParams?.rct}
+          />
+        </div>
         </div>
       )}
 
@@ -571,7 +583,18 @@ const Index = () => {
             </div>
           )}
         </div>
-        <SignalQuality mode="fet" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
+        <div className="space-y-4">
+          <SignalQuality mode="fet" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
+          <CalibrationPanel
+            mode="fet"
+            concentration={concentration}
+            onChangeConcentration={setConcentration}
+            points={fetCalibration}
+            onClear={() => setFetCalibration([])}
+            onExport={exportCalibrationCSV}
+            currentVt={liveFetVt ?? undefined}
+          />
+        </div>
         </div>
       )}
 
