@@ -84,7 +84,7 @@ const Index = () => {
     setFrozenEis(null);
     setEisStatus("running");
     if (dataSource === "simulated") {
-      eis.start();
+      eis.start(concentration, eisParams.points);
     } else {
       ws.clearEIS();
       ws.sendCommand("start_eis", {
@@ -115,8 +115,13 @@ const Index = () => {
     setFrozenFetAnalyte(null);
     setFetStatus("running");
     if (dataSource === "simulated") {
-      fetTransfer.start();
-      fetTime.start();
+      fetTransfer.start(
+        concentration,
+        fetParams.vgMin,
+        fetParams.vgMax,
+        expectedFetTransferPoints,
+      );
+      fetTime.start(concentration);
     } else {
       ws.clearFET();
       ws.sendCommand("start_fet", {
