@@ -92,6 +92,7 @@ const Index = () => {
         freqMax: eisParams.freqMax,
         points: eisParams.points,
         amplitude: eisParams.amplitude,
+        concentration,
       });
     }
   };
@@ -123,6 +124,7 @@ const Index = () => {
         vgMax: fetParams.vgMax,
         vgStep: fetParams.vgStep / 1000, // mV → V
         intervalMs: fetParams.intervalMs,
+        concentration,
       });
     }
   };
