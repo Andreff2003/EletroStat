@@ -28,6 +28,13 @@ import CalibrationPanel, {
   computeEISParams,
   computeFETVt,
 } from "@/components/CalibrationPanel";
+import CircuitFitResults from "@/components/CircuitFitResults";
+import {
+  fitRandles,
+  extractWarburgSlope,
+  type RandlesFitResult,
+  type WarburgResult,
+} from "@/utils/randlesFit";
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
@@ -39,6 +46,10 @@ const Index = () => {
   const [concentration, setConcentration] = useState<number>(0);
   const [eisCalibration, setEisCalibration] = useState<CalibrationPoint[]>([]);
   const [fetCalibration, setFetCalibration] = useState<CalibrationPoint[]>([]);
+
+  // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
+  const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
+  const [warburg, setWarburg] = useState<WarburgResult | null>(null);
 
   // Sweep status tracks completion separately from "is running"
   const [eisStatus, setEisStatus] = useState<SweepStatus>("idle");
@@ -82,6 +93,8 @@ const Index = () => {
   const handleStartEIS = () => {
     eisAutoStopFiredRef.current = false;
     setFrozenEis(null);
+    setRandlesFit(null);
+    setWarburg(null);
     setEisStatus("running");
     if (dataSource === "simulated") {
       eis.start(concentration, eisParams.points);
@@ -101,6 +114,8 @@ const Index = () => {
     eisAutoStopFiredRef.current = false;
     setFrozenEis(null);
     setEisStatus("idle");
+    setRandlesFit(null);
+    setWarburg(null);
     if (dataSource === "simulated") {
       eis.reset();
     } else {
@@ -206,6 +221,15 @@ const Index = () => {
             timestamp: Date.now(),
           },
         ]);
+      }
+      // Randles equivalent-circuit fit + Warburg slope
+      try {
+        const fit = fitRandles(eisData);
+        const wb = extractWarburgSlope(eisData);
+        setRandlesFit(fit);
+        setWarburg(wb);
+      } catch (err) {
+        console.warn("Randles fit failed", err);
       }
     }
   }, [eisData, eisStatus, expectedEisPoints, dataSource, eis, ws]);
@@ -486,7 +510,7 @@ const Index = () => {
 
           <div className="rounded-lg border border-border bg-card p-3">
             <TabsContent value="nyquist" className="mt-0 h-[400px] md:h-[500px]">
-              <NyquistPlot data={eisData} />
+              <NyquistPlot data={eisData} fittedCurve={randlesFit?.fittedCurve} />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
               <BodePlot data={eisData} />
@@ -517,6 +541,7 @@ const Index = () => {
         </Tabs>
         <div className="space-y-4">
           <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
+          <CircuitFitResults fit={randlesFit} warburg={warburg} />
           <CalibrationPanel
             mode="eis"
             concentration={concentration}
