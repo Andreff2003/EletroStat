@@ -2,6 +2,17 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import NyquistPlot from "@/components/NyquistPlot";
 import BodePlot from "@/components/BodePlot";
 import FETTransferPlot from "@/components/FETTransferPlot";
@@ -15,7 +26,12 @@ import {
   useSimulatedFETTransfer,
   useSimulatedFETTime,
 } from "@/hooks/useSimulatedData";
-import { exportEISData, exportFETTransferData, exportFETTimeData } from "@/utils/csvExport";
+import {
+  exportEISData,
+  exportFETTransferData,
+  exportFETTimeData,
+  exportSessionCSV,
+} from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
   DEFAULT_EIS_PARAMS,
@@ -35,6 +51,35 @@ import {
   type RandlesFitResult,
   type WarburgResult,
 } from "@/utils/randlesFit";
+import {
+  loadSession,
+  saveSession,
+  clearSession,
+  newId,
+  type StoredMeasurement,
+  type StoredEISMeasurement,
+  type StoredFETMeasurement,
+} from "@/utils/sessionStore";
+import type { EISDataPoint } from "@/hooks/useSimulatedData";
+
+// 8-color palette for overlays
+const OVERLAY_COLORS = [
+  "hsl(160 70% 55%)",
+  "hsl(30 90% 60%)",
+  "hsl(200 80% 60%)",
+  "hsl(280 70% 65%)",
+  "hsl(50 90% 55%)",
+  "hsl(340 80% 60%)",
+  "hsl(120 60% 55%)",
+  "hsl(0 75% 60%)",
+];
+
+interface OverlayCurve {
+  id: string;
+  label: string;
+  color: string;
+  data: EISDataPoint[];
+}
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
@@ -50,6 +95,16 @@ const Index = () => {
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
   const [warburg, setWarburg] = useState<WarburgResult | null>(null);
+
+  // Overlay mode (Nyquist)
+  const [overlayMode, setOverlayMode] = useState(false);
+  const [eisOverlays, setEisOverlays] = useState<OverlayCurve[]>([]);
+
+  // BioFET sample-addition markers
+  const [fetMarkers, setFetMarkers] = useState<{ time: number; label: string }[]>([]);
+
+  // Persisted session of all completed measurements
+  const [sessionMeasurements, setSessionMeasurements] = useState<StoredMeasurement[]>([]);
 
   // Sweep status tracks completion separately from "is running"
   const [eisStatus, setEisStatus] = useState<SweepStatus>("idle");
