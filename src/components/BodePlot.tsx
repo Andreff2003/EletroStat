@@ -19,7 +19,7 @@ interface BodePlotProps {
 
 const BodePlot = ({ data }: BodePlotProps) => {
   const plotData = data.map(d => ({
-    freq: d.frequency.toFixed(1),
+    freq: d.frequency,
     zMag: d.zMag,
     phase: Math.abs(d.phase),
   }));
@@ -31,6 +31,9 @@ const BodePlot = ({ data }: BodePlotProps) => {
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 15% 15%)" />
           <XAxis
             dataKey="freq"
+            type="number"
+            scale="log"
+            domain={['auto', 'auto']}
             label={{ value: "Frequency (Hz)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 10 }}
             stroke="hsl(220 15% 20%)"
