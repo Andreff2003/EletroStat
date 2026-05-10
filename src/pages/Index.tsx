@@ -454,6 +454,25 @@ const Index = () => {
   const liveEisParams = useMemo(() => computeEISParams(sqEisData), [sqEisData]);
   const liveFetVt = useMemo(() => computeFETVt(sqFetAnalyte), [sqFetAnalyte]);
 
+  // Add a sample-addition marker at the current time on the FET time trace
+  const handleAddFetMarker = () => {
+    const last = fetTimeDataArr[fetTimeDataArr.length - 1];
+    const t = last ? last.time : 0;
+    const label = `Sample added — t = ${t.toFixed(1)} s`;
+    setFetMarkers((prev) => [...prev, { time: t, label }]);
+    toast.success(label);
+  };
+
+  // Clear the entire stored session
+  const handleClearSession = () => {
+    clearSession();
+    setSessionMeasurements([]);
+    setEisCalibration([]);
+    setFetCalibration([]);
+    setEisOverlays([]);
+    toast("Session cleared");
+  };
+
   // Export calibration table as CSV
   const exportCalibrationCSV = () => {
     const list = mode === "eis" ? eisCalibration : fetCalibration;
