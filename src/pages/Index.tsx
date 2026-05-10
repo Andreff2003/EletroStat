@@ -530,17 +530,54 @@ const Index = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
-          <div className={`w-2 h-2 rounded-full ${
-            dataSource === "simulated"
-              ? "bg-graph-alt"
-              : ws.status === "connected"
-                ? "bg-graph-primary"
-                : ws.status === "error"
-                  ? "bg-destructive"
-                  : "bg-muted-foreground"
-          }`} />
-          <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => exportSessionCSV(sessionMeasurements)}
+            disabled={sessionMeasurements.length === 0}
+            className="font-mono text-xs"
+          >
+            ⬇ Export Session CSV ({sessionMeasurements.length})
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={sessionMeasurements.length === 0}
+                className="font-mono text-xs"
+              >
+                Clear Session
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear all stored measurements?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure? This cannot be undone. All saved EIS/BioFET sweeps and the calibration history will be removed.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleClearSession}>
+                  Yes, clear everything
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground ml-2">
+            <div className={`w-2 h-2 rounded-full ${
+              dataSource === "simulated"
+                ? "bg-graph-alt"
+                : ws.status === "connected"
+                  ? "bg-graph-primary"
+                  : ws.status === "error"
+                    ? "bg-destructive"
+                    : "bg-muted-foreground"
+            }`} />
+            <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
+          </div>
         </div>
       </header>
 
