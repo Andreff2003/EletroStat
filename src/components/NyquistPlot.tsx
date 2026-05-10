@@ -16,10 +16,12 @@ import type { EISDataPoint } from "@/hooks/useSimulatedData";
  */
 interface NyquistPlotProps {
   data: EISDataPoint[];
+  fittedCurve?: { zReal: number; zImag: number }[];
 }
 
-const NyquistPlot = ({ data }: NyquistPlotProps) => {
+const NyquistPlot = ({ data, fittedCurve }: NyquistPlotProps) => {
   const plotData = data.map(d => ({ x: d.zReal, y: d.zImag }));
+  const fitData = (fittedCurve ?? []).map(d => ({ x: d.zReal, y: d.zImag }));
 
   return (
     <div className="w-full h-full">
@@ -65,6 +67,18 @@ const NyquistPlot = ({ data }: NyquistPlotProps) => {
             line={{ stroke: "hsl(160 70% 45%)", strokeWidth: 2 }}
             lineType="joint"
           />
+          {fitData.length > 0 && (
+            <Scatter
+              data={fitData}
+              fill="transparent"
+              stroke="hsl(30 90% 60%)"
+              r={0}
+              line={{ stroke: "hsl(30 90% 60%)", strokeWidth: 2, strokeDasharray: "6 4" }}
+              lineType="joint"
+              isAnimationActive={false}
+              name="Randles fit"
+            />
+          )}
         </ScatterChart>
       </ResponsiveContainer>
     </div>
