@@ -19,7 +19,7 @@ interface BodePlotProps {
 
 const BodePlot = ({ data }: BodePlotProps) => {
   const plotData = data.map(d => ({
-    freq: d.frequency.toFixed(1),
+    freq: d.frequency,
     zMag: d.zMag,
     phase: Math.abs(d.phase),
   }));
