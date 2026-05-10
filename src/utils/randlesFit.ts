@@ -1,4 +1,7 @@
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
+// Levenberg-Marquardt least-squares from ml-levenberg-marquardt.
+// Default export is the LM function.
+import LM from "ml-levenberg-marquardt";
 
 /**
  * Randles equivalent circuit fitting + Warburg slope extraction.
@@ -55,84 +58,6 @@ function Aw_term(omega: number, Aw: number) {
   return { re: s, im: -s };
 }
 
-function residualSSE(points: EISDataPoint[], p: RandlesParams) {
-  let sse = 0;
-  for (const pt of points) {
-    const omega = 2 * Math.PI * pt.frequency;
-    const m = modelZ(omega, p);
-    const dr = m.zReal - pt.zReal;
-    const di = m.zImag - pt.zImag;
-    sse += dr * dr + di * di;
-  }
-  return sse;
-}
-
-/** Nelder-Mead simplex over parameters in log-space (so they stay positive). */
-function nelderMead(
-  f: (x: number[]) => number,
-  x0: number[],
-  opts: { maxIter?: number; tol?: number } = {},
-) {
-  const maxIter = opts.maxIter ?? 400;
-  const tol = opts.tol ?? 1e-6;
-  const n = x0.length;
-  // Build initial simplex
-  const simplex: { x: number[]; f: number }[] = [];
-  simplex.push({ x: x0.slice(), f: f(x0) });
-  for (let i = 0; i < n; i++) {
-    const x = x0.slice();
-    x[i] = x[i] + (x[i] === 0 ? 0.05 : 0.1);
-    simplex.push({ x, f: f(x) });
-  }
-
-  const alpha = 1, gamma = 2, rho = 0.5, sigma = 0.5;
-
-  for (let iter = 0; iter < maxIter; iter++) {
-    simplex.sort((a, b) => a.f - b.f);
-    const best = simplex[0], worst = simplex[n], second = simplex[n - 1];
-
-    // Convergence: range of f values
-    if (Math.abs(worst.f - best.f) < tol) break;
-
-    // Centroid of all but worst
-    const centroid = new Array(n).fill(0);
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) centroid[j] += simplex[i].x[j];
-    }
-    for (let j = 0; j < n; j++) centroid[j] /= n;
-
-    // Reflection
-    const xr = centroid.map((c, j) => c + alpha * (c - worst.x[j]));
-    const fr = f(xr);
-    if (fr < second.f && fr >= best.f) {
-      simplex[n] = { x: xr, f: fr };
-      continue;
-    }
-    // Expansion
-    if (fr < best.f) {
-      const xe = centroid.map((c, j) => c + gamma * (xr[j] - c));
-      const fe = f(xe);
-      simplex[n] = fe < fr ? { x: xe, f: fe } : { x: xr, f: fr };
-      continue;
-    }
-    // Contraction
-    const xc = centroid.map((c, j) => c + rho * (worst.x[j] - c));
-    const fc = f(xc);
-    if (fc < worst.f) {
-      simplex[n] = { x: xc, f: fc };
-      continue;
-    }
-    // Shrink
-    const xb = best.x;
-    for (let i = 1; i <= n; i++) {
-      const x = simplex[i].x.map((v, j) => xb[j] + sigma * (v - xb[j]));
-      simplex[i] = { x, f: f(x) };
-    }
-  }
-  simplex.sort((a, b) => a.f - b.f);
-  return simplex[0];
-}
-
 /**
  * Fit the Randles model to a Nyquist dataset.
  * Returns null if there are <5 points.
@@ -157,27 +82,63 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   const Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
   const Aw0 = 10;
 
-  // Optimize in log-space to keep positivity
-  const x0 = [Math.log(Rs0), Math.log(Rct0), Math.log(Cdl0), Math.log(Aw0)];
-  const cost = (x: number[]) => {
+  // Stack real + imaginary residuals into a single vector for LM.
+  // x = index; y = [zReal_0..zReal_{n-1}, zImag_0..zImag_{n-1}]
+  const n = data.length;
+  const xs = new Array(2 * n);
+  const ys = new Array(2 * n);
+  for (let i = 0; i < n; i++) {
+    xs[i] = i;
+    xs[i + n] = i + n;
+    ys[i] = data[i].zReal;
+    ys[i + n] = data[i].zImag;
+  }
+
+  // Fit in log-space to keep parameters positive.
+  // params = [logRs, logRct, logCdl, logAw]
+  const modelFn = ([lRs, lRct, lCdl, lAw]: number[]) => (idx: number) => {
     const p: RandlesParams = {
-      Rs: Math.exp(x[0]),
-      Rct: Math.exp(x[1]),
-      Cdl: Math.exp(x[2]),
-      Aw: Math.exp(x[3]),
+      Rs: Math.exp(lRs),
+      Rct: Math.exp(lRct),
+      Cdl: Math.exp(lCdl),
+      Aw: Math.exp(lAw),
     };
-    return residualSSE(data, p);
-  };
-  const best = nelderMead(cost, x0, { maxIter: 600, tol: 1e-8 });
-  const fitted: RandlesParams = {
-    Rs: Math.exp(best.x[0]),
-    Rct: Math.exp(best.x[1]),
-    Cdl: Math.exp(best.x[2]),
-    Aw: Math.exp(best.x[3]),
+    const which = idx < n ? "re" : "im";
+    const i = idx < n ? idx : idx - n;
+    const m = modelZ(2 * Math.PI * data[i].frequency, p);
+    return which === "re" ? m.zReal : m.zImag;
   };
 
-  // RMSE as % of mean |Z|
-  const sse = best.f;
+  const initial = [Math.log(Rs0), Math.log(Rct0), Math.log(Cdl0), Math.log(Aw0)];
+  let parameterValues: number[];
+  try {
+    const result = LM({ x: xs, y: ys }, modelFn, {
+      initialValues: initial,
+      damping: 1e-3,
+      maxIterations: 200,
+      errorTolerance: 1e-8,
+    });
+    parameterValues = result.parameterValues;
+  } catch (err) {
+    console.warn("LM fit failed, falling back to initial guess", err);
+    parameterValues = initial;
+  }
+
+  const fitted: RandlesParams = {
+    Rs: Math.exp(parameterValues[0]),
+    Rct: Math.exp(parameterValues[1]),
+    Cdl: Math.exp(parameterValues[2]),
+    Aw: Math.exp(parameterValues[3]),
+  };
+
+  // Compute final RMSE as % of mean |Z|
+  let sse = 0;
+  for (const pt of data) {
+    const m = modelZ(2 * Math.PI * pt.frequency, fitted);
+    const dr = m.zReal - pt.zReal;
+    const di = m.zImag - pt.zImag;
+    sse += dr * dr + di * di;
+  }
   const rmse = Math.sqrt(sse / (2 * data.length));
   const meanZ = data.reduce((s, d) => s + Math.sqrt(d.zReal * d.zReal + d.zImag * d.zImag), 0) / data.length;
   const fitErrorPct = (rmse / Math.max(meanZ, 1e-9)) * 100;
