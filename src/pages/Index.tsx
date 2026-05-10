@@ -2,6 +2,17 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import NyquistPlot from "@/components/NyquistPlot";
 import BodePlot from "@/components/BodePlot";
 import FETTransferPlot from "@/components/FETTransferPlot";
@@ -15,7 +26,12 @@ import {
   useSimulatedFETTransfer,
   useSimulatedFETTime,
 } from "@/hooks/useSimulatedData";
-import { exportEISData, exportFETTransferData, exportFETTimeData } from "@/utils/csvExport";
+import {
+  exportEISData,
+  exportFETTransferData,
+  exportFETTimeData,
+  exportSessionCSV,
+} from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
   DEFAULT_EIS_PARAMS,
@@ -35,6 +51,35 @@ import {
   type RandlesFitResult,
   type WarburgResult,
 } from "@/utils/randlesFit";
+import {
+  loadSession,
+  saveSession,
+  clearSession,
+  newId,
+  type StoredMeasurement,
+  type StoredEISMeasurement,
+  type StoredFETMeasurement,
+} from "@/utils/sessionStore";
+import type { EISDataPoint } from "@/hooks/useSimulatedData";
+
+// 8-color palette for overlays
+const OVERLAY_COLORS = [
+  "hsl(160 70% 55%)",
+  "hsl(30 90% 60%)",
+  "hsl(200 80% 60%)",
+  "hsl(280 70% 65%)",
+  "hsl(50 90% 55%)",
+  "hsl(340 80% 60%)",
+  "hsl(120 60% 55%)",
+  "hsl(0 75% 60%)",
+];
+
+interface OverlayCurve {
+  id: string;
+  label: string;
+  color: string;
+  data: EISDataPoint[];
+}
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
@@ -50,6 +95,16 @@ const Index = () => {
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
   const [warburg, setWarburg] = useState<WarburgResult | null>(null);
+
+  // Overlay mode (Nyquist)
+  const [overlayMode, setOverlayMode] = useState(false);
+  const [eisOverlays, setEisOverlays] = useState<OverlayCurve[]>([]);
+
+  // BioFET sample-addition markers
+  const [fetMarkers, setFetMarkers] = useState<{ time: number; label: string }[]>([]);
+
+  // Persisted session of all completed measurements
+  const [sessionMeasurements, setSessionMeasurements] = useState<StoredMeasurement[]>([]);
 
   // Sweep status tracks completion separately from "is running"
   const [eisStatus, setEisStatus] = useState<SweepStatus>("idle");
@@ -67,6 +122,51 @@ const Index = () => {
 
   // Live WebSocket data hook
   const ws = useWebSocketData();
+
+  // Restore session on mount
+  useEffect(() => {
+    const stored = loadSession();
+    if (stored.length === 0) return;
+    setSessionMeasurements(stored);
+    const eisBaselineRct = stored.find(
+      (m): m is StoredEISMeasurement => m.mode === "eis" && m.concentration === 0,
+    )?.extracted.Rct;
+    const fetBaselineVt = stored.find(
+      (m): m is StoredFETMeasurement => m.mode === "fet" && m.concentration === 0,
+    )?.extracted.Vt;
+    const eisCal: CalibrationPoint[] = [];
+    const fetCal: CalibrationPoint[] = [];
+    for (const m of stored) {
+      if (m.mode === "eis" && m.extracted.Rct != null) {
+        const delta =
+          m.concentration === 0 ? 0 : m.extracted.Rct - (eisBaselineRct ?? m.extracted.Rct);
+        eisCal.push({
+          concentration: m.concentration,
+          signal: delta,
+          raw: m.extracted.Rct,
+          timestamp: m.timestamp,
+        });
+      } else if (m.mode === "fet" && m.extracted.Vt != null) {
+        const delta =
+          m.concentration === 0 ? 0 : (m.extracted.Vt - (fetBaselineVt ?? m.extracted.Vt)) * 1000;
+        fetCal.push({
+          concentration: m.concentration,
+          signal: delta,
+          raw: m.extracted.Vt,
+          timestamp: m.timestamp,
+        });
+      }
+    }
+    setEisCalibration(eisCal);
+    setFetCalibration(fetCal);
+    toast.success(`Restored ${stored.length} measurement(s) from previous session`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist whenever session changes
+  useEffect(() => {
+    saveSession(sessionMeasurements);
+  }, [sessionMeasurements]);
 
   // Pick the right data based on source
   const eisData = dataSource === "simulated" ? eis.data : ws.eisData;
@@ -128,6 +228,7 @@ const Index = () => {
     fetAutoStopFiredRef.current = false;
     setFrozenFetBaseline(null);
     setFrozenFetAnalyte(null);
+    setFetMarkers([]);
     setFetStatus("running");
     if (dataSource === "simulated") {
       fetTransfer.start(
@@ -154,6 +255,7 @@ const Index = () => {
     setFrozenFetBaseline(null);
     setFrozenFetAnalyte(null);
     setFetStatus("idle");
+    setFetMarkers([]);
     if (dataSource === "simulated") {
       fetTransfer.reset();
       fetTime.reset();
@@ -228,6 +330,42 @@ const Index = () => {
         const wb = extractWarburgSlope(eisData);
         setRandlesFit(fit);
         setWarburg(wb);
+        // Push to overlay (FIFO, max 8) when overlay mode is on
+        if (overlayMode) {
+          setEisOverlays((prev) => {
+            const label =
+              concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+            const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+            const next = [
+              ...prev,
+              { id: newId(), label, color, data: eisData.slice() },
+            ];
+            return next.length > 8 ? next.slice(next.length - 8) : next;
+          });
+        }
+        // Persist measurement to session
+        const stored: StoredEISMeasurement = {
+          id: newId(),
+          mode: "eis",
+          timestamp: Date.now(),
+          concentration,
+          params: {
+            freqMin: eisParams.freqMin,
+            freqMax: eisParams.freqMax,
+            points: eisParams.points,
+            amplitude: eisParams.amplitude,
+          },
+          data: eisData.slice(),
+          extracted: {
+            Rs: fit?.Rs,
+            Rct: fit?.Rct ?? params?.rct,
+            Cdl: fit?.Cdl,
+            Aw: fit?.Aw,
+            warburgSlope: wb.ok ? wb.slope : undefined,
+            fitErrorPct: fit?.fitErrorPct,
+          },
+        };
+        setSessionMeasurements((prev) => [...prev, stored]);
       } catch (err) {
         console.warn("Randles fit failed", err);
       }
@@ -269,6 +407,25 @@ const Index = () => {
           },
         ]);
       }
+      // Persist FET measurement
+      const storedFet: StoredFETMeasurement = {
+        id: newId(),
+        mode: "fet",
+        timestamp: Date.now(),
+        concentration,
+        params: {
+          vgMin: fetParams.vgMin,
+          vgMax: fetParams.vgMax,
+          vgStep: fetParams.vgStep,
+          intervalMs: fetParams.intervalMs,
+        },
+        baseline: fetBaselineData.slice(),
+        analyte: fetAnalyteData.slice(),
+        timeData: fetTimeDataArr.slice(),
+        markers: fetMarkers.slice(),
+        extracted: { Vt: vt ?? undefined },
+      };
+      setSessionMeasurements((prev) => [...prev, storedFet]);
     }
   }, [
     fetBaselineData,
@@ -296,6 +453,25 @@ const Index = () => {
   // Live computed parameters for the calibration panel
   const liveEisParams = useMemo(() => computeEISParams(sqEisData), [sqEisData]);
   const liveFetVt = useMemo(() => computeFETVt(sqFetAnalyte), [sqFetAnalyte]);
+
+  // Add a sample-addition marker at the current time on the FET time trace
+  const handleAddFetMarker = () => {
+    const last = fetTimeDataArr[fetTimeDataArr.length - 1];
+    const t = last ? last.time : 0;
+    const label = `Sample added — t = ${t.toFixed(1)} s`;
+    setFetMarkers((prev) => [...prev, { time: t, label }]);
+    toast.success(label);
+  };
+
+  // Clear the entire stored session
+  const handleClearSession = () => {
+    clearSession();
+    setSessionMeasurements([]);
+    setEisCalibration([]);
+    setFetCalibration([]);
+    setEisOverlays([]);
+    toast("Session cleared");
+  };
 
   // Export calibration table as CSV
   const exportCalibrationCSV = () => {
@@ -354,17 +530,54 @@ const Index = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
-          <div className={`w-2 h-2 rounded-full ${
-            dataSource === "simulated"
-              ? "bg-graph-alt"
-              : ws.status === "connected"
-                ? "bg-graph-primary"
-                : ws.status === "error"
-                  ? "bg-destructive"
-                  : "bg-muted-foreground"
-          }`} />
-          <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => exportSessionCSV(sessionMeasurements)}
+            disabled={sessionMeasurements.length === 0}
+            className="font-mono text-xs"
+          >
+            ⬇ Export Session CSV ({sessionMeasurements.length})
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={sessionMeasurements.length === 0}
+                className="font-mono text-xs"
+              >
+                Clear Session
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear all stored measurements?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure? This cannot be undone. All saved EIS/BioFET sweeps and the calibration history will be removed.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleClearSession}>
+                  Yes, clear everything
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground ml-2">
+            <div className={`w-2 h-2 rounded-full ${
+              dataSource === "simulated"
+                ? "bg-graph-alt"
+                : ws.status === "connected"
+                  ? "bg-graph-primary"
+                  : ws.status === "error"
+                    ? "bg-destructive"
+                    : "bg-muted-foreground"
+            }`} />
+            <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
+          </div>
         </div>
       </header>
 
@@ -496,21 +709,44 @@ const Index = () => {
       {mode === "eis" && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <Tabs defaultValue="nyquist" className="w-full">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <TabsList className="bg-secondary">
               <TabsTrigger value="nyquist" className="font-mono text-xs">Nyquist Plot</TabsTrigger>
               <TabsTrigger value="bode" className="font-mono text-xs">Bode Plot</TabsTrigger>
             </TabsList>
-            <StatusIndicator
-              isRunning={isEISRunning && eisData.length > 0}
-              label={isEISRunning && eisData.length > 0 ? "Sweeping..." : "Idle"}
-              dataPoints={eisData.length}
-            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant={overlayMode ? "default" : "outline"}
+                onClick={() => setOverlayMode((v) => !v)}
+                className="font-mono text-xs"
+              >
+                Overlay Mode {overlayMode ? "ON" : "OFF"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setEisOverlays([])}
+                disabled={eisOverlays.length === 0}
+                className="font-mono text-xs"
+              >
+                Clear All ({eisOverlays.length})
+              </Button>
+              <StatusIndicator
+                isRunning={isEISRunning && eisData.length > 0}
+                label={isEISRunning && eisData.length > 0 ? "Sweeping..." : "Idle"}
+                dataPoints={eisData.length}
+              />
+            </div>
           </div>
 
           <div className="rounded-lg border border-border bg-card p-3">
             <TabsContent value="nyquist" className="mt-0 h-[400px] md:h-[500px]">
-              <NyquistPlot data={eisData} fittedCurve={randlesFit?.fittedCurve} />
+              <NyquistPlot
+                data={eisData}
+                fittedCurve={randlesFit?.fittedCurve}
+                overlays={eisOverlays}
+              />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
               <BodePlot data={eisData} />
@@ -575,17 +811,33 @@ const Index = () => {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Time Response — Id vs Time</h2>
-              <StatusIndicator
-                isRunning={isFETRunning && fetTimeDataArr.length > 0}
-                label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
-                dataPoints={fetTimeDataArr.length}
-              />
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={handleAddFetMarker}
+                  disabled={!isFETRunning && fetTimeDataArr.length === 0}
+                  className="font-mono text-xs"
+                >
+                  ＋ Add Sample
+                </Button>
+                <StatusIndicator
+                  isRunning={isFETRunning && fetTimeDataArr.length > 0}
+                  label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
+                  dataPoints={fetTimeDataArr.length}
+                />
+              </div>
             </div>
             <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTimePlot data={fetTimeDataArr} />
+              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} />
             </div>
+            {fetMarkers.length > 0 && (
+              <div className="mt-1 text-[11px] font-mono text-muted-foreground">
+                Markers: {fetMarkers.map((m) => `t=${m.time.toFixed(1)}s`).join(" · ")}
+              </div>
+            )}
           </div>
 
           <SweepProgress

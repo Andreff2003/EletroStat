@@ -106,6 +106,28 @@ function fitLangmuir(points: CalibrationPoint[]): { kd: number; sMax: number } |
   return { kd, sMax };
 }
 
+/** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R². */
+function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: number; r2: number } | null {
+  const used = points.filter((p) => p.concentration >= 0);
+  if (used.length < 2) return null;
+  const xs = used.map((p) => p.concentration);
+  const ys = used.map((p) => p.signal);
+  const n = xs.length;
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) {
+    sxy += (xs[i] - meanX) * (ys[i] - meanY);
+    sxx += (xs[i] - meanX) ** 2;
+    syy += (ys[i] - meanY) ** 2;
+  }
+  if (sxx < 1e-12) return null;
+  const slope = sxy / sxx;
+  const intercept = meanY - slope * meanX;
+  const r2 = syy < 1e-12 ? 1 : 1 - (syy - slope * sxy) / syy;
+  return { slope, intercept, r2 };
+}
+
 /** LOD = 3 * sigma_baseline / slope, where slope = ΔSignal/ΔC over lowest 2 non-zero points */
 function computeLOD(points: CalibrationPoint[]): number | null {
   const baseline = findBaseline(points);
@@ -169,6 +191,7 @@ const CalibrationPanel = ({
 
   const fit = useMemo(() => (points.length >= 4 ? fitLangmuir(points) : null), [points]);
   const lod = useMemo(() => computeLOD(points), [points]);
+  const linear = useMemo(() => (points.length >= 3 ? fitLinear(points) : null), [points]);
 
   // Build smooth Langmuir curve points using fit
   const fitCurve = useMemo(() => {
@@ -389,6 +412,25 @@ const CalibrationPanel = ({
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
           <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span></div>
           <div>Max {signalKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {signalUnit}</span></div>
+        </div>
+      )}
+      {linear && (
+        <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground space-y-0.5">
+          <div>
+            Sensitivity:{" "}
+            <span className="text-primary">
+              {linear.slope.toFixed(3)} {signalUnit}/nM
+            </span>
+          </div>
+          <div>
+            R²: <span className="text-primary">{linear.r2.toFixed(4)}</span>
+          </div>
+          {lod != null && (
+            <div>
+              LOD (3σ/slope):{" "}
+              <span className="text-primary">{lod.toFixed(2)} nM</span>
+            </div>
+          )}
         </div>
       )}
       {points.length > 0 && points.length < 4 && (

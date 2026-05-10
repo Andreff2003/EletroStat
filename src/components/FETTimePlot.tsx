@@ -18,9 +18,13 @@ import type { FETTimePoint } from "@/hooks/useSimulatedData";
  */
 interface FETTimePlotProps {
   data: FETTimePoint[];
+  markers?: { time: number; label: string }[];
 }
 
-const FETTimePlot = ({ data }: FETTimePlotProps) => {
+const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
+  const lines = markers && markers.length > 0
+    ? markers
+    : [{ time: 10, label: "Cortisol injection" }];
   return (
     <div className="w-full h-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -51,18 +55,20 @@ const FETTimePlot = ({ data }: FETTimePlotProps) => {
             }}
             formatter={(value: number) => [`${value.toFixed(2)} µA`, "Id"]}
           />
-          {/* Vertical line at injection time */}
-          <ReferenceLine
-            x={10}
-            stroke="hsl(0 65% 50%)"
-            strokeDasharray="4 4"
-            label={{
-              value: "Cortisol injection",
-              fill: "hsl(0 65% 60%)",
-              fontSize: 11,
-              position: "top",
-            }}
-          />
+          {lines.map((m, i) => (
+            <ReferenceLine
+              key={`mk-${i}-${m.time}`}
+              x={m.time}
+              stroke="hsl(0 65% 50%)"
+              strokeDasharray="4 4"
+              label={{
+                value: m.label,
+                fill: "hsl(0 65% 60%)",
+                fontSize: 11,
+                position: "top",
+              }}
+            />
+          ))}
           <Line
             type="monotone"
             dataKey="id"
