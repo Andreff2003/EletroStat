@@ -222,6 +222,15 @@ const Index = () => {
           },
         ]);
       }
+      // Randles equivalent-circuit fit + Warburg slope
+      try {
+        const fit = fitRandles(eisData);
+        const wb = extractWarburgSlope(eisData);
+        setRandlesFit(fit);
+        setWarburg(wb);
+      } catch (err) {
+        console.warn("Randles fit failed", err);
+      }
     }
   }, [eisData, eisStatus, expectedEisPoints, dataSource, eis, ws]);
 
@@ -501,7 +510,7 @@ const Index = () => {
 
           <div className="rounded-lg border border-border bg-card p-3">
             <TabsContent value="nyquist" className="mt-0 h-[400px] md:h-[500px]">
-              <NyquistPlot data={eisData} />
+              <NyquistPlot data={eisData} fittedCurve={randlesFit?.fittedCurve} />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
               <BodePlot data={eisData} />
@@ -532,6 +541,7 @@ const Index = () => {
         </Tabs>
         <div className="space-y-4">
           <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
+          <CircuitFitResults fit={randlesFit} warburg={warburg} />
           <CalibrationPanel
             mode="eis"
             concentration={concentration}
