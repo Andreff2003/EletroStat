@@ -1,7 +1,6 @@
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
 // Levenberg-Marquardt least-squares from ml-levenberg-marquardt.
-// Default export is the LM function.
-import LM from "ml-levenberg-marquardt";
+import { levenbergMarquardt } from "ml-levenberg-marquardt";
 
 /**
  * Randles equivalent circuit fitting + Warburg slope extraction.
@@ -112,7 +111,7 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   const initial = [Math.log(Rs0), Math.log(Rct0), Math.log(Cdl0), Math.log(Aw0)];
   let parameterValues: number[];
   try {
-    const result = LM({ x: xs, y: ys }, modelFn, {
+    const result = levenbergMarquardt({ x: xs, y: ys }, modelFn, {
       initialValues: initial,
       damping: 1e-3,
       maxIterations: 200,
