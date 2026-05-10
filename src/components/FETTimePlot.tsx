@@ -33,13 +33,13 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
           <XAxis
             dataKey="time"
             type="number"
-            domain={[0, 40]}
+            domain={['auto', 'auto']}
             label={{ value: "Time (s)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"
           />
           <YAxis
-            domain={[14, 28]}
+            domain={['auto', 'auto']}
             label={{ value: "Id (µA)", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(215 15% 50%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"
