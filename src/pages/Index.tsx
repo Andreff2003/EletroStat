@@ -169,6 +169,30 @@ const Index = () => {
     saveSession(sessionMeasurements);
   }, [sessionMeasurements]);
 
+  // Log WebSocket connection status transitions
+  const lastWsStatusRef = useRef(ws.status);
+  useEffect(() => {
+    if (lastWsStatusRef.current === ws.status) return;
+    if (ws.status === "connected") {
+      logActivity("connection", "WebSocket connection established");
+    } else if (ws.status === "disconnected" && lastWsStatusRef.current === "connected") {
+      logActivity("connection", "WebSocket disconnected");
+    } else if (ws.status === "error") {
+      logActivity("connection", `WebSocket error${ws.errorMessage ? ": " + ws.errorMessage : ""}`);
+    }
+    lastWsStatusRef.current = ws.status;
+  }, [ws.status, ws.errorMessage]);
+
+  // Log concentration entry (debounced via ref so we don't spam on every keystroke commit)
+  const lastLoggedConcentrationRef = useRef<number | null>(null);
+  const handleChangeConcentration = (v: number) => {
+    setConcentration(v);
+    if (lastLoggedConcentrationRef.current !== v) {
+      lastLoggedConcentrationRef.current = v;
+      logActivity("calibration", `Concentration set to ${v} nM (${mode.toUpperCase()})`);
+    }
+  };
+
   // Pick the right data based on source
   const eisData = dataSource === "simulated" ? eis.data : ws.eisData;
   const fetBaselineData = dataSource === "simulated" ? fetTransfer.baseline : ws.fetBaseline;
