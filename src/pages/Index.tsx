@@ -28,6 +28,13 @@ import CalibrationPanel, {
   computeEISParams,
   computeFETVt,
 } from "@/components/CalibrationPanel";
+import CircuitFitResults from "@/components/CircuitFitResults";
+import {
+  fitRandles,
+  extractWarburgSlope,
+  type RandlesFitResult,
+  type WarburgResult,
+} from "@/utils/randlesFit";
 
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet">("eis");
@@ -39,6 +46,10 @@ const Index = () => {
   const [concentration, setConcentration] = useState<number>(0);
   const [eisCalibration, setEisCalibration] = useState<CalibrationPoint[]>([]);
   const [fetCalibration, setFetCalibration] = useState<CalibrationPoint[]>([]);
+
+  // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
+  const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
+  const [warburg, setWarburg] = useState<WarburgResult | null>(null);
 
   // Sweep status tracks completion separately from "is running"
   const [eisStatus, setEisStatus] = useState<SweepStatus>("idle");
@@ -82,6 +93,8 @@ const Index = () => {
   const handleStartEIS = () => {
     eisAutoStopFiredRef.current = false;
     setFrozenEis(null);
+    setRandlesFit(null);
+    setWarburg(null);
     setEisStatus("running");
     if (dataSource === "simulated") {
       eis.start(concentration, eisParams.points);
@@ -101,6 +114,8 @@ const Index = () => {
     eisAutoStopFiredRef.current = false;
     setFrozenEis(null);
     setEisStatus("idle");
+    setRandlesFit(null);
+    setWarburg(null);
     if (dataSource === "simulated") {
       eis.reset();
     } else {
