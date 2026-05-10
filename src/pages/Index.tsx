@@ -709,21 +709,44 @@ const Index = () => {
       {mode === "eis" && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <Tabs defaultValue="nyquist" className="w-full">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <TabsList className="bg-secondary">
               <TabsTrigger value="nyquist" className="font-mono text-xs">Nyquist Plot</TabsTrigger>
               <TabsTrigger value="bode" className="font-mono text-xs">Bode Plot</TabsTrigger>
             </TabsList>
-            <StatusIndicator
-              isRunning={isEISRunning && eisData.length > 0}
-              label={isEISRunning && eisData.length > 0 ? "Sweeping..." : "Idle"}
-              dataPoints={eisData.length}
-            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant={overlayMode ? "default" : "outline"}
+                onClick={() => setOverlayMode((v) => !v)}
+                className="font-mono text-xs"
+              >
+                Overlay Mode {overlayMode ? "ON" : "OFF"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setEisOverlays([])}
+                disabled={eisOverlays.length === 0}
+                className="font-mono text-xs"
+              >
+                Clear All ({eisOverlays.length})
+              </Button>
+              <StatusIndicator
+                isRunning={isEISRunning && eisData.length > 0}
+                label={isEISRunning && eisData.length > 0 ? "Sweeping..." : "Idle"}
+                dataPoints={eisData.length}
+              />
+            </div>
           </div>
 
           <div className="rounded-lg border border-border bg-card p-3">
             <TabsContent value="nyquist" className="mt-0 h-[400px] md:h-[500px]">
-              <NyquistPlot data={eisData} fittedCurve={randlesFit?.fittedCurve} />
+              <NyquistPlot
+                data={eisData}
+                fittedCurve={randlesFit?.fittedCurve}
+                overlays={eisOverlays}
+              />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
               <BodePlot data={eisData} />
@@ -788,17 +811,33 @@ const Index = () => {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Time Response — Id vs Time</h2>
-              <StatusIndicator
-                isRunning={isFETRunning && fetTimeDataArr.length > 0}
-                label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
-                dataPoints={fetTimeDataArr.length}
-              />
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={handleAddFetMarker}
+                  disabled={!isFETRunning && fetTimeDataArr.length === 0}
+                  className="font-mono text-xs"
+                >
+                  ＋ Add Sample
+                </Button>
+                <StatusIndicator
+                  isRunning={isFETRunning && fetTimeDataArr.length > 0}
+                  label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
+                  dataPoints={fetTimeDataArr.length}
+                />
+              </div>
             </div>
             <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTimePlot data={fetTimeDataArr} />
+              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} />
             </div>
+            {fetMarkers.length > 0 && (
+              <div className="mt-1 text-[11px] font-mono text-muted-foreground">
+                Markers: {fetMarkers.map((m) => `t=${m.time.toFixed(1)}s`).join(" · ")}
+              </div>
+            )}
           </div>
 
           <SweepProgress
