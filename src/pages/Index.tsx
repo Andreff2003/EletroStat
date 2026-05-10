@@ -60,6 +60,7 @@ import {
   type StoredEISMeasurement,
   type StoredFETMeasurement,
 } from "@/utils/sessionStore";
+import { logActivity, clearActivityLog } from "@/utils/activityLog";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
 // 8-color palette for overlays
@@ -196,6 +197,10 @@ const Index = () => {
     setRandlesFit(null);
     setWarburg(null);
     setEisStatus("running");
+    logActivity(
+      "measurement",
+      `EIS measurement started — concentration=${concentration} nM, source=${dataSource}, points=${eisParams.points}`,
+    );
     if (dataSource === "simulated") {
       eis.start(concentration, eisParams.points);
     } else {
@@ -230,6 +235,10 @@ const Index = () => {
     setFrozenFetAnalyte(null);
     setFetMarkers([]);
     setFetStatus("running");
+    logActivity(
+      "measurement",
+      `BioFET measurement started — concentration=${concentration} nM, source=${dataSource}`,
+    );
     if (dataSource === "simulated") {
       fetTransfer.start(
         concentration,
@@ -330,6 +339,13 @@ const Index = () => {
         const wb = extractWarburgSlope(eisData);
         setRandlesFit(fit);
         setWarburg(wb);
+        const rctVal = fit?.Rct ?? params?.rct;
+        logActivity(
+          "measurement",
+          `EIS completed — concentration=${concentration} nM, Rct=${
+            rctVal != null ? rctVal.toFixed(1) : "n/a"
+          } Ω, points=${eisData.length}`,
+        );
         // Push to overlay (FIFO, max 8) when overlay mode is on
         if (overlayMode) {
           setEisOverlays((prev) => {
@@ -391,6 +407,13 @@ const Index = () => {
       setFrozenFetAnalyte(fetAnalyteData);
       setFetStatus("complete");
       toast.success(`Sweep complete — ${fetReceivedTotal} points collected`);
+      const vtPreview = computeFETVt(fetAnalyteData);
+      logActivity(
+        "measurement",
+        `BioFET completed — concentration=${concentration} nM, Vt=${
+          vtPreview != null ? vtPreview.toFixed(3) : "n/a"
+        } V`,
+      );
       // Add calibration point — use analyte curve as the "sample" reading
       const vt = computeFETVt(fetAnalyteData);
       if (vt != null) {
@@ -460,12 +483,15 @@ const Index = () => {
     const t = last ? last.time : 0;
     const label = `Sample added — t = ${t.toFixed(1)} s`;
     setFetMarkers((prev) => [...prev, { time: t, label }]);
+    logActivity("sample", `Sample added at t=${t.toFixed(1)} s (concentration=${concentration} nM)`);
     toast.success(label);
   };
 
   // Clear the entire stored session
   const handleClearSession = () => {
     clearSession();
+    clearActivityLog();
+    logActivity("system", "Session cleared by user");
     setSessionMeasurements([]);
     setEisCalibration([]);
     setFetCalibration([]);
