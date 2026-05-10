@@ -831,7 +831,7 @@ const Index = () => {
           <CalibrationPanel
             mode="eis"
             concentration={concentration}
-            onChangeConcentration={setConcentration}
+            onChangeConcentration={handleChangeConcentration}
             points={eisCalibration}
             onClear={() => setEisCalibration([])}
             onExport={exportCalibrationCSV}
@@ -922,7 +922,7 @@ const Index = () => {
           <CalibrationPanel
             mode="fet"
             concentration={concentration}
-            onChangeConcentration={setConcentration}
+            onChangeConcentration={handleChangeConcentration}
             points={fetCalibration}
             onClear={() => setFetCalibration([])}
             onExport={exportCalibrationCSV}
