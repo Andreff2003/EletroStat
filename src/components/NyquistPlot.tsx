@@ -1,6 +1,6 @@
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
+  Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
@@ -17,11 +17,13 @@ import type { EISDataPoint } from "@/hooks/useSimulatedData";
 interface NyquistPlotProps {
   data: EISDataPoint[];
   fittedCurve?: { zReal: number; zImag: number }[];
+  overlays?: { label: string; color: string; data: EISDataPoint[] }[];
 }
 
-const NyquistPlot = ({ data, fittedCurve }: NyquistPlotProps) => {
+const NyquistPlot = ({ data, fittedCurve, overlays }: NyquistPlotProps) => {
   const plotData = data.map(d => ({ x: d.zReal, y: d.zImag }));
   const fitData = (fittedCurve ?? []).map(d => ({ x: d.zReal, y: d.zImag }));
+  const ovs = overlays ?? [];
 
   return (
     <div className="w-full h-full">
@@ -66,7 +68,21 @@ const NyquistPlot = ({ data, fittedCurve }: NyquistPlotProps) => {
             r={3}
             line={{ stroke: "hsl(160 70% 45%)", strokeWidth: 2 }}
             lineType="joint"
+            name="Current"
           />
+          {ovs.map((o, i) => (
+            <Scatter
+              key={`ov-${i}-${o.label}`}
+              data={o.data.map(d => ({ x: d.zReal, y: d.zImag }))}
+              fill={o.color}
+              stroke={o.color}
+              r={2}
+              line={{ stroke: o.color, strokeWidth: 2 }}
+              lineType="joint"
+              isAnimationActive={false}
+              name={o.label}
+            />
+          ))}
           {fitData.length > 0 && (
             <Scatter
               data={fitData}
@@ -78,6 +94,9 @@ const NyquistPlot = ({ data, fittedCurve }: NyquistPlotProps) => {
               isAnimationActive={false}
               name="Randles fit"
             />
+          )}
+          {ovs.length > 0 && (
+            <Legend wrapperStyle={{ fontSize: 11, fontFamily: "monospace" }} />
           )}
         </ScatterChart>
       </ResponsiveContainer>
