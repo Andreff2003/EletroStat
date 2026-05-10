@@ -228,6 +228,7 @@ const Index = () => {
     fetAutoStopFiredRef.current = false;
     setFrozenFetBaseline(null);
     setFrozenFetAnalyte(null);
+    setFetMarkers([]);
     setFetStatus("running");
     if (dataSource === "simulated") {
       fetTransfer.start(
@@ -254,6 +255,7 @@ const Index = () => {
     setFrozenFetBaseline(null);
     setFrozenFetAnalyte(null);
     setFetStatus("idle");
+    setFetMarkers([]);
     if (dataSource === "simulated") {
       fetTransfer.reset();
       fetTime.reset();
@@ -328,6 +330,42 @@ const Index = () => {
         const wb = extractWarburgSlope(eisData);
         setRandlesFit(fit);
         setWarburg(wb);
+        // Push to overlay (FIFO, max 8) when overlay mode is on
+        if (overlayMode) {
+          setEisOverlays((prev) => {
+            const label =
+              concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+            const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+            const next = [
+              ...prev,
+              { id: newId(), label, color, data: eisData.slice() },
+            ];
+            return next.length > 8 ? next.slice(next.length - 8) : next;
+          });
+        }
+        // Persist measurement to session
+        const stored: StoredEISMeasurement = {
+          id: newId(),
+          mode: "eis",
+          timestamp: Date.now(),
+          concentration,
+          params: {
+            freqMin: eisParams.freqMin,
+            freqMax: eisParams.freqMax,
+            points: eisParams.points,
+            amplitude: eisParams.amplitude,
+          },
+          data: eisData.slice(),
+          extracted: {
+            Rs: fit?.Rs,
+            Rct: fit?.Rct ?? params?.rct,
+            Cdl: fit?.Cdl,
+            Aw: fit?.Aw,
+            warburgSlope: wb.ok ? wb.slope : undefined,
+            fitErrorPct: fit?.fitErrorPct,
+          },
+        };
+        setSessionMeasurements((prev) => [...prev, stored]);
       } catch (err) {
         console.warn("Randles fit failed", err);
       }
@@ -369,6 +407,25 @@ const Index = () => {
           },
         ]);
       }
+      // Persist FET measurement
+      const storedFet: StoredFETMeasurement = {
+        id: newId(),
+        mode: "fet",
+        timestamp: Date.now(),
+        concentration,
+        params: {
+          vgMin: fetParams.vgMin,
+          vgMax: fetParams.vgMax,
+          vgStep: fetParams.vgStep,
+          intervalMs: fetParams.intervalMs,
+        },
+        baseline: fetBaselineData.slice(),
+        analyte: fetAnalyteData.slice(),
+        timeData: fetTimeDataArr.slice(),
+        markers: fetMarkers.slice(),
+        extracted: { Vt: vt ?? undefined },
+      };
+      setSessionMeasurements((prev) => [...prev, storedFet]);
     }
   }, [
     fetBaselineData,
