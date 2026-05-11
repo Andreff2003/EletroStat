@@ -638,7 +638,15 @@ const Index = () => {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => exportSessionCSV(sessionMeasurements)}
+            onClick={() =>
+              exportSessionCSV(sessionMeasurements, {
+                source: dataSource,
+                calibration: [
+                  ...eisCalibration.map((p) => ({ ...p, mode: "eis" as const })),
+                  ...fetCalibration.map((p) => ({ ...p, mode: "fet" as const })),
+                ],
+              })
+            }
             disabled={sessionMeasurements.length === 0}
             className="font-mono text-xs"
           >
@@ -760,7 +768,7 @@ const Index = () => {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => exportEISData(eisData)}
+                onClick={() => exportEISData(eisData, dataSource)}
                 disabled={eisData.length === 0}
                 className="font-mono text-xs"
               >
@@ -796,8 +804,8 @@ const Index = () => {
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  exportFETTransferData(fetBaselineData, fetAnalyteData);
-                  if (fetTimeDataArr.length > 0) exportFETTimeData(fetTimeDataArr);
+                  exportFETTransferData(fetBaselineData, fetAnalyteData, dataSource);
+                  if (fetTimeDataArr.length > 0) exportFETTimeData(fetTimeDataArr, dataSource);
                 }}
                 disabled={fetBaselineData.length === 0 && fetTimeDataArr.length === 0}
                 className="font-mono text-xs"
