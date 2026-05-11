@@ -876,12 +876,24 @@ const Index = () => {
 
           {eisData.length > 0 && (
             <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
-              {[
-                { label: "Rs (Solution)", value: `${eisData[0]?.zReal.toFixed(0)} Ω` },
-                { label: "Rct (Charge Transfer)", value: dataSource === "simulated" ? "~500 Ω" : "—" },
-                { label: "Freq Range", value: dataSource === "simulated" ? "0.1 Hz – 100 kHz" : `${eisData[0]?.frequency.toFixed(1)} – ${eisData[eisData.length - 1]?.frequency.toFixed(1)} Hz` },
-                { label: "Points", value: `${eisData.length}` },
-              ].map((item) => (
+              {(() => {
+                const rs = randlesFit?.Rs ?? eisData[0]?.zReal ?? null;
+                const rct = randlesFit?.Rct ?? null;
+                const fLo = eisData[0]?.frequency;
+                const fHi = eisData[eisData.length - 1]?.frequency;
+                return [
+                  { label: "Rs (Solution)", value: rs != null ? `${rs.toFixed(1)} Ω` : "—" },
+                  { label: "Rct (Charge Transfer)", value: rct != null ? `${rct.toFixed(1)} Ω` : "—" },
+                  {
+                    label: "Freq Range",
+                    value:
+                      fLo != null && fHi != null
+                        ? `${fLo.toFixed(1)} – ${fHi.toFixed(1)} Hz`
+                        : "—",
+                  },
+                  { label: "Points", value: `${eisData.length}` },
+                ];
+              })().map((item) => (
                 <div key={item.label} className="bg-secondary rounded-md p-2">
                   <div className="text-[10px] text-muted-foreground font-mono uppercase">{item.label}</div>
                   <div className="text-sm font-mono text-foreground">{item.value}</div>
@@ -968,12 +980,32 @@ const Index = () => {
 
           {fetBaselineData.length > 0 && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {[
-                { label: "Vth (Baseline)", value: dataSource === "simulated" ? "0.30 V" : "—" },
-                { label: "Vth Shift (Cortisol)", value: dataSource === "simulated" ? "+0.15 V" : "—" },
-                { label: "Baseline Id", value: dataSource === "simulated" ? "~25 µA" : "—" },
-                { label: "Signal Drop", value: dataSource === "simulated" ? "~8 µA" : "—" },
-              ].map((item) => (
+              {(() => {
+                const vtBase = computeFETVt(fetBaselineData);
+                const vtShift =
+                  liveFetVt != null && vtBase != null ? liveFetVt - vtBase : null;
+                const baselineId =
+                  fetBaselineData.length > 0
+                    ? Math.min(...fetBaselineData.map((p) => p.id))
+                    : null;
+                const signalDrop =
+                  fetAnalyteData.length > 0
+                    ? Math.max(...fetAnalyteData.map((p) => p.id)) -
+                      Math.min(...fetAnalyteData.map((p) => p.id))
+                    : null;
+                return [
+                  { label: "Vth (Baseline)", value: vtBase != null ? `${vtBase.toFixed(3)} V` : "—" },
+                  {
+                    label: "Vth Shift",
+                    value:
+                      vtShift != null
+                        ? `${vtShift >= 0 ? "+" : ""}${vtShift.toFixed(3)} V`
+                        : "—",
+                  },
+                  { label: "Baseline Id", value: baselineId != null ? `${baselineId.toFixed(1)} µA` : "—" },
+                  { label: "Signal Drop", value: signalDrop != null ? `${signalDrop.toFixed(1)} µA` : "—" },
+                ];
+              })().map((item) => (
                 <div key={item.label} className="bg-secondary rounded-md p-2">
                   <div className="text-[10px] text-muted-foreground font-mono uppercase">{item.label}</div>
                   <div className="text-sm font-mono text-foreground">{item.value}</div>
