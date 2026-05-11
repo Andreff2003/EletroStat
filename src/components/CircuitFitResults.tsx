@@ -65,13 +65,20 @@ const CircuitFitResults = ({ fit, warburg }: Props) => {
       <div className="border-t border-border pt-2 space-y-1">
         <div className="text-[10px] text-muted-foreground font-mono uppercase">Warburg (low-freq tail)</div>
         {warburg && warburg.ok ? (
-          <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-muted-foreground">Slope</span>
-            <span className="text-foreground">
-              {fmt(warburg.slope!, 2)}
-              <span className="text-muted-foreground ml-2">(ideal 1.00)</span>
-            </span>
-          </div>
+          <>
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="text-muted-foreground">Slope</span>
+              <span className="text-foreground">
+                {fmt(warburg.slope!, 2)}
+                <span className="text-muted-foreground ml-2">(ideal 1.00)</span>
+              </span>
+            </div>
+            {warburg.warburgWarning && (
+              <div className="text-[10px] font-mono text-yellow-500 leading-snug pt-1">
+                ⚠ {warburg.warburgWarning}
+              </div>
+            )}
+          </>
         ) : (
           <div className="text-xs font-mono text-muted-foreground">
             Insufficient low-frequency data
