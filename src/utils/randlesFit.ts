@@ -25,6 +25,7 @@ export interface WarburgResult {
   slope?: number;   // ideal = 1.0
   Aw?: number;      // Ω/√s, derived from slope * √(2)·something — see below
   nPoints?: number;
+  warburgWarning?: string;
 }
 
 /** Compute model Z for a given ω and parameters. Returns [zRe, -zIm] (so zIm is the sign-flipped value used in plots). */
@@ -69,6 +70,21 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   const maxRe = Math.max(...zReals);
   const range = Math.max(maxRe - minRe, 1);
 
+  // If fewer than 5 unique frequency values, skip LM and return a simple geometric estimate.
+  const uniqueFreqs = new Set(data.map(d => d.frequency));
+  if (uniqueFreqs.size < 5) {
+    const Rs = Math.min(...zReals);
+    const Rct = Math.max(...zReals) - Rs;
+    return {
+      Rs,
+      Rct,
+      Cdl: 1e-6,
+      Aw: 10,
+      fitErrorPct: -1,
+      fittedCurve: [],
+    };
+  }
+
   // f at peak zImag
   let peakIdx = 0;
   for (let i = 0; i < data.length; i++) {
@@ -110,6 +126,7 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
 
   const initial = [Math.log(Rs0), Math.log(Rct0), Math.log(Cdl0), Math.log(Aw0)];
   let parameterValues: number[];
+  let lmConverged = true;
   try {
     const result = levenbergMarquardt({ x: xs, y: ys }, modelFn, {
       initialValues: initial,
@@ -117,10 +134,16 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
       maxIterations: 200,
       errorTolerance: 1e-8,
     });
-    parameterValues = result.parameterValues;
+    if (!result || !result.parameterValues || result.parameterValues.length < 4) {
+      lmConverged = false;
+      parameterValues = initial;
+    } else {
+      parameterValues = result.parameterValues;
+    }
   } catch (err) {
     console.warn("LM fit failed, falling back to initial guess", err);
     parameterValues = initial;
+    lmConverged = false;
   }
 
   const fitted: RandlesParams = {
@@ -140,7 +163,7 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   }
   const rmse = Math.sqrt(sse / (2 * data.length));
   const meanZ = data.reduce((s, d) => s + Math.sqrt(d.zReal * d.zReal + d.zImag * d.zImag), 0) / data.length;
-  const fitErrorPct = (rmse / Math.max(meanZ, 1e-9)) * 100;
+  const fitErrorPct = lmConverged ? (rmse / Math.max(meanZ, 1e-9)) * 100 : -1;
 
   // Build fitted curve sampled at the same frequencies (sorted by freq desc to draw nicely)
   const fittedCurve = data
@@ -151,7 +174,7 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
       return { zReal: m.zReal, zImag: m.zImag, frequency: d.frequency };
     });
 
-  return { ...fitted, fitErrorPct, fittedCurve };
+  return { ...fitted, fitErrorPct, fittedCurve: lmConverged ? fittedCurve : [] };
 }
 
 /**
@@ -184,9 +207,15 @@ export function extractWarburgSlope(data: EISDataPoint[]): WarburgResult {
   const set = new Set<EISDataPoint>();
   lowFreq.forEach(p => set.add(p));
   localOK.forEach(p => set.add(p));
-  const region = Array.from(set);
+  let region = Array.from(set);
+  let usedFallback = false;
 
-  if (region.length < 3) return { ok: false, nPoints: region.length };
+  if (region.length < 3) {
+    // Fallback: 5 lowest-frequency points regardless of slope
+    region = sorted.slice(0, Math.min(5, sorted.length));
+    usedFallback = true;
+    if (region.length < 3) return { ok: false, nPoints: region.length };
+  }
 
   // Linear regression: zImag = m * zReal + b
   const n = region.length;
@@ -205,5 +234,14 @@ export function extractWarburgSlope(data: EISDataPoint[]): WarburgResult {
   const omega = 2 * Math.PI * lowest.frequency;
   const Aw = lowest.zImag * Math.sqrt(Math.max(omega, 1e-9));
 
-  return { ok: true, slope, Aw, nPoints: n };
+  let warburgWarning: string | undefined;
+  if (usedFallback) {
+    warburgWarning =
+      "Based on lowest-frequency points (strict Warburg region not detected)";
+  } else if (slope < 0.5 || slope > 2.0) {
+    warburgWarning =
+      "Slope deviates from ideal Warburg (1.0) — diffusion may not be rate-limiting";
+  }
+
+  return { ok: true, slope, Aw, nPoints: n, warburgWarning };
 }
