@@ -31,6 +31,7 @@ import {
   exportFETTransferData,
   exportFETTimeData,
   exportSessionCSV,
+  exportCalibrationCSV as exportCalibrationTSV,
 } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
@@ -588,23 +589,11 @@ const Index = () => {
     toast("Session cleared");
   };
 
-  // Export calibration table as CSV
+  // Export calibration table as TSV
   const exportCalibrationCSV = () => {
     const list = mode === "eis" ? eisCalibration : fetCalibration;
     if (list.length === 0) return;
-    const unit = mode === "eis" ? "DeltaRct (Ohms)" : "DeltaVt (mV)";
-    const header = `Concentration (nM),${unit},Timestamp\n`;
-    const rows = [...list]
-      .sort((a, b) => a.concentration - b.concentration)
-      .map((p) => `${p.concentration},${p.signal.toFixed(3)},${new Date(p.timestamp).toISOString()}`)
-      .join("\n");
-    const blob = new Blob([header + rows], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `calibration_${mode}_${Date.now()}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    exportCalibrationTSV(mode, list, dataSource);
   };
 
   const handleChangeSource = (source: "simulated" | "live") => {
@@ -649,7 +638,15 @@ const Index = () => {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => exportSessionCSV(sessionMeasurements)}
+            onClick={() =>
+              exportSessionCSV(sessionMeasurements, {
+                source: dataSource,
+                calibration: [
+                  ...eisCalibration.map((p) => ({ ...p, mode: "eis" as const })),
+                  ...fetCalibration.map((p) => ({ ...p, mode: "fet" as const })),
+                ],
+              })
+            }
             disabled={sessionMeasurements.length === 0}
             className="font-mono text-xs"
           >
@@ -771,7 +768,7 @@ const Index = () => {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => exportEISData(eisData)}
+                onClick={() => exportEISData(eisData, dataSource)}
                 disabled={eisData.length === 0}
                 className="font-mono text-xs"
               >
@@ -807,8 +804,8 @@ const Index = () => {
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  exportFETTransferData(fetBaselineData, fetAnalyteData);
-                  if (fetTimeDataArr.length > 0) exportFETTimeData(fetTimeDataArr);
+                  exportFETTransferData(fetBaselineData, fetAnalyteData, dataSource);
+                  if (fetTimeDataArr.length > 0) exportFETTimeData(fetTimeDataArr, dataSource);
                 }}
                 disabled={fetBaselineData.length === 0 && fetTimeDataArr.length === 0}
                 className="font-mono text-xs"
