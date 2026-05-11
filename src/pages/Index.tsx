@@ -215,6 +215,153 @@ const Index = () => {
   const eisAutoStopFiredRef = useRef(false);
   const fetAutoStopFiredRef = useRef(false);
 
+  // Inactivity timers for completion when expected point count is wrong
+  const eisInactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetInactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearEisInactivity = () => {
+    if (eisInactivityRef.current) {
+      clearTimeout(eisInactivityRef.current);
+      eisInactivityRef.current = null;
+    }
+  };
+  const clearFetInactivity = () => {
+    if (fetInactivityRef.current) {
+      clearTimeout(fetInactivityRef.current);
+      fetInactivityRef.current = null;
+    }
+  };
+
+  // Shared EIS completion logic — used by both count-based and inactivity-based triggers
+  const completeEISSweep = (finalData: typeof eisData) => {
+    if (eisAutoStopFiredRef.current) return;
+    eisAutoStopFiredRef.current = true;
+    clearEisInactivity();
+    if (dataSource === "simulated") {
+      eis.stop();
+    } else {
+      ws.sendCommand("stop");
+    }
+    setFrozenEis(finalData);
+    setEisStatus("complete");
+    toast.success(`Sweep complete — ${finalData.length} points collected`);
+    const params = computeEISParams(finalData);
+    if (params) {
+      const baseline = eisCalibration.find((p) => p.concentration === 0);
+      const deltaRct =
+        concentration === 0 ? 0 : params.rct - (baseline?.raw ?? params.rct);
+      setEisCalibration((prev) => [
+        ...prev.filter((p) => p.concentration !== concentration),
+        { concentration, signal: deltaRct, raw: params.rct, timestamp: Date.now() },
+      ]);
+    }
+    try {
+      const fit = fitRandles(finalData);
+      const wb = extractWarburgSlope(finalData);
+      setRandlesFit(fit);
+      setWarburg(wb);
+      const rctVal = fit?.Rct ?? params?.rct;
+      logActivity(
+        "measurement",
+        `EIS completed — concentration=${concentration} nM, Rct=${
+          rctVal != null ? rctVal.toFixed(1) : "n/a"
+        } Ω, points=${finalData.length}`,
+      );
+      if (overlayMode) {
+        setEisOverlays((prev) => {
+          const label =
+            concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+          const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+          const next = [
+            ...prev,
+            { id: newId(), label, color, data: finalData.slice() },
+          ];
+          return next.length > 8 ? next.slice(next.length - 8) : next;
+        });
+      }
+      const stored: StoredEISMeasurement = {
+        id: newId(),
+        mode: "eis",
+        timestamp: Date.now(),
+        concentration,
+        params: {
+          freqMin: eisParams.freqMin,
+          freqMax: eisParams.freqMax,
+          points: eisParams.points,
+          amplitude: eisParams.amplitude,
+        },
+        data: finalData.slice(),
+        extracted: {
+          Rs: fit?.Rs,
+          Rct: fit?.Rct ?? params?.rct,
+          Cdl: fit?.Cdl,
+          Aw: fit?.Aw,
+          warburgSlope: wb.ok ? wb.slope : undefined,
+          fitErrorPct: fit?.fitErrorPct,
+        },
+      };
+      setSessionMeasurements((prev) => [...prev, stored]);
+    } catch (err) {
+      console.warn("Randles fit failed", err);
+    }
+  };
+
+  // Shared FET completion logic
+  const completeFETSweep = (
+    finalBaseline: typeof fetBaselineData,
+    finalAnalyte: typeof fetAnalyteData,
+    finalTime: typeof fetTimeDataArr,
+  ) => {
+    if (fetAutoStopFiredRef.current) return;
+    fetAutoStopFiredRef.current = true;
+    clearFetInactivity();
+    if (dataSource === "simulated") {
+      fetTransfer.stop();
+      fetTime.stop();
+    } else {
+      ws.sendCommand("stop");
+    }
+    setFrozenFetBaseline(finalBaseline);
+    setFrozenFetAnalyte(finalAnalyte);
+    setFetStatus("complete");
+    const total = finalBaseline.length + finalAnalyte.length + finalTime.length;
+    toast.success(`Sweep complete — ${total} points collected`);
+    const vt = computeFETVt(finalAnalyte);
+    logActivity(
+      "measurement",
+      `BioFET completed — concentration=${concentration} nM, Vt=${
+        vt != null ? vt.toFixed(3) : "n/a"
+      } V`,
+    );
+    if (vt != null) {
+      const baseline = fetCalibration.find((p) => p.concentration === 0);
+      const deltaVt =
+        concentration === 0 ? 0 : (vt - (baseline?.raw ?? vt)) * 1000;
+      setFetCalibration((prev) => [
+        ...prev.filter((p) => p.concentration !== concentration),
+        { concentration, signal: deltaVt, raw: vt, timestamp: Date.now() },
+      ]);
+    }
+    const storedFet: StoredFETMeasurement = {
+      id: newId(),
+      mode: "fet",
+      timestamp: Date.now(),
+      concentration,
+      params: {
+        vgMin: fetParams.vgMin,
+        vgMax: fetParams.vgMax,
+        vgStep: fetParams.vgStep,
+        intervalMs: fetParams.intervalMs,
+      },
+      baseline: finalBaseline.slice(),
+      analyte: finalAnalyte.slice(),
+      timeData: finalTime.slice(),
+      markers: fetMarkers.slice(),
+      extracted: { Vt: vt ?? undefined },
+    };
+    setSessionMeasurements((prev) => [...prev, storedFet]);
+  };
+
   const handleStartEIS = () => {
     eisAutoStopFiredRef.current = false;
     setFrozenEis(null);
@@ -241,6 +388,7 @@ const Index = () => {
 
   const handleResetEIS = () => {
     eisAutoStopFiredRef.current = false;
+    clearEisInactivity();
     setFrozenEis(null);
     setEisStatus("idle");
     setRandlesFit(null);
@@ -285,6 +433,7 @@ const Index = () => {
 
   const handleResetFET = () => {
     fetAutoStopFiredRef.current = false;
+    clearFetInactivity();
     setFrozenFetBaseline(null);
     setFrozenFetAnalyte(null);
     setFetStatus("idle");
@@ -302,6 +451,7 @@ const Index = () => {
   const handleStopEIS = () => {
     if (eisStatus !== "running") return;
     eisAutoStopFiredRef.current = true;
+    clearEisInactivity();
     if (dataSource === "simulated") {
       eis.stop();
     } else {
@@ -315,6 +465,7 @@ const Index = () => {
   const handleStopFET = () => {
     if (fetStatus !== "running") return;
     fetAutoStopFiredRef.current = true;
+    clearFetInactivity();
     if (dataSource === "simulated") {
       fetTransfer.stop();
       fetTime.stop();
@@ -332,85 +483,25 @@ const Index = () => {
     if (eisStatus !== "running") return;
     if (eisAutoStopFiredRef.current) return;
     if (eisData.length >= expectedEisPoints && expectedEisPoints > 0) {
-      eisAutoStopFiredRef.current = true;
-      if (dataSource === "simulated") {
-        eis.stop();
-      } else {
-        ws.sendCommand("stop");
-      }
-      setFrozenEis(eisData);
-      setEisStatus("complete");
-      toast.success(`Sweep complete — ${eisData.length} points collected`);
-      // Add calibration point
-      const params = computeEISParams(eisData);
-      if (params) {
-        const baseline = eisCalibration.find((p) => p.concentration === 0);
-        const deltaRct =
-          concentration === 0 ? 0 : params.rct - (baseline?.raw ?? params.rct);
-        setEisCalibration((prev) => [
-          ...prev.filter((p) => p.concentration !== concentration),
-          {
-            concentration,
-            signal: deltaRct,
-            raw: params.rct,
-            timestamp: Date.now(),
-          },
-        ]);
-      }
-      // Randles equivalent-circuit fit + Warburg slope
-      try {
-        const fit = fitRandles(eisData);
-        const wb = extractWarburgSlope(eisData);
-        setRandlesFit(fit);
-        setWarburg(wb);
-        const rctVal = fit?.Rct ?? params?.rct;
-        logActivity(
-          "measurement",
-          `EIS completed — concentration=${concentration} nM, Rct=${
-            rctVal != null ? rctVal.toFixed(1) : "n/a"
-          } Ω, points=${eisData.length}`,
-        );
-        // Push to overlay (FIFO, max 8) when overlay mode is on
-        if (overlayMode) {
-          setEisOverlays((prev) => {
-            const label =
-              concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
-            const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
-            const next = [
-              ...prev,
-              { id: newId(), label, color, data: eisData.slice() },
-            ];
-            return next.length > 8 ? next.slice(next.length - 8) : next;
-          });
-        }
-        // Persist measurement to session
-        const stored: StoredEISMeasurement = {
-          id: newId(),
-          mode: "eis",
-          timestamp: Date.now(),
-          concentration,
-          params: {
-            freqMin: eisParams.freqMin,
-            freqMax: eisParams.freqMax,
-            points: eisParams.points,
-            amplitude: eisParams.amplitude,
-          },
-          data: eisData.slice(),
-          extracted: {
-            Rs: fit?.Rs,
-            Rct: fit?.Rct ?? params?.rct,
-            Cdl: fit?.Cdl,
-            Aw: fit?.Aw,
-            warburgSlope: wb.ok ? wb.slope : undefined,
-            fitErrorPct: fit?.fitErrorPct,
-          },
-        };
-        setSessionMeasurements((prev) => [...prev, stored]);
-      } catch (err) {
-        console.warn("Randles fit failed", err);
-      }
+      completeEISSweep(eisData);
     }
   }, [eisData, eisStatus, expectedEisPoints, dataSource, eis, ws]);
+
+  // Inactivity-based completion — EIS (fires after 2s of no new points, once >=10 collected)
+  useEffect(() => {
+    if (eisStatus !== "running") {
+      clearEisInactivity();
+      return;
+    }
+    if (eisData.length < 10) return;
+    if (eisAutoStopFiredRef.current) return;
+    clearEisInactivity();
+    const snapshot = eisData;
+    eisInactivityRef.current = setTimeout(() => {
+      completeEISSweep(snapshot);
+    }, 2000);
+    return () => clearEisInactivity();
+  }, [eisData, eisStatus]);
 
   // Auto-completion detection — BioFET (all 3 phases done)
   useEffect(() => {
@@ -420,59 +511,7 @@ const Index = () => {
     const analyteDone = fetAnalyteData.length >= expectedFetTransferPoints;
     const timeDone = fetTimeDataArr.length >= expectedFetTimePoints;
     if (baselineDone && analyteDone && timeDone) {
-      fetAutoStopFiredRef.current = true;
-      if (dataSource === "simulated") {
-        fetTransfer.stop();
-        fetTime.stop();
-      } else {
-        ws.sendCommand("stop");
-      }
-      setFrozenFetBaseline(fetBaselineData);
-      setFrozenFetAnalyte(fetAnalyteData);
-      setFetStatus("complete");
-      toast.success(`Sweep complete — ${fetReceivedTotal} points collected`);
-      const vtPreview = computeFETVt(fetAnalyteData);
-      logActivity(
-        "measurement",
-        `BioFET completed — concentration=${concentration} nM, Vt=${
-          vtPreview != null ? vtPreview.toFixed(3) : "n/a"
-        } V`,
-      );
-      // Add calibration point — use analyte curve as the "sample" reading
-      const vt = computeFETVt(fetAnalyteData);
-      if (vt != null) {
-        const baseline = fetCalibration.find((p) => p.concentration === 0);
-        const deltaVt =
-          concentration === 0 ? 0 : (vt - (baseline?.raw ?? vt)) * 1000;
-        setFetCalibration((prev) => [
-          ...prev.filter((p) => p.concentration !== concentration),
-          {
-            concentration,
-            signal: deltaVt,
-            raw: vt,
-            timestamp: Date.now(),
-          },
-        ]);
-      }
-      // Persist FET measurement
-      const storedFet: StoredFETMeasurement = {
-        id: newId(),
-        mode: "fet",
-        timestamp: Date.now(),
-        concentration,
-        params: {
-          vgMin: fetParams.vgMin,
-          vgMax: fetParams.vgMax,
-          vgStep: fetParams.vgStep,
-          intervalMs: fetParams.intervalMs,
-        },
-        baseline: fetBaselineData.slice(),
-        analyte: fetAnalyteData.slice(),
-        timeData: fetTimeDataArr.slice(),
-        markers: fetMarkers.slice(),
-        extracted: { Vt: vt ?? undefined },
-      };
-      setSessionMeasurements((prev) => [...prev, storedFet]);
+      completeFETSweep(fetBaselineData, fetAnalyteData, fetTimeDataArr);
     }
   }, [
     fetBaselineData,
@@ -487,6 +526,32 @@ const Index = () => {
     fetTime,
     ws,
   ]);
+
+  // Inactivity-based completion — BioFET (2s after fetTimeDataArr stops growing, once >=5)
+  useEffect(() => {
+    if (fetStatus !== "running") {
+      clearFetInactivity();
+      return;
+    }
+    if (fetTimeDataArr.length < 5) return;
+    if (fetAutoStopFiredRef.current) return;
+    clearFetInactivity();
+    const b = fetBaselineData;
+    const a = fetAnalyteData;
+    const t = fetTimeDataArr;
+    fetInactivityRef.current = setTimeout(() => {
+      completeFETSweep(b, a, t);
+    }, 2000);
+    return () => clearFetInactivity();
+  }, [fetBaselineData, fetAnalyteData, fetTimeDataArr, fetStatus]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      clearEisInactivity();
+      clearFetInactivity();
+    };
+  }, []);
 
   // "Running" now means status === running, not just connected/animating
   const isEISRunning = eisStatus === "running";
