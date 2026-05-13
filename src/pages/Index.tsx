@@ -271,7 +271,11 @@ const Index = () => {
       if (overlayMode) {
         setEisOverlays((prev) => {
           const label =
-            concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+            dataSource === "live" && ws.lastFilename
+              ? ws.lastFilename.replace(/\.xlsx$/i, "").replace(/\.xls$/i, "")
+              : concentration > 0
+                ? `${concentration} nM`
+                : `Measurement ${prev.length + 1}`;
           const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
           const next = [
             ...prev,
@@ -870,6 +874,14 @@ const Index = () => {
             current={eisData.length}
             expected={expectedEisPoints}
           />
+
+          {dataSource === "live" && ws.lastFilename && (
+            <div className="mt-2 text-[11px] font-mono text-muted-foreground flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-graph-primary animate-pulse" />
+              Receiving: <span className="text-foreground">{ws.lastFilename}</span>
+              <span className="text-muted-foreground">— {eisData.length} / {expectedEisPoints} pts</span>
+            </div>
+          )}
 
           {eisData.length > 0 && (
             <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
