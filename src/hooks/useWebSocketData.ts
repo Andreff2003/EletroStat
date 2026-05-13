@@ -39,6 +39,7 @@ interface UseWebSocketDataReturn {
   // EIS data
   eisData: EISDataPoint[];
   clearEIS: () => void;
+  lastFilename: string;
 
   // FET data
   fetBaseline: FETTransferPoint[];
@@ -55,6 +56,7 @@ export function useWebSocketData(): UseWebSocketDataReturn {
   const [errorMessage, setErrorMessage] = useState("");
 
   const [eisData, setEisData] = useState<EISDataPoint[]>([]);
+  const [lastFilename, setLastFilename] = useState("");
   const [fetBaseline, setFetBaseline] = useState<FETTransferPoint[]>([]);
   const [fetAnalyte, setFetAnalyte] = useState<FETTransferPoint[]>([]);
   const [fetTimeData, setFetTimeData] = useState<FETTimePoint[]>([]);
@@ -102,6 +104,9 @@ export function useWebSocketData(): UseWebSocketDataReturn {
 
           switch (msg.type) {
             case "eis":
+              if (msg.filename) {
+                setLastFilename(msg.filename);
+              }
               setEisData((prev) => [
                 ...prev,
                 {
@@ -146,7 +151,10 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     }
   }, []);
 
-  const clearEIS = useCallback(() => setEisData([]), []);
+  const clearEIS = useCallback(() => {
+    setEisData([]);
+    setLastFilename("");
+  }, []);
   const clearFET = useCallback(() => {
     setFetBaseline([]);
     setFetAnalyte([]);
@@ -167,6 +175,7 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     errorMessage,
     eisData,
     clearEIS,
+    lastFilename,
     fetBaseline,
     fetAnalyte,
     fetTimeData,
