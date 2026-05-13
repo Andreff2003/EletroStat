@@ -271,7 +271,11 @@ const Index = () => {
       if (overlayMode) {
         setEisOverlays((prev) => {
           const label =
-            concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+            dataSource === "live" && ws.lastFilename
+              ? ws.lastFilename.replace(/\.xlsx$/i, "").replace(/\.xls$/i, "")
+              : concentration > 0
+                ? `${concentration} nM`
+                : `Measurement ${prev.length + 1}`;
           const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
           const next = [
             ...prev,
