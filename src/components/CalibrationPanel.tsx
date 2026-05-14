@@ -500,6 +500,11 @@ const CalibrationPanel = ({
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
           <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
           <div>Max {displayKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {displayUnit}</span></div>
+          {fit.r2 < 0.9 && (
+            <div className="text-[10px] text-yellow-500 mt-1">
+              ⚠ Poor Langmuir fit (R² &lt; 0.90) — more calibration points recommended
+            </div>
+          )}
         </div>
       )}
       {linear && (
