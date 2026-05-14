@@ -1,6 +1,6 @@
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer, Legend, ReferenceLine,
 } from "recharts";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
@@ -21,7 +21,8 @@ const BodePlot = ({ data }: BodePlotProps) => {
   const plotData = data.map(d => ({
     freq: d.frequency,
     zMag: d.zMag,
-    phase: Math.abs(d.phase),
+    // Capacitive systems: phase is negative (−90° to 0°)
+    phase: -Math.abs(d.phase),
   }));
 
   return (
@@ -41,6 +42,9 @@ const BodePlot = ({ data }: BodePlotProps) => {
           />
           <YAxis
             yAxisId="left"
+            scale="log"
+            domain={['auto', 'auto']}
+            allowDataOverflow
             label={{ value: "|Z| (Ω)", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(160 70% 50%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"
@@ -48,6 +52,7 @@ const BodePlot = ({ data }: BodePlotProps) => {
           <YAxis
             yAxisId="right"
             orientation="right"
+            domain={[-90, 0]}
             label={{ value: "Phase (°)", angle: 90, position: "insideRight", offset: -5, fill: "hsl(35 90% 55%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"
@@ -63,6 +68,18 @@ const BodePlot = ({ data }: BodePlotProps) => {
             }}
           />
           <Legend wrapperStyle={{ color: "hsl(215 15% 50%)", fontSize: 12 }} />
+          <ReferenceLine
+            yAxisId="right"
+            y={-45}
+            stroke="hsl(35 90% 55%)"
+            strokeDasharray="4 4"
+            label={{
+              value: "-45° (ω = 1/RctCdl)",
+              fill: "hsl(35 90% 55%)",
+              fontSize: 10,
+              position: "insideTopRight",
+            }}
+          />
           <Line
             yAxisId="left"
             type="monotone"
