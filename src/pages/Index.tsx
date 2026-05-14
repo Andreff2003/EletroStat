@@ -248,9 +248,10 @@ const Index = () => {
     toast.success(`Sweep complete — ${finalData.length} points collected`);
     const params = computeEISParams(finalData);
     let fit: ReturnType<typeof fitRandles> = null;
+    let wb: ReturnType<typeof extractWarburgSlope> = { ok: false };
     try {
       fit = fitRandles(finalData);
-      const wb = extractWarburgSlope(finalData);
+      wb = extractWarburgSlope(finalData);
       setRandlesFit(fit);
       setWarburg(wb);
       const rctVal = fit?.Rct ?? params?.rct;
