@@ -951,7 +951,7 @@ const Index = () => {
         </Tabs>
         <div className="space-y-4">
           <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
-          <CircuitFitResults fit={randlesFit} warburg={warburg} />
+          <CircuitFitResults fit={randlesFit} warburg={warburg} kk={kk} />
           <CalibrationPanel
             mode="eis"
             concentration={concentration}
@@ -959,8 +959,9 @@ const Index = () => {
             points={eisCalibration}
             onClear={() => setEisCalibration([])}
             onExport={exportCalibrationCSV}
-            currentRs={liveEisParams?.rs}
-            currentRct={liveEisParams?.rct}
+            currentRs={randlesFit?.Rs ?? liveEisParams?.rs}
+            currentRct={randlesFit?.Rct ?? liveEisParams?.rct}
+            geometricFallback={geometricFallback && eisStatus === "complete"}
           />
         </div>
         </div>
