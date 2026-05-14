@@ -175,7 +175,7 @@ function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: numb
 }
 
 /** LOD = 3 * sigma_baseline / slope, where slope is from the linear regression of all points */
-function computeLOD(points: { concentration: number; signal: number; raw: number }[]): number | null {
+function computeLOD(points: CalibrationPoint[]): number | null {
   const baseline = findBaseline(points);
   if (!baseline) return null;
   // Use raw values to estimate baseline noise; if only one baseline, fall back to small fraction
