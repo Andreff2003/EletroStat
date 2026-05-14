@@ -20,6 +20,15 @@ export interface StoredEISMeasurement {
     Aw?: number;
     warburgSlope?: number;
     fitErrorPct?: number;
+    f0?: number;
+    warburgAw?: number;
+    kkResidualPct?: number;
+    kkPassed?: boolean;
+    fitConverged?: boolean;
+    geometricFallback?: boolean;
+    deltaRct?: number;
+    deltaRctNormPct?: number;
+    warnFlags?: string[];
   };
 }
 
