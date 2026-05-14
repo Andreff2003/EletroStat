@@ -247,18 +247,11 @@ const Index = () => {
     setEisStatus("complete");
     toast.success(`Sweep complete — ${finalData.length} points collected`);
     const params = computeEISParams(finalData);
-    if (params) {
-      const baseline = eisCalibration.find((p) => p.concentration === 0);
-      const deltaRct =
-        concentration === 0 ? 0 : params.rct - (baseline?.raw ?? params.rct);
-      setEisCalibration((prev) => [
-        ...prev.filter((p) => p.concentration !== concentration),
-        { concentration, signal: deltaRct, raw: params.rct, timestamp: Date.now() },
-      ]);
-    }
+    let fit: ReturnType<typeof fitRandles> = null;
+    let wb: ReturnType<typeof extractWarburgSlope> = { ok: false };
     try {
-      const fit = fitRandles(finalData);
-      const wb = extractWarburgSlope(finalData);
+      fit = fitRandles(finalData);
+      wb = extractWarburgSlope(finalData);
       setRandlesFit(fit);
       setWarburg(wb);
       const rctVal = fit?.Rct ?? params?.rct;
@@ -268,6 +261,20 @@ const Index = () => {
           rctVal != null ? rctVal.toFixed(1) : "n/a"
         } Ω, points=${finalData.length}`,
       );
+    } catch (err) {
+      console.warn("Randles fit error", err);
+    }
+    const rctForCalib = fit?.Rct ?? params?.rct;
+    if (rctForCalib != null) {
+      const baseline = eisCalibration.find((p) => p.concentration === 0);
+      const deltaRct =
+        concentration === 0 ? 0 : rctForCalib - (baseline?.raw ?? rctForCalib);
+      setEisCalibration((prev) => [
+        ...prev.filter((p) => p.concentration !== concentration),
+        { concentration, signal: deltaRct, raw: rctForCalib, timestamp: Date.now() },
+      ]);
+    }
+    try {
       if (overlayMode) {
         setEisOverlays((prev) => {
           const label =

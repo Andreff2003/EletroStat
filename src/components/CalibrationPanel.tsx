@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, Beaker, Download } from "lucide-react";
 import {
   LineChart,
@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -80,30 +81,75 @@ export function computeFETVt(curve: FETTransferPoint[]): number | null {
 }
 
 /**
- * Langmuir fit: Signal = Smax * C / (C + Kd)
- * Linearize via Scatchard-like: 1/Signal = (Kd/Smax)*(1/C) + 1/Smax
- * Use only points with C > 0.
+ * Direct nonlinear least-squares Langmuir fit:
+ *   Signal = Smax * C / (C + Kd)
+ * Minimises Σ(model − signal)² via gradient descent with adaptive learning rate.
+ * Returns kd, sMax, and r² goodness-of-fit.
  */
-function fitLangmuir(points: CalibrationPoint[]): { kd: number; sMax: number } | null {
-  const nonZero = points.filter((p) => p.concentration > 0 && p.signal > 0);
-  if (nonZero.length < 3) return null;
-  // Linear regression on (1/C, 1/S)
-  const xs = nonZero.map((p) => 1 / p.concentration);
-  const ys = nonZero.map((p) => 1 / p.signal);
-  const n = xs.length;
-  const sumX = xs.reduce((a, b) => a + b, 0);
-  const sumY = ys.reduce((a, b) => a + b, 0);
-  const sumXY = xs.reduce((a, _, i) => a + xs[i] * ys[i], 0);
-  const sumXX = xs.reduce((a, x) => a + x * x, 0);
-  const denom = n * sumXX - sumX * sumX;
-  if (Math.abs(denom) < 1e-12) return null;
-  const slope = (n * sumXY - sumX * sumY) / denom;
-  const intercept = (sumY - slope * sumX) / n;
-  if (intercept <= 0 || slope <= 0) return null;
-  const sMax = 1 / intercept;
-  const kd = slope * sMax;
-  if (!Number.isFinite(kd) || !Number.isFinite(sMax) || kd <= 0) return null;
-  return { kd, sMax };
+function fitLangmuirNLLS(
+  points: { concentration: number; signal: number }[],
+): { kd: number; sMax: number; r2: number } | null {
+  const data = points.filter((p) => p.concentration > 0 && p.signal > 0);
+  if (data.length < 3) return null;
+  const Cs = data.map((p) => p.concentration);
+  const Ss = data.map((p) => p.signal);
+  const sortedC = [...Cs].sort((a, b) => a - b);
+  const medianC = sortedC[Math.floor(sortedC.length / 2)];
+  let sMax = Math.max(...Ss) * 1.5;
+  let kd = Math.max(medianC, 1e-6);
+
+  const sse = (sM: number, k: number) => {
+    let s = 0;
+    for (let i = 0; i < Cs.length; i++) {
+      const m = (sM * Cs[i]) / (Cs[i] + k);
+      const r = m - Ss[i];
+      s += r * r;
+    }
+    return s;
+  };
+
+  let lr = 0.01;
+  let prev = sse(sMax, kd);
+  for (let it = 0; it < 500; it++) {
+    let gS = 0;
+    let gK = 0;
+    for (let i = 0; i < Cs.length; i++) {
+      const c = Cs[i];
+      const denom = c + kd;
+      const m = (sMax * c) / denom;
+      const r = m - Ss[i];
+      gS += 2 * r * (c / denom);
+      gK += 2 * r * (-sMax * c / (denom * denom));
+    }
+    // Normalise gradient direction by parameter scale so lr is comparable
+    const stepS = lr * gS * Math.max(Math.abs(sMax), 1);
+    const stepK = lr * gK * Math.max(Math.abs(kd), 1);
+    const newSMax = sMax - stepS;
+    const newKd = Math.max(kd - stepK, 1e-9);
+    const cur = sse(newSMax, newKd);
+    if (cur < prev) {
+      sMax = newSMax;
+      kd = newKd;
+      prev = cur;
+      lr *= 1.05;
+    } else {
+      lr *= 0.5;
+      if (lr < 1e-12) break;
+    }
+  }
+
+  if (!Number.isFinite(kd) || !Number.isFinite(sMax) || kd <= 0 || sMax <= 0) return null;
+
+  const meanY = Ss.reduce((a, b) => a + b, 0) / Ss.length;
+  let ssRes = 0;
+  let ssTot = 0;
+  for (let i = 0; i < Cs.length; i++) {
+    const m = (sMax * Cs[i]) / (Cs[i] + kd);
+    ssRes += (Ss[i] - m) ** 2;
+    ssTot += (Ss[i] - meanY) ** 2;
+  }
+  const r2 = ssTot < 1e-12 ? 1 : 1 - ssRes / ssTot;
+  return { kd, sMax, r2 };
 }
 
 /** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R². */
@@ -128,7 +174,7 @@ function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: numb
   return { slope, intercept, r2 };
 }
 
-/** LOD = 3 * sigma_baseline / slope, where slope = ΔSignal/ΔC over lowest 2 non-zero points */
+/** LOD = 3 * sigma_baseline / slope, where slope is from the linear regression of all points */
 function computeLOD(points: CalibrationPoint[]): number | null {
   const baseline = findBaseline(points);
   if (!baseline) return null;
@@ -142,13 +188,9 @@ function computeLOD(points: CalibrationPoint[]): number | null {
   } else {
     sigma = Math.abs(baseline.raw) * 0.02; // 2% assumed noise
   }
-  const nonZero = points
-    .filter((p) => p.concentration > 0)
-    .sort((a, b) => a.concentration - b.concentration);
-  if (nonZero.length === 0) return null;
-  const lowest = nonZero[0];
-  const slope = lowest.signal / lowest.concentration;
-  if (slope <= 0) return null;
+  const linFit = fitLinear(points as CalibrationPoint[]);
+  if (!linFit || linFit.slope <= 0) return null;
+  const slope = linFit.slope;
   return (3 * sigma) / slope;
 }
 
@@ -165,6 +207,7 @@ const CalibrationPanel = ({
 }: CalibrationPanelProps) => {
   const baseline = findBaseline(points);
   const hasBaseline = !!baseline;
+  const [normalised, setNormalised] = useState(false);
 
   const sampleLabel =
     concentration === 0
@@ -174,10 +217,28 @@ const CalibrationPanel = ({
   const signalUnit = mode === "eis" ? "Ω" : "mV";
   const signalKey = mode === "eis" ? "ΔRct" : "ΔVt";
 
+  // For EIS-only normalisation: ΔRct% = ΔRct / Rct_baseline * 100
+  const baselineRctRaw = useMemo(
+    () => points.find((p) => p.concentration === 0)?.raw ?? null,
+    [points],
+  );
+  const showNormalised = normalised && mode === "eis" && baselineRctRaw != null && baselineRctRaw > 0;
+  const displayUnit = showNormalised ? "%" : signalUnit;
+  const displayKey = showNormalised ? `${signalKey}%` : signalKey;
+
+  // Build the points used for plotting / fitting (apply normalisation if active)
+  const transformedPoints = useMemo(() => {
+    if (!showNormalised || !baselineRctRaw) return points;
+    return points.map((p) => ({
+      ...p,
+      signal: (p.signal / baselineRctRaw) * 100,
+    }));
+  }, [points, showNormalised, baselineRctRaw]);
+
   // Sort points by concentration for plotting
   const sortedPoints = useMemo(
-    () => [...points].sort((a, b) => a.concentration - b.concentration),
-    [points]
+    () => [...transformedPoints].sort((a, b) => a.concentration - b.concentration),
+    [transformedPoints]
   );
 
   // Decide log scale if span > 2 decades
@@ -189,9 +250,15 @@ const CalibrationPanel = ({
     return max / Math.max(min, 1e-9) > 100;
   }, [sortedPoints]);
 
-  const fit = useMemo(() => (points.length >= 4 ? fitLangmuir(points) : null), [points]);
-  const lod = useMemo(() => computeLOD(points), [points]);
-  const linear = useMemo(() => (points.length >= 3 ? fitLinear(points) : null), [points]);
+  const fit = useMemo(
+    () => (transformedPoints.length >= 4 ? fitLangmuirNLLS(transformedPoints) : null),
+    [transformedPoints],
+  );
+  const lod = useMemo(() => computeLOD(transformedPoints), [transformedPoints]);
+  const linear = useMemo(
+    () => (transformedPoints.length >= 3 ? fitLinear(transformedPoints as CalibrationPoint[]) : null),
+    [transformedPoints],
+  );
 
   // Build smooth Langmuir curve points using fit
   const fitCurve = useMemo(() => {
@@ -330,11 +397,24 @@ const CalibrationPanel = ({
           <span className="text-[10px] font-mono uppercase text-muted-foreground">
             Calibration Curve
           </span>
-          {fit && (
-            <span className="text-[10px] font-mono text-primary">
-              Kd = {fit.kd.toFixed(2)} nM · Max {signalKey} = {fit.sMax.toFixed(1)} {signalUnit}
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {mode === "eis" && (
+              <label className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground cursor-pointer">
+                <Switch
+                  checked={normalised}
+                  onCheckedChange={setNormalised}
+                  disabled={!baselineRctRaw}
+                  className="h-4 w-7"
+                />
+                Normalised (ΔRct/Rct₀ %)
+              </label>
+            )}
+            {fit && (
+              <span className="text-[10px] font-mono text-primary">
+                Kd = {fit.kd.toFixed(2)} nM (R² = {fit.r2.toFixed(3)}) · Max {displayKey} = {fit.sMax.toFixed(1)} {displayUnit}
+              </span>
+            )}
+          </div>
         </div>
         <div className="h-[180px] bg-background rounded-md border border-border p-1">
           {chartData.length === 0 ? (
@@ -362,7 +442,7 @@ const CalibrationPanel = ({
                 <YAxis
                   tick={{ fontSize: 10, fontFamily: "monospace", fill: "hsl(var(--muted-foreground))" }}
                   label={{
-                    value: `${signalKey} (${signalUnit})`,
+                    value: `${displayKey} (${displayUnit})`,
                     angle: -90,
                     position: "insideLeft",
                     style: { fontSize: 10, fontFamily: "monospace", fill: "hsl(var(--muted-foreground))" },
@@ -410,8 +490,8 @@ const CalibrationPanel = ({
       {/* Kd estimation summary */}
       {points.length >= 4 && fit && (
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
-          <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span></div>
-          <div>Max {signalKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {signalUnit}</span></div>
+          <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
+          <div>Max {displayKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {displayUnit}</span></div>
         </div>
       )}
       {linear && (
@@ -419,7 +499,7 @@ const CalibrationPanel = ({
           <div>
             Sensitivity:{" "}
             <span className="text-primary">
-              {linear.slope.toFixed(3)} {signalUnit}/nM
+              {linear.slope.toFixed(3)} {displayUnit}/nM
             </span>
           </div>
           <div>

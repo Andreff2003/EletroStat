@@ -1,4 +1,5 @@
 import type { RandlesFitResult, WarburgResult } from "@/utils/randlesFit";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface Props {
   fit: RandlesFitResult | null;
@@ -27,6 +28,12 @@ const CircuitFitResults = ({ fit, warburg }: Props) => {
     Number.isFinite(v) ? v.toFixed(digits) : "—";
 
   const cdlMicroF = fit.Cdl * 1e6;
+  const f0 = fit.f0 ?? (1 / (2 * Math.PI * Math.max(fit.Rct, 1e-9) * Math.max(fit.Cdl, 1e-30)));
+  const f0Str = Number.isFinite(f0)
+    ? f0 >= 0.01 && f0 < 1e6
+      ? f0.toFixed(2)
+      : f0.toExponential(2)
+    : "—";
 
   return (
     <div className="rounded-lg border border-border bg-card p-3 space-y-3">
@@ -61,6 +68,33 @@ const CircuitFitResults = ({ fit, warburg }: Props) => {
           {fmt(fit.fitErrorPct, 2)} %
         </span>
       </div>
+
+      <TooltipProvider delayDuration={150}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center justify-between text-xs font-mono cursor-help border-t border-border pt-2">
+              <span className="text-muted-foreground">f₀ (characteristic)</span>
+              <span className="text-foreground">{f0Str} Hz</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs text-xs font-mono">
+            Peak frequency of the semicircle. Confirms Rct × Cdl product.
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+
+      {fit.warnFlags && fit.warnFlags.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {fit.warnFlags.map((w, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-mono text-yellow-500"
+            >
+              ⚠ {w}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="border-t border-border pt-2 space-y-1">
         <div className="text-[10px] text-muted-foreground font-mono uppercase">Warburg (low-freq tail)</div>
