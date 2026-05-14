@@ -18,6 +18,8 @@ export interface RandlesParams {
 export interface RandlesFitResult extends RandlesParams {
   fitErrorPct: number;             // residual RMSE as % of mean |Z|
   fittedCurve: { zReal: number; zImag: number; frequency: number }[];
+  f0?: number;          // characteristic frequency Hz: 1/(2π·Rct·Cdl)
+  warnFlags?: string[]; // physical sanity warnings
 }
 
 export interface WarburgResult {
@@ -75,13 +77,17 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   if (uniqueFreqs.size < 5) {
     const Rs = Math.min(...zReals);
     const Rct = Math.max(...zReals) - Rs;
+    const Cdl = 1e-6;
+    const f0 = 1 / (2 * Math.PI * Math.max(Rct, 1e-9) * Cdl);
     return {
       Rs,
       Rct,
-      Cdl: 1e-6,
+      Cdl,
       Aw: 10,
       fitErrorPct: -1,
       fittedCurve: [],
+      f0,
+      warnFlags: ["Insufficient unique frequencies — geometric estimate only"],
     };
   }
 
@@ -174,7 +180,24 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
       return { zReal: m.zReal, zImag: m.zImag, frequency: d.frequency };
     });
 
-  return { ...fitted, fitErrorPct, fittedCurve: lmConverged ? fittedCurve : [] };
+  const f0 = 1 / (2 * Math.PI * Math.max(fitted.Rct, 1e-9) * Math.max(fitted.Cdl, 1e-30));
+  const warnFlags: string[] = [];
+  if (fitted.Rs < 5 || fitted.Rs > 5000) {
+    warnFlags.push("Rs outside expected range (5–5000 Ω)");
+  }
+  if (fitted.Cdl < 1e-9 || fitted.Cdl > 1e-3) {
+    warnFlags.push("Cdl outside expected range (1 nF – 1 mF)");
+  }
+  if (lmConverged && fitErrorPct > 15) {
+    warnFlags.push("Fit error > 15% — check data quality");
+  }
+  return {
+    ...fitted,
+    fitErrorPct,
+    fittedCurve: lmConverged ? fittedCurve : [],
+    f0,
+    warnFlags,
+  };
 }
 
 /**
