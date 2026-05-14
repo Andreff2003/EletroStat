@@ -397,11 +397,24 @@ const CalibrationPanel = ({
           <span className="text-[10px] font-mono uppercase text-muted-foreground">
             Calibration Curve
           </span>
-          {fit && (
-            <span className="text-[10px] font-mono text-primary">
-              Kd = {fit.kd.toFixed(2)} nM · Max {signalKey} = {fit.sMax.toFixed(1)} {signalUnit}
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {mode === "eis" && (
+              <label className="flex items-center gap-1.5 text-[10px] font-mono text-muted-foreground cursor-pointer">
+                <Switch
+                  checked={normalised}
+                  onCheckedChange={setNormalised}
+                  disabled={!baselineRctRaw}
+                  className="h-4 w-7"
+                />
+                Normalised (ΔRct/Rct₀ %)
+              </label>
+            )}
+            {fit && (
+              <span className="text-[10px] font-mono text-primary">
+                Kd = {fit.kd.toFixed(2)} nM (R² = {fit.r2.toFixed(3)}) · Max {displayKey} = {fit.sMax.toFixed(1)} {displayUnit}
+              </span>
+            )}
+          </div>
         </div>
         <div className="h-[180px] bg-background rounded-md border border-border p-1">
           {chartData.length === 0 ? (
@@ -429,7 +442,7 @@ const CalibrationPanel = ({
                 <YAxis
                   tick={{ fontSize: 10, fontFamily: "monospace", fill: "hsl(var(--muted-foreground))" }}
                   label={{
-                    value: `${signalKey} (${signalUnit})`,
+                    value: `${displayKey} (${displayUnit})`,
                     angle: -90,
                     position: "insideLeft",
                     style: { fontSize: 10, fontFamily: "monospace", fill: "hsl(var(--muted-foreground))" },
