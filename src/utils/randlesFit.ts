@@ -182,14 +182,15 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
 
   const f0 = 1 / (2 * Math.PI * Math.max(fitted.Rct, 1e-9) * Math.max(fitted.Cdl, 1e-30));
   const warnFlags: string[] = [];
-  if (fitted.Rs < 5 || fitted.Rs > 5000) {
-    warnFlags.push("Rs outside expected range (5–5000 Ω)");
+  if (fitted.Rs < 5) warnFlags.push("Rs too low (< 5 Ω) — check reference electrode");
+  else if (fitted.Rs > 5000) warnFlags.push("Rs too high (> 5 kΩ) — check electrolyte conductivity");
+  if (fitted.Cdl < 1e-9) warnFlags.push("Cdl too low (< 1 nF) — fitting may not have converged");
+  else if (fitted.Cdl > 1e-3) warnFlags.push("Cdl too high (> 1 mF) — possible short circuit");
+  if (lmConverged && fitErrorPct > 15 && fitErrorPct !== -1) {
+    warnFlags.push("Fit error > 15% — data may not follow Randles model");
   }
-  if (fitted.Cdl < 1e-9 || fitted.Cdl > 1e-3) {
-    warnFlags.push("Cdl outside expected range (1 nF – 1 mF)");
-  }
-  if (lmConverged && fitErrorPct > 15) {
-    warnFlags.push("Fit error > 15% — check data quality");
+  if (fitted.Rct < fitted.Rs) {
+    warnFlags.push("Rct < Rs — physically impossible, fit did not converge");
   }
   return {
     ...fitted,
@@ -197,6 +198,72 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     fittedCurve: lmConverged ? fittedCurve : [],
     f0,
     warnFlags,
+  };
+}
+
+export interface KKResult {
+  passed: boolean;
+  residualPct: number; // mean |Z''_pred - Z''_meas| / mean|Z| * 100
+  warning?: string;
+}
+
+/**
+ * Simple Kramers-Kronig validity check using a discrete approximation
+ * of the KK Hilbert transform: predict Z'' from Z' over log(ω) and
+ * compare against measured Z''. Large residuals indicate the spectrum
+ * is non-linear, non-stationary, or noisy.
+ */
+export function kramersKronigTest(data: EISDataPoint[]): KKResult {
+  if (!data || data.length < 5) {
+    return { passed: false, residualPct: 100, warning: "Not enough points for KK test" };
+  }
+  // Sort ascending in ω
+  const sorted = data
+    .slice()
+    .filter((d) => d.frequency > 0)
+    .sort((a, b) => a.frequency - b.frequency);
+  const n = sorted.length;
+  if (n < 5) return { passed: false, residualPct: 100, warning: "Not enough valid points for KK test" };
+
+  const omega = sorted.map((d) => 2 * Math.PI * d.frequency);
+  const zRe = sorted.map((d) => d.zReal);
+  const zIm = sorted.map((d) => d.zImag);
+
+  // Predict Z''(ω0) ≈ -(2/π) Σ_{i≠0} (zRe(ω_i) - zRe(ω0)) / (ω_i² - ω0²) · Δω_i
+  const predIm = new Array<number>(n).fill(0);
+  for (let k = 0; k < n; k++) {
+    const w0 = omega[k];
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      if (i === k) continue;
+      const wi = omega[i];
+      const dRe = zRe[i] - zRe[k];
+      const denom = wi * wi - w0 * w0;
+      if (Math.abs(denom) < 1e-12) continue;
+      // Use trapezoidal Δω based on neighbours
+      const wPrev = i > 0 ? omega[i - 1] : omega[i];
+      const wNext = i < n - 1 ? omega[i + 1] : omega[i];
+      const dW = (wNext - wPrev) / 2;
+      sum += (dRe / denom) * dW;
+    }
+    predIm[k] = -(2 / Math.PI) * sum;
+  }
+
+  let absResid = 0;
+  let meanZ = 0;
+  for (let i = 0; i < n; i++) {
+    absResid += Math.abs(predIm[i] - zIm[i]);
+    meanZ += Math.sqrt(zRe[i] * zRe[i] + zIm[i] * zIm[i]);
+  }
+  meanZ = Math.max(meanZ / n, 1e-9);
+  const residualPct = (absResid / n / meanZ) * 100;
+  const passed = residualPct <= 5;
+  return {
+    passed,
+    residualPct,
+    warning: passed
+      ? undefined
+      : "KK test failed — data may be non-linear, non-stationary, or noisy. Check electrode stability.",
   };
 }
 
