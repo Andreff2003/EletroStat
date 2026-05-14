@@ -49,8 +49,10 @@ import CircuitFitResults from "@/components/CircuitFitResults";
 import {
   fitRandles,
   extractWarburgSlope,
+  kramersKronigTest,
   type RandlesFitResult,
   type WarburgResult,
+  type KKResult,
 } from "@/utils/randlesFit";
 import {
   loadSession,
@@ -97,6 +99,8 @@ const Index = () => {
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
   const [warburg, setWarburg] = useState<WarburgResult | null>(null);
+  const [kk, setKk] = useState<KKResult | null>(null);
+  const [geometricFallback, setGeometricFallback] = useState(false);
 
   // Overlay mode (Nyquist)
   const [overlayMode, setOverlayMode] = useState(false);
@@ -249,11 +253,14 @@ const Index = () => {
     const params = computeEISParams(finalData);
     let fit: ReturnType<typeof fitRandles> = null;
     let wb: ReturnType<typeof extractWarburgSlope> = { ok: false };
+    let kkRes: KKResult | null = null;
     try {
       fit = fitRandles(finalData);
       wb = extractWarburgSlope(finalData);
+      kkRes = kramersKronigTest(finalData);
       setRandlesFit(fit);
       setWarburg(wb);
+      setKk(kkRes);
       const rctVal = fit?.Rct ?? params?.rct;
       logActivity(
         "measurement",
@@ -264,7 +271,10 @@ const Index = () => {
     } catch (err) {
       console.warn("Randles fit error", err);
     }
-    const rctForCalib = fit?.Rct ?? params?.rct;
+    const fitConverged = fit != null && fit.fitErrorPct !== -1;
+    setGeometricFallback(!fitConverged);
+    const rctForCalib = fit?.Rct ?? params?.rct ?? 0;
+    const rsForCalib = fit?.Rs ?? params?.rs ?? 0;
     if (rctForCalib != null) {
       const baseline = eisCalibration.find((p) => p.concentration === 0);
       const deltaRct =
@@ -304,12 +314,29 @@ const Index = () => {
         },
         data: finalData.slice(),
         extracted: {
-          Rs: fit?.Rs,
-          Rct: fit?.Rct ?? params?.rct,
+          Rs: rsForCalib,
+          Rct: rctForCalib,
           Cdl: fit?.Cdl,
           Aw: fit?.Aw,
           warburgSlope: wb.ok ? wb.slope : undefined,
+          warburgAw: wb.ok ? wb.Aw : undefined,
           fitErrorPct: fit?.fitErrorPct,
+          f0: fit?.f0,
+          kkResidualPct: kkRes?.residualPct,
+          kkPassed: kkRes?.passed,
+          fitConverged,
+          geometricFallback: !fitConverged,
+          deltaRct:
+            concentration === 0
+              ? 0
+              : rctForCalib -
+                (eisCalibration.find((p) => p.concentration === 0)?.raw ?? rctForCalib),
+          deltaRctNormPct: (() => {
+            const base = eisCalibration.find((p) => p.concentration === 0)?.raw;
+            if (base == null || base <= 0 || concentration === 0) return undefined;
+            return ((rctForCalib - base) / base) * 100;
+          })(),
+          warnFlags: fit?.warnFlags,
         },
       };
       setSessionMeasurements((prev) => [...prev, stored]);
@@ -379,6 +406,8 @@ const Index = () => {
     setFrozenEis(null);
     setRandlesFit(null);
     setWarburg(null);
+    setKk(null);
+    setGeometricFallback(false);
     setEisStatus("running");
     logActivity(
       "measurement",
@@ -405,6 +434,8 @@ const Index = () => {
     setEisStatus("idle");
     setRandlesFit(null);
     setWarburg(null);
+    setKk(null);
+    setGeometricFallback(false);
     if (dataSource === "simulated") {
       eis.reset();
     } else {
@@ -920,7 +951,7 @@ const Index = () => {
         </Tabs>
         <div className="space-y-4">
           <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} />
-          <CircuitFitResults fit={randlesFit} warburg={warburg} />
+          <CircuitFitResults fit={randlesFit} warburg={warburg} kk={kk} />
           <CalibrationPanel
             mode="eis"
             concentration={concentration}
@@ -928,8 +959,9 @@ const Index = () => {
             points={eisCalibration}
             onClear={() => setEisCalibration([])}
             onExport={exportCalibrationCSV}
-            currentRs={liveEisParams?.rs}
-            currentRct={liveEisParams?.rct}
+            currentRs={randlesFit?.Rs ?? liveEisParams?.rs}
+            currentRct={randlesFit?.Rct ?? liveEisParams?.rct}
+            geometricFallback={geometricFallback && eisStatus === "complete"}
           />
         </div>
         </div>

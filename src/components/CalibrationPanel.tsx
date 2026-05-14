@@ -44,6 +44,8 @@ interface CalibrationPanelProps {
   currentRs?: number;
   currentRct?: number;
   currentVt?: number;
+  /** True when randles fit did not converge and geometric estimate is shown */
+  geometricFallback?: boolean;
 }
 
 /** Find baseline (concentration === 0) point */
@@ -204,6 +206,7 @@ const CalibrationPanel = ({
   currentRs,
   currentRct,
   currentVt,
+  geometricFallback,
 }: CalibrationPanelProps) => {
   const baseline = findBaseline(points);
   const hasBaseline = !!baseline;
@@ -368,6 +371,11 @@ const CalibrationPanel = ({
             <div className="text-sm font-mono text-foreground">
               {currentRct != null ? `${currentRct.toFixed(1)} Ω` : "—"}
             </div>
+            {geometricFallback && (
+              <div className="text-[9px] font-mono text-yellow-500 leading-tight mt-0.5">
+                ⚠ Fit did not converge — using geometric estimate
+              </div>
+            )}
           </div>
           <div className="bg-secondary rounded-md p-2">
             <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔRct</div>
@@ -492,6 +500,11 @@ const CalibrationPanel = ({
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
           <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
           <div>Max {displayKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {displayUnit}</span></div>
+          {fit.r2 < 0.9 && (
+            <div className="text-[10px] text-yellow-500 mt-1">
+              ⚠ Poor Langmuir fit (R² &lt; 0.90) — more calibration points recommended
+            </div>
+          )}
         </div>
       )}
       {linear && (

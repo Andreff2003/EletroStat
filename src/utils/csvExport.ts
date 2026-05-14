@@ -110,12 +110,20 @@ const PROC_HEADERS = [
   "Rct (Ω)",
   "Cdl (µF)",
   "Aw (Ω/√s)",
+  "f0 (Hz)",
   "Warburg Slope",
+  "Warburg Aw",
+  "KK Residual (%)",
+  "KK Passed",
   "Fit Error (%)",
+  "Fit Converged",
+  "ΔRct (Ω)",
+  "ΔRct normalised (%)",
   "Freq Min (Hz)",
   "Freq Max (Hz)",
   "Points",
   "Amplitude (mV)",
+  "Warn Flags",
   "Vt (V)",
   "Vg Min (V)",
   "Vg Max (V)",
@@ -228,21 +236,40 @@ function buildProcessedSection(measurements: StoredMeasurement[]): string {
     const ts = fmtTs(m.timestamp);
     if (m.mode === "eis") {
       const e = m.extracted;
+      const fitErrPctStr =
+        e.fitErrorPct == null
+          ? "N/A"
+          : e.fitErrorPct === -1
+            ? "-1"
+            : Number(e.fitErrorPct).toFixed(3);
       lines.push(toRow([
         m.id, ts, "eis", fmtNum(m.concentration),
         fmtNum(e.Rs), fmtNum(e.Rct),
         e.Cdl != null && Number.isFinite(e.Cdl) ? (e.Cdl * 1e6).toFixed(3) : "N/A",
-        fmtNum(e.Aw), fmtNum(e.warburgSlope), fmtNum(e.fitErrorPct),
+        fmtNum(e.Aw),
+        fmtNum(e.f0),
+        fmtNum(e.warburgSlope),
+        fmtNum(e.warburgAw),
+        fmtNum(e.kkResidualPct),
+        e.kkPassed == null ? "N/A" : e.kkPassed ? "Yes" : "No",
+        fitErrPctStr,
+        e.fitConverged == null ? "N/A" : e.fitConverged ? "Yes" : "No",
+        fmtNum(e.deltaRct),
+        fmtNum(e.deltaRctNormPct),
         fmtNum(m.params.freqMin), fmtNum(m.params.freqMax),
         fmtNum(m.params.points), fmtNum(m.params.amplitude),
+        e.warnFlags && e.warnFlags.length > 0 ? e.warnFlags.join(" | ") : "N/A",
         "N/A", "N/A", "N/A", "N/A", "N/A",
         fmtStr(m.notes),
       ]));
     } else {
       lines.push(toRow([
         m.id, ts, "fet", fmtNum(m.concentration),
-        "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+        // Rs, Rct, Cdl, Aw, f0, Warburg Slope, Warburg Aw, KK Residual, KK Passed,
+        // Fit Error, Fit Converged, ΔRct, ΔRct%, freqMin, freqMax, points, amplitude, warnFlags
+        "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
         "N/A", "N/A", "N/A", "N/A",
+        "N/A", "N/A", "N/A", "N/A", "N/A",
         fmtNum(m.extracted.Vt),
         fmtNum(m.params.vgMin), fmtNum(m.params.vgMax),
         fmtNum(m.params.vgStep), fmtNum(m.params.intervalMs),
