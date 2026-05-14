@@ -406,6 +406,8 @@ const Index = () => {
     setFrozenEis(null);
     setRandlesFit(null);
     setWarburg(null);
+    setKk(null);
+    setGeometricFallback(false);
     setEisStatus("running");
     logActivity(
       "measurement",
@@ -432,6 +434,8 @@ const Index = () => {
     setEisStatus("idle");
     setRandlesFit(null);
     setWarburg(null);
+    setKk(null);
+    setGeometricFallback(false);
     if (dataSource === "simulated") {
       eis.reset();
     } else {
