@@ -490,8 +490,8 @@ const CalibrationPanel = ({
       {/* Kd estimation summary */}
       {points.length >= 4 && fit && (
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
-          <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span></div>
-          <div>Max {signalKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {signalUnit}</span></div>
+          <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
+          <div>Max {displayKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {displayUnit}</span></div>
         </div>
       )}
       {linear && (
@@ -499,7 +499,7 @@ const CalibrationPanel = ({
           <div>
             Sensitivity:{" "}
             <span className="text-primary">
-              {linear.slope.toFixed(3)} {signalUnit}/nM
+              {linear.slope.toFixed(3)} {displayUnit}/nM
             </span>
           </div>
           <div>
