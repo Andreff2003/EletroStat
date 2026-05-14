@@ -49,8 +49,10 @@ import CircuitFitResults from "@/components/CircuitFitResults";
 import {
   fitRandles,
   extractWarburgSlope,
+  kramersKronigTest,
   type RandlesFitResult,
   type WarburgResult,
+  type KKResult,
 } from "@/utils/randlesFit";
 import {
   loadSession,
@@ -97,6 +99,8 @@ const Index = () => {
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
   const [warburg, setWarburg] = useState<WarburgResult | null>(null);
+  const [kk, setKk] = useState<KKResult | null>(null);
+  const [geometricFallback, setGeometricFallback] = useState(false);
 
   // Overlay mode (Nyquist)
   const [overlayMode, setOverlayMode] = useState(false);
