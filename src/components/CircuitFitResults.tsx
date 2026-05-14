@@ -1,16 +1,17 @@
-import type { RandlesFitResult, WarburgResult } from "@/utils/randlesFit";
+import type { RandlesFitResult, WarburgResult, KKResult } from "@/utils/randlesFit";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface Props {
   fit: RandlesFitResult | null;
   warburg: WarburgResult | null;
+  kk?: KKResult | null;
 }
 
 /**
  * Randles equivalent-circuit fit results + Warburg slope.
  * Rct is highlighted as the primary calibration parameter.
  */
-const CircuitFitResults = ({ fit, warburg }: Props) => {
+const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
   if (!fit) {
     return (
       <div className="rounded-lg border border-border bg-card p-3">
@@ -94,6 +95,34 @@ const CircuitFitResults = ({ fit, warburg }: Props) => {
             </span>
           ))}
         </div>
+      )}
+
+      {kk && (
+        <TooltipProvider delayDuration={150}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="border-t border-border pt-2 cursor-help space-y-1">
+                <span
+                  className={
+                    kk.passed
+                      ? "inline-flex items-center rounded-md border border-graph-primary/40 bg-graph-primary/10 px-2 py-0.5 text-[10px] font-mono text-graph-primary"
+                      : "inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10px] font-mono text-destructive"
+                  }
+                >
+                  {kk.passed ? "✓" : "✗"} KK Test {kk.passed ? "passed" : "failed"} ({kk.residualPct.toFixed(1)}%)
+                </span>
+                {!kk.passed && kk.warning && (
+                  <div className="text-[10px] font-mono text-destructive leading-snug">
+                    {kk.warning}
+                  </div>
+                )}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs text-xs font-mono">
+              Kramers-Kronig test verifies that the system is linear, causal and stable during the measurement. A passing result validates that the EIS spectrum is physically meaningful.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       )}
 
       <div className="border-t border-border pt-2 space-y-1">
