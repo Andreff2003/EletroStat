@@ -44,6 +44,8 @@ interface CalibrationPanelProps {
   currentRs?: number;
   currentRct?: number;
   currentVt?: number;
+  /** True when randles fit did not converge and geometric estimate is shown */
+  geometricFallback?: boolean;
 }
 
 /** Find baseline (concentration === 0) point */
@@ -204,6 +206,7 @@ const CalibrationPanel = ({
   currentRs,
   currentRct,
   currentVt,
+  geometricFallback,
 }: CalibrationPanelProps) => {
   const baseline = findBaseline(points);
   const hasBaseline = !!baseline;
@@ -368,6 +371,11 @@ const CalibrationPanel = ({
             <div className="text-sm font-mono text-foreground">
               {currentRct != null ? `${currentRct.toFixed(1)} Ω` : "—"}
             </div>
+            {geometricFallback && (
+              <div className="text-[9px] font-mono text-yellow-500 leading-tight mt-0.5">
+                ⚠ Fit did not converge — using geometric estimate
+              </div>
+            )}
           </div>
           <div className="bg-secondary rounded-md p-2">
             <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔRct</div>
