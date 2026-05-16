@@ -101,7 +101,10 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   const Rs0 = Math.max(minRe, 1);
   const Rct0 = Math.max(range, 10);
   const Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
-  const Aw0 = 10;
+  // Estimate Aw from the lowest-frequency point: at low ω, Z'' ≈ Aw/√ω
+  const lowestFreqPoint = data.reduce((a, b) => (a.frequency < b.frequency ? a : b));
+  const omegaLow = 2 * Math.PI * Math.max(lowestFreqPoint.frequency, 1e-9);
+  const Aw0 = Math.max(lowestFreqPoint.zImag * Math.sqrt(omegaLow), 1);
 
   // Stack real + imaginary residuals into a single vector for LM.
   // x = index; y = [zReal_0..zReal_{n-1}, zImag_0..zImag_{n-1}]
