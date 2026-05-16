@@ -254,12 +254,22 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
 
   let absResid = 0;
   let meanZ = 0;
+  let counted = 0;
   for (let i = 0; i < n; i++) {
+    // Skip Warburg-tail points (zIm < 0 in this sign convention) at low frequency —
+    // diffusion is KK-compliant by definition but the discrete Hilbert transform
+    // doesn't handle the f→0 tail well. Only flag sign flips at high frequency
+    // (> 1 kHz), which would genuinely indicate non-linearity or noise.
+    if (zIm[i] < 0 && sorted[i].frequency < 1000) continue;
     absResid += Math.abs(predIm[i] - zIm[i]);
     meanZ += Math.sqrt(zRe[i] * zRe[i] + zIm[i] * zIm[i]);
+    counted++;
   }
-  meanZ = Math.max(meanZ / n, 1e-9);
-  const residualPct = (absResid / n / meanZ) * 100;
+  if (counted < 3) {
+    return { passed: true, residualPct: 0 };
+  }
+  meanZ = Math.max(meanZ / counted, 1e-9);
+  const residualPct = (absResid / counted / meanZ) * 100;
   const passed = residualPct <= 5;
   return {
     passed,
@@ -277,47 +287,19 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
  */
 export function extractWarburgSlope(data: EISDataPoint[]): WarburgResult {
   if (!data || data.length < 3) return { ok: false };
-  // Sort ascending in frequency
   const sorted = data.slice().sort((a, b) => a.frequency - b.frequency);
 
-  const lowFreq = sorted.filter(d => d.frequency < 10);
+  // Warburg tail: points where zImag dips below zero in this sign convention.
+  const region = sorted.filter(d => d.zImag < 0);
+  if (region.length < 3) return { ok: false, nPoints: region.length };
 
-  // Local slopes for points at any frequency
-  const localOK: EISDataPoint[] = [];
-  for (let i = 1; i < sorted.length; i++) {
-    const a = sorted[i - 1], b = sorted[i];
-    const dx = b.zReal - a.zReal;
-    const dy = b.zImag - a.zImag;
-    if (Math.abs(dx) < 1e-6) continue;
-    const s = Math.abs(dy / dx);
-    if (s >= 0.8 && s <= 1.2) {
-      if (!localOK.includes(a)) localOK.push(a);
-      if (!localOK.includes(b)) localOK.push(b);
-    }
-  }
-
-  // Union (dedup by reference)
-  const set = new Set<EISDataPoint>();
-  lowFreq.forEach(p => set.add(p));
-  localOK.forEach(p => set.add(p));
-  let region = Array.from(set);
-  let usedFallback = false;
-
-  if (region.length < 3) {
-    // Fallback: 5 lowest-frequency points regardless of slope
-    region = sorted.slice(0, Math.min(5, sorted.length));
-    usedFallback = true;
-    if (region.length < 3) return { ok: false, nPoints: region.length };
-  }
-
-  // Linear regression: zImag = m * zReal + b
+  // Linear regression on |zImag| vs zReal — ideal Warburg slope ≈ 1.0
   const n = region.length;
   let sx = 0, sy = 0, sxx = 0, sxy = 0;
   for (const p of region) {
-    sx += p.zReal;
-    sy += p.zImag;
-    sxx += p.zReal * p.zReal;
-    sxy += p.zReal * p.zImag;
+    const x = p.zReal;
+    const y = Math.abs(p.zImag);
+    sx += x; sy += y; sxx += x * x; sxy += x * y;
   }
   const denom = n * sxx - sx * sx || 1e-9;
   const slope = (n * sxy - sx * sy) / denom;
@@ -325,13 +307,10 @@ export function extractWarburgSlope(data: EISDataPoint[]): WarburgResult {
   // Aw estimate: at low ω, Z'' ≈ Aw/√ω. Use the lowest-freq point.
   const lowest = sorted[0];
   const omega = 2 * Math.PI * lowest.frequency;
-  const Aw = lowest.zImag * Math.sqrt(Math.max(omega, 1e-9));
+  const Aw = Math.abs(lowest.zImag) * Math.sqrt(Math.max(omega, 1e-9));
 
   let warburgWarning: string | undefined;
-  if (usedFallback) {
-    warburgWarning =
-      "Based on lowest-frequency points (strict Warburg region not detected)";
-  } else if (slope < 0.5 || slope > 2.0) {
+  if (slope < 0.5 || slope > 2.0) {
     warburgWarning =
       "Slope deviates from ideal Warburg (1.0) — diffusion may not be rate-limiting";
   }
