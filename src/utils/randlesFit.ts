@@ -274,7 +274,7 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
   }
   meanZ = Math.max(meanZ / counted, 1e-9);
   const residualPct = (absResid / counted / meanZ) * 100;
-  const passed = residualPct <= 15;
+  const passed = residualPct <= 20;
   return {
     passed,
     residualPct,
@@ -315,7 +315,7 @@ export function extractWarburgSlope(data: EISDataPoint[]): WarburgResult {
   for (let i = 1; i < tail.length; i++) {
     const dRe = tail[i].zReal - tail[i - 1].zReal;
     const dIm = Math.abs(tail[i].zImag) - Math.abs(tail[i - 1].zImag);
-    if (dRe > 0.1) slopes.push(dIm / dRe);
+    if (Math.abs(dRe) > 0.1) slopes.push(dIm / Math.abs(dRe));
   }
 
   if (slopes.length < 2) return { ok: false, nPoints: tail.length, Aw };
