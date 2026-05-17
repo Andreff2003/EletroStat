@@ -95,7 +95,7 @@ export function useSimulatedEIS(speed: number = 200) {
       const zReal = RS + zpRe + noise(2);
       const zImag = -zpIm + noise(2); // store as positive (negative imag flipped)
       const zMag = Math.sqrt(zReal * zReal + zImag * zImag);
-      const phase = -Math.atan2(zImag, zReal) * (180 / Math.PI);
+      const phase = Math.atan2(-zImag, zReal) * (180 / Math.PI);
       points.push({
         zReal: Math.round(zReal * 10) / 10,
         zImag: Math.round(zImag * 10) / 10,
@@ -169,7 +169,7 @@ export function useSimulatedFETTransfer(speed: number = 100) {
       const normB = (vg - VtBase) / (vgMax - VtBase);
       const idB = ID_MAX * Math.max(0, normB) ** 2 + noise(0.2) + 0.05;
 
-      const normA = (vg - VtAnalyte) / (vgMax - VtAnalyte);
+      const normA = (vg - VtAnalyte) / (vgMax - VtBase);
       const idA = ID_MAX * Math.max(0, normA) ** 2 + noise(0.2) + 0.05;
 
       base.push({ vg: Math.round(vg * 100) / 100, id: Math.round(idB * 100) / 100 });
