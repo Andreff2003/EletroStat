@@ -313,9 +313,9 @@ export function extractWarburgSlope(data: EISDataPoint[]): WarburgResult {
   // Consecutive slope estimates Δ|zImag| / ΔzReal between adjacent tail points.
   const slopes: number[] = [];
   for (let i = 1; i < tail.length; i++) {
-    const dRe = tail[i].zReal - tail[i - 1].zReal;
-    const dIm = Math.abs(tail[i].zImag) - Math.abs(tail[i - 1].zImag);
-    if (Math.abs(dRe) > 0.1) slopes.push(dIm / Math.abs(dRe));
+    const dRe = Math.abs(tail[i].zReal - tail[i - 1].zReal);
+    const dIm = Math.abs(Math.abs(tail[i].zImag) - Math.abs(tail[i - 1].zImag));
+    if (dRe > 0.1) slopes.push(dIm / dRe);
   }
 
   if (slopes.length < 2) return { ok: false, nPoints: tail.length, Aw };
