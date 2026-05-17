@@ -6,12 +6,14 @@ import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
 /**
  * BODE PLOT — Shows impedance magnitude and phase vs frequency.
- * 
+ *
  * X-axis: Frequency (Hz) — logarithmic scale
  * Y-axis Left: |Z| magnitude (Ohms)
  * Y-axis Right: Phase angle (degrees)
- * 
- * Useful for identifying time constants and circuit elements.
+ *
+ * Phase convention: φ = atan2(-zImag, zReal) × 180/π.
+ * Capacitive systems show phase between -90° and 0°.
+ * Peak phase magnitude occurs at the characteristic frequency f₀.
  */
 interface BodePlotProps {
   data: EISDataPoint[];
@@ -21,8 +23,7 @@ const BodePlot = ({ data }: BodePlotProps) => {
   const plotData = data.map(d => ({
     freq: d.frequency,
     zMag: d.zMag,
-    // Capacitive systems: phase is negative (−90° to 0°)
-    phase: -Math.abs(d.phase),
+    phase: d.phase,
   }));
 
   return (
