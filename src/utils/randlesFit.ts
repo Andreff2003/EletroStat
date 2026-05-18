@@ -103,18 +103,23 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
 
   // Detect Warburg-dominated spectra (no clear semicircle, ~45° low-freq slope).
   const isWarburgDominated = (() => {
-    const sortedLowToHigh = [...data].sort((a, b) => a.frequency - b.frequency);
-    const tail = sortedLowToHigh.slice(0, Math.floor(sortedLowToHigh.length * 0.3));
-    if (tail.length < 3) return false;
-    const slopes: number[] = [];
-    for (let i = 1; i < tail.length; i++) {
-      const dRe = Math.abs(tail[i].zReal - tail[i - 1].zReal);
-      const dIm = Math.abs(tail[i].zImag - tail[i - 1].zImag);
-      if (dRe > 0.1) slopes.push(dIm / dRe);
-    }
-    if (slopes.length === 0) return false;
-    const avgSlope = slopes.reduce((a, b) => a + b, 0) / slopes.length;
-    return avgSlope > 0.7 && avgSlope < 1.3;
+    // Sort low → high frequency. The lowest-frequency point sits at index 0.
+    const sorted = [...data].sort((a, b) => a.frequency - b.frequency);
+    if (sorted.length < 3) return false;
+
+    // Find the peak of Z'' (top of the semicircle, if any).
+    const maxImagPoint = sorted.reduce(
+      (max, p) => (p.zImag > max.zImag ? p : max),
+      sorted[0]
+    );
+
+    // The lowest-frequency point in the sweep.
+    const lowestFreqPoint = sorted[0];
+
+    // If the lowest-frequency point is still near (or above) the peak,
+    // the curve never came back down → Warburg-dominated (no clear semicircle).
+    // If it dropped well below the peak, we have a proper semicircle.
+    return lowestFreqPoint.zImag > maxImagPoint.zImag * 0.9;
   })();
 
   let Rs0: number;
