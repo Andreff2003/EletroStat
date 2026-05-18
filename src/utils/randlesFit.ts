@@ -20,6 +20,9 @@ export interface RandlesFitResult extends RandlesParams {
   fittedCurve: { zReal: number; zImag: number; frequency: number }[];
   f0?: number;          // characteristic frequency Hz: 1/(2π·Rct·Cdl)
   warnFlags?: string[]; // physical sanity warnings
+  warburgDominated?: boolean;
+  rctResolved?: boolean;
+  cdlResolved?: boolean;
 }
 
 export interface WarburgResult {
@@ -98,13 +101,42 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   }
   const fPeak = data[peakIdx].frequency || 100;
 
-  const Rs0 = Math.max(minRe, 1);
-  const Rct0 = Math.max(range, 10);
-  const Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
-  // Estimate Aw from the lowest-frequency point: at low ω, Z'' ≈ Aw/√ω
-  const lowestFreqPoint = data.reduce((a, b) => (a.frequency < b.frequency ? a : b));
-  const omegaLow = 2 * Math.PI * Math.max(lowestFreqPoint.frequency, 1e-9);
-  const Aw0 = Math.max(lowestFreqPoint.zImag * Math.sqrt(omegaLow), 1);
+  // Detect Warburg-dominated spectra (no clear semicircle, ~45° low-freq slope).
+  const isWarburgDominated = (() => {
+    const sortedLowToHigh = [...data].sort((a, b) => a.frequency - b.frequency);
+    const tail = sortedLowToHigh.slice(0, Math.floor(sortedLowToHigh.length * 0.3));
+    if (tail.length < 3) return false;
+    const slopes: number[] = [];
+    for (let i = 1; i < tail.length; i++) {
+      const dRe = Math.abs(tail[i].zReal - tail[i - 1].zReal);
+      const dIm = Math.abs(tail[i].zImag - tail[i - 1].zImag);
+      if (dRe > 0.1) slopes.push(dIm / dRe);
+    }
+    if (slopes.length === 0) return false;
+    const avgSlope = slopes.reduce((a, b) => a + b, 0) / slopes.length;
+    return avgSlope > 0.7 && avgSlope < 1.3;
+  })();
+
+  let Rs0: number;
+  let Rct0: number;
+  let Cdl0: number;
+  let Aw0: number;
+  if (isWarburgDominated) {
+    const sortedHighToLow = [...data].sort((a, b) => b.frequency - a.frequency);
+    Rs0 = Math.max(sortedHighToLow[0].zReal, 1);
+    Rct0 = Math.max((maxRe - minRe) * 0.2, 10);
+    Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
+    const lowestFreqPoint = sortedHighToLow[sortedHighToLow.length - 1];
+    const omegaLow = 2 * Math.PI * Math.max(lowestFreqPoint.frequency, 1e-9);
+    Aw0 = Math.max(lowestFreqPoint.zImag * Math.sqrt(omegaLow), 1);
+  } else {
+    Rs0 = Math.max(minRe, 1);
+    Rct0 = Math.max(range, 10);
+    Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
+    const lowestFreqPoint = data.reduce((a, b) => (a.frequency < b.frequency ? a : b));
+    const omegaLow = 2 * Math.PI * Math.max(lowestFreqPoint.frequency, 1e-9);
+    Aw0 = Math.max(lowestFreqPoint.zImag * Math.sqrt(omegaLow), 1);
+  }
 
   // Stack real + imaginary residuals into a single vector for LM.
   // x = index; y = [zReal_0..zReal_{n-1}, zImag_0..zImag_{n-1}]
@@ -133,7 +165,25 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     return which === "re" ? m.zReal : m.zImag;
   };
 
-  const initial = [Math.log(Rs0), Math.log(Rct0), Math.log(Cdl0), Math.log(Aw0)];
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+  const lowerBounds = [
+    Math.log(1),
+    Math.log(1),
+    Math.log(1e-12),
+    Math.log(0.01),
+  ];
+  const upperBounds = [
+    Math.log(100000),
+    Math.log(1e8),
+    Math.log(0.1),
+    Math.log(1e6),
+  ];
+  const initial = [
+    clamp(Math.log(Rs0), lowerBounds[0], upperBounds[0]),
+    clamp(Math.log(Rct0), lowerBounds[1], upperBounds[1]),
+    clamp(Math.log(Cdl0), lowerBounds[2], upperBounds[2]),
+    clamp(Math.log(Aw0), lowerBounds[3], upperBounds[3]),
+  ];
   let parameterValues: number[];
   let lmConverged = true;
   try {
@@ -147,7 +197,9 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
       lmConverged = false;
       parameterValues = initial;
     } else {
-      parameterValues = result.parameterValues;
+      parameterValues = result.parameterValues.map((v, i) =>
+        clamp(v, lowerBounds[i], upperBounds[i])
+      );
     }
   } catch (err) {
     console.warn("LM fit failed, falling back to initial guess", err);
@@ -195,12 +247,85 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
   if (fitted.Rct < fitted.Rs) {
     warnFlags.push("Rct < Rs — physically impossible, fit did not converge");
   }
-  return {
+  const randlesResult: RandlesFitResult = {
     ...fitted,
     fitErrorPct,
     fittedCurve: lmConverged ? fittedCurve : [],
     f0,
     warnFlags,
+    warburgDominated: isWarburgDominated,
+    rctResolved: true,
+    cdlResolved: true,
+  };
+
+  if (fitErrorPct > 20 || !lmConverged || fitErrorPct < 0) {
+    const warburgFit = fitWarburgOnly(data);
+    if (
+      warburgFit.fitErrorPct >= 0 &&
+      (fitErrorPct < 0 || warburgFit.fitErrorPct < fitErrorPct)
+    ) {
+      return warburgFit;
+    }
+  }
+  return randlesResult;
+}
+
+/**
+ * Simpler Rs + Rct + Warburg model (no active semicircle) fallback for
+ * heavily diffusion-controlled spectra where LM diverges.
+ */
+function fitWarburgOnly(data: EISDataPoint[]): RandlesFitResult {
+  const sortedHighToLow = [...data].sort((a, b) => b.frequency - a.frequency);
+  const Rs = Math.max(sortedHighToLow[0].zReal, 1);
+
+  const xs = data.map(d => 1 / Math.sqrt(2 * Math.PI * Math.max(d.frequency, 1e-9)));
+  const ys = data.map(d => d.zReal);
+  const n = xs.length;
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+  const denom = xs.reduce((s, x) => s + (x - meanX) ** 2, 0) || 1e-9;
+  const slope = xs.reduce((s, x, i) => s + (x - meanX) * (ys[i] - meanY), 0) / denom;
+  const Aw = Math.max(slope, 0.1);
+  const minRe = Math.min(...data.map(d => d.zReal));
+  const Rct = Math.max(minRe - Rs + Aw * 0.01, 1);
+  const Cdl = 1e-6;
+
+  let sse = 0;
+  for (const pt of data) {
+    const omega = 2 * Math.PI * Math.max(pt.frequency, 1e-9);
+    const zRealModel = Rs + Rct + Aw / Math.sqrt(omega);
+    const zImagModel = Aw / Math.sqrt(omega);
+    sse += (zRealModel - pt.zReal) ** 2 + (zImagModel - pt.zImag) ** 2;
+  }
+  const rmse = Math.sqrt(sse / (2 * data.length));
+  const meanZ = data.reduce((s, d) => s + Math.sqrt(d.zReal * d.zReal + d.zImag * d.zImag), 0) / data.length;
+  const fitErrorPct = (rmse / Math.max(meanZ, 1e-9)) * 100;
+
+  const fittedCurve = [...data]
+    .sort((a, b) => b.frequency - a.frequency)
+    .map(d => {
+      const omega = 2 * Math.PI * Math.max(d.frequency, 1e-9);
+      return {
+        zReal: Rs + Rct + Aw / Math.sqrt(omega),
+        zImag: Aw / Math.sqrt(omega),
+        frequency: d.frequency,
+      };
+    });
+
+  return {
+    Rs,
+    Rct,
+    Cdl,
+    Aw,
+    fitErrorPct,
+    fittedCurve,
+    f0: 1 / (2 * Math.PI * Rct * Cdl),
+    warnFlags: [
+      "Warburg-dominated spectrum — no semicircle detected. Rct could not be resolved. Consider measuring at higher frequencies if needed.",
+    ],
+    warburgDominated: true,
+    rctResolved: false,
+    cdlResolved: false,
   };
 }
 
