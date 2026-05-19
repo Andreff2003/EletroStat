@@ -900,6 +900,7 @@ const Index = () => {
                 data={eisData}
                 fittedCurve={randlesFit?.fittedCurve}
                 overlays={eisOverlays}
+                warburgStartFreq={randlesFit?.warburgStartFreq}
               />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
