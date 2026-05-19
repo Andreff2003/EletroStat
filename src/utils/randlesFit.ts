@@ -23,6 +23,9 @@ export interface RandlesFitResult extends RandlesParams {
   warburgDominated?: boolean;
   rctResolved?: boolean;
   cdlResolved?: boolean;
+  warburgStartFreq?: number;   // Hz — where Warburg tail begins
+  semicirclePoints?: number;   // how many points used for the LM fit
+  totalPoints?: number;        // total points in the dataset
 }
 
 export interface WarburgResult {
@@ -94,65 +97,42 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     };
   }
 
-  // f at peak zImag
-  let peakIdx = 0;
-  for (let i = 0; i < data.length; i++) {
-    if (zImags[i] > zImags[peakIdx]) peakIdx = i;
-  }
-  const fPeak = data[peakIdx].frequency || 100;
+  // Split the spectrum into the semicircle (used for LM fitting) and the
+  // Warburg tail (used only to estimate Aw and for display extrapolation).
+  const { semicircle, warburg, warburgStartFreq } = splitSemicircleWarburg(data);
+  const fitData = semicircle.length >= 8 ? semicircle : data;
+  const n = fitData.length;
 
-  // Detect Warburg-dominated spectra (no clear semicircle, ~45° low-freq slope).
-  const isWarburgDominated = (() => {
-    // Sort low → high frequency. The lowest-frequency point sits at index 0.
-    const sorted = [...data].sort((a, b) => a.frequency - b.frequency);
-    if (sorted.length < 3) return false;
+  // Initial parameter estimates from the semicircle region only.
+  const fitZReals = fitData.map(d => d.zReal);
+  const fitMinRe = Math.min(...fitZReals);
+  const fitMaxRe = Math.max(...fitZReals);
+  // fitData is sorted high → low frequency (from splitSemicircleWarburg).
+  const highFreqPt = fitData[0];
+  const Rs0 = Math.max(highFreqPt.zReal, 1);
+  const Rct0 = Math.max(fitMaxRe - fitMinRe, 10);
+  const peakInFit = fitData.reduce(
+    (max, p) => (p.zImag > max.zImag ? p : max),
+    fitData[0]
+  );
+  const fPeak = peakInFit.frequency || 100;
+  const Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
+  // Aw from the lowest frequency Warburg point if available, else lowest fitData.
+  const warburgPt =
+    warburg.length > 0
+      ? warburg[warburg.length - 1]
+      : fitData[fitData.length - 1];
+  const omegaLow = 2 * Math.PI * Math.max(warburgPt.frequency, 1e-9);
+  const Aw0 = Math.max(Math.abs(warburgPt.zImag) * Math.sqrt(omegaLow), 1);
 
-    // Find the peak of Z'' (top of the semicircle, if any).
-    const maxImagPoint = sorted.reduce(
-      (max, p) => (p.zImag > max.zImag ? p : max),
-      sorted[0]
-    );
-
-    // The lowest-frequency point in the sweep.
-    const lowestFreqPoint = sorted[0];
-
-    // If the lowest-frequency point is still near (or above) the peak,
-    // the curve never came back down → Warburg-dominated (no clear semicircle).
-    // If it dropped well below the peak, we have a proper semicircle.
-    return lowestFreqPoint.zImag > maxImagPoint.zImag * 0.9;
-  })();
-
-  let Rs0: number;
-  let Rct0: number;
-  let Cdl0: number;
-  let Aw0: number;
-  if (isWarburgDominated) {
-    const sortedHighToLow = [...data].sort((a, b) => b.frequency - a.frequency);
-    Rs0 = Math.max(sortedHighToLow[0].zReal, 1);
-    Rct0 = Math.max((maxRe - minRe) * 0.2, 10);
-    Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
-    const lowestFreqPoint = sortedHighToLow[sortedHighToLow.length - 1];
-    const omegaLow = 2 * Math.PI * Math.max(lowestFreqPoint.frequency, 1e-9);
-    Aw0 = Math.max(lowestFreqPoint.zImag * Math.sqrt(omegaLow), 1);
-  } else {
-    Rs0 = Math.max(minRe, 1);
-    Rct0 = Math.max(range, 10);
-    Cdl0 = 1 / (2 * Math.PI * fPeak * Rct0);
-    const lowestFreqPoint = data.reduce((a, b) => (a.frequency < b.frequency ? a : b));
-    const omegaLow = 2 * Math.PI * Math.max(lowestFreqPoint.frequency, 1e-9);
-    Aw0 = Math.max(lowestFreqPoint.zImag * Math.sqrt(omegaLow), 1);
-  }
-
-  // Stack real + imaginary residuals into a single vector for LM.
-  // x = index; y = [zReal_0..zReal_{n-1}, zImag_0..zImag_{n-1}]
-  const n = data.length;
+  // Stack real + imaginary residuals into a single vector for LM (semicircle only).
   const xs = new Array(2 * n);
   const ys = new Array(2 * n);
   for (let i = 0; i < n; i++) {
     xs[i] = i;
     xs[i + n] = i + n;
-    ys[i] = data[i].zReal;
-    ys[i + n] = data[i].zImag;
+    ys[i] = fitData[i].zReal;
+    ys[i + n] = fitData[i].zImag;
   }
 
   // Fit in log-space to keep parameters positive.
@@ -166,7 +146,7 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     };
     const which = idx < n ? "re" : "im";
     const i = idx < n ? idx : idx - n;
-    const m = modelZ(2 * Math.PI * data[i].frequency, p);
+    const m = modelZ(2 * Math.PI * fitData[i].frequency, p);
     return which === "re" ? m.zReal : m.zImag;
   };
 
@@ -219,19 +199,23 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     Aw: Math.exp(parameterValues[3]),
   };
 
-  // Compute final RMSE as % of mean |Z|
+  // Compute final RMSE as % of mean |Z| — over the semicircle region only.
+  // Warburg-tail residuals against a pure Randles model are expected to be high
+  // and should not penalise the fit metric.
   let sse = 0;
-  for (const pt of data) {
+  for (const pt of fitData) {
     const m = modelZ(2 * Math.PI * pt.frequency, fitted);
     const dr = m.zReal - pt.zReal;
     const di = m.zImag - pt.zImag;
     sse += dr * dr + di * di;
   }
-  const rmse = Math.sqrt(sse / (2 * data.length));
-  const meanZ = data.reduce((s, d) => s + Math.sqrt(d.zReal * d.zReal + d.zImag * d.zImag), 0) / data.length;
+  const rmse = Math.sqrt(sse / (2 * fitData.length));
+  const meanZ =
+    fitData.reduce((s, d) => s + Math.sqrt(d.zReal * d.zReal + d.zImag * d.zImag), 0) /
+    fitData.length;
   const fitErrorPct = lmConverged ? (rmse / Math.max(meanZ, 1e-9)) * 100 : -1;
 
-  // Build fitted curve sampled at the same frequencies (sorted by freq desc to draw nicely)
+  // Build fitted curve over the FULL frequency range (incl. Warburg) for display.
   const fittedCurve = data
     .slice()
     .sort((a, b) => b.frequency - a.frequency)
@@ -258,9 +242,12 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     fittedCurve: lmConverged ? fittedCurve : [],
     f0,
     warnFlags,
-    warburgDominated: isWarburgDominated,
+    warburgDominated: warburg.length > 0,
     rctResolved: true,
     cdlResolved: true,
+    warburgStartFreq,
+    semicirclePoints: fitData.length,
+    totalPoints: data.length,
   };
 
   if (fitErrorPct > 20 || !lmConverged || fitErrorPct < 0) {
@@ -273,6 +260,60 @@ export function fitRandles(data: EISDataPoint[]): RandlesFitResult | null {
     }
   }
   return randlesResult;
+}
+
+/**
+ * Separate a Nyquist sweep into the semicircle (charge-transfer) region and the
+ * Warburg diffusion tail using the local |ΔZ''/ΔZ'| slope criterion.
+ * The Warburg region is the contiguous run of low-frequency points whose
+ * adjacent slope sits near 1 (≈45° in the Nyquist plane).
+ */
+function splitSemicircleWarburg(data: EISDataPoint[]): {
+  semicircle: EISDataPoint[];
+  warburg: EISDataPoint[];
+  warburgStartFreq: number;
+} {
+  // Sort from high frequency to low frequency.
+  const sorted = [...data].sort((a, b) => b.frequency - a.frequency);
+
+  // |ΔZ''/ΔZ'| between consecutive points (high → low freq).
+  const slopes: number[] = [0];
+  for (let i = 1; i < sorted.length; i++) {
+    const dRe = Math.abs(sorted[i].zReal - sorted[i - 1].zReal);
+    const dIm = Math.abs(sorted[i].zImag - sorted[i - 1].zImag);
+    slopes.push(dRe > 0.5 ? dIm / dRe : 0);
+  }
+
+  // Walk from the LOWEST frequency upward; stop after 3 consecutive
+  // non-Warburg slopes — that marks the top of the semicircle.
+  let warburgEndIdx = sorted.length - 1;
+  let consecutiveNonWarburg = 0;
+  for (let i = sorted.length - 1; i >= 1; i--) {
+    const slope = slopes[i];
+    const isWarburg = slope > 0.65 && slope < 1.35;
+    if (!isWarburg) {
+      consecutiveNonWarburg++;
+      if (consecutiveNonWarburg >= 3) {
+        warburgEndIdx = i + 3;
+        break;
+      }
+    } else {
+      consecutiveNonWarburg = 0;
+    }
+  }
+
+  warburgEndIdx = Math.min(warburgEndIdx, sorted.length - 1);
+
+  const semicircle = sorted.slice(0, warburgEndIdx);
+  const warburg = sorted.slice(warburgEndIdx);
+  const warburgStartFreq = warburg.length > 0 ? warburg[0].frequency : 0;
+
+  // Safety: need at least 8 points for a meaningful semicircle fit.
+  if (semicircle.length < 8) {
+    return { semicircle: sorted, warburg: [], warburgStartFreq: 0 };
+  }
+
+  return { semicircle, warburg, warburgStartFreq };
 }
 
 /**
