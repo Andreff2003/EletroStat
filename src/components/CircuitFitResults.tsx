@@ -36,8 +36,6 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
       : f0.toExponential(2)
     : "—";
 
-  const warburgStartFreq = fit.warburgStartFreq ?? 0;
-  const hasWarburg = warburgStartFreq > 0;
   const warburgDominated = fit.warburgDominated === true;
   const rctResolved = fit.rctResolved !== false;
   const cdlResolved = fit.cdlResolved !== false;
@@ -135,23 +133,14 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
 
       <div className="grid grid-cols-2 gap-2">{paramCards}</div>
 
-      {fit.semicirclePoints !== undefined && fit.totalPoints !== undefined && (
-        <div className="text-[10px] font-mono text-muted-foreground">
-          Fit region:{" "}
-          {hasWarburg ? `${warburgStartFreq.toFixed(1)} Hz` : "full sweep"}
-          {hasWarburg ? " – 100 kHz" : ""}
-          {" "}({fit.semicirclePoints} of {fit.totalPoints} points)
-        </div>
-      )}
-
-      {hasWarburg && (
+      {warburgDominated && (
         <div className="bg-blue-950/40 border border-blue-700/40 rounded p-2 text-xs">
-          <p className="text-blue-300 font-semibold">
-            ℹ Warburg tail detected below {warburgStartFreq.toFixed(1)} Hz
-          </p>
+          <p className="text-blue-300 font-semibold">ℹ Warburg-dominated spectrum</p>
           <p className="text-muted-foreground mt-1">
-            Rct and Cdl extracted from semicircle region only.
-            Aw (diffusion coefficient) extracted from Warburg tail.
+            The EIS data shows strong diffusion control. The semicircle (charge-transfer)
+            region is not resolved in this frequency range. The extracted Rs is reliable.
+            Rct requires higher frequency data to be resolved accurately. The Warburg
+            coefficient Aw is shown.
           </p>
         </div>
       )}

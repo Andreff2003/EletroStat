@@ -1,6 +1,6 @@
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend, ReferenceLine,
+  Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
@@ -18,32 +18,12 @@ interface NyquistPlotProps {
   data: EISDataPoint[];
   fittedCurve?: { zReal: number; zImag: number }[];
   overlays?: { label: string; color: string; data: EISDataPoint[] }[];
-  warburgStartFreq?: number;
 }
 
-const NyquistPlot = ({ data, fittedCurve, overlays, warburgStartFreq }: NyquistPlotProps) => {
+const NyquistPlot = ({ data, fittedCurve, overlays }: NyquistPlotProps) => {
   const plotData = data.map(d => ({ x: d.zReal, y: d.zImag }));
+  const fitData = (fittedCurve ?? []).map(d => ({ x: d.zReal, y: d.zImag }));
   const ovs = overlays ?? [];
-
-  // Split the fitted curve into the semicircle region (above warburgStartFreq)
-  // and the Warburg extrapolation (below) so they can be rendered differently.
-  const fitAll = (fittedCurve ?? []) as { zReal: number; zImag: number; frequency?: number }[];
-  const hasSplit = !!warburgStartFreq && warburgStartFreq > 0;
-  const fitSemi = hasSplit
-    ? fitAll.filter(d => (d.frequency ?? Infinity) >= warburgStartFreq!)
-    : fitAll;
-  const fitWarb = hasSplit
-    ? fitAll.filter(d => (d.frequency ?? Infinity) < warburgStartFreq!)
-    : [];
-  const fitSemiData = fitSemi.map(d => ({ x: d.zReal, y: d.zImag }));
-  const fitWarbData = fitWarb.map(d => ({ x: d.zReal, y: d.zImag }));
-
-  // Vertical reference line at the split point's zReal value.
-  const splitPoint =
-    hasSplit
-      ? [...data]
-          .sort((a, b) => Math.abs(a.frequency - warburgStartFreq!) - Math.abs(b.frequency - warburgStartFreq!))[0]
-      : undefined;
 
   return (
     <div className="w-full h-full">
@@ -103,41 +83,16 @@ const NyquistPlot = ({ data, fittedCurve, overlays, warburgStartFreq }: NyquistP
               name={o.label}
             />
           ))}
-          {fitSemiData.length > 0 && (
+          {fitData.length > 0 && (
             <Scatter
-              data={fitSemiData}
-              fill="transparent"
-              stroke="hsl(170 80% 55%)"
-              r={0}
-              line={{ stroke: "hsl(170 80% 55%)", strokeWidth: 2 }}
-              lineType="joint"
-              isAnimationActive={false}
-              name="Semicircle fit"
-            />
-          )}
-          {fitWarbData.length > 0 && (
-            <Scatter
-              data={fitWarbData}
+              data={fitData}
               fill="transparent"
               stroke="hsl(30 90% 60%)"
               r={0}
               line={{ stroke: "hsl(30 90% 60%)", strokeWidth: 2, strokeDasharray: "6 4" }}
               lineType="joint"
               isAnimationActive={false}
-              name="Warburg extrapolation"
-            />
-          )}
-          {splitPoint && (
-            <ReferenceLine
-              x={splitPoint.zReal}
-              stroke="hsl(215 15% 50%)"
-              strokeDasharray="4 4"
-              label={{
-                value: "← semicircle | Warburg →",
-                position: "top",
-                fill: "hsl(215 15% 60%)",
-                fontSize: 10,
-              }}
+              name="Randles fit"
             />
           )}
           {ovs.length > 0 && (
