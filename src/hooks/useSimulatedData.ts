@@ -32,6 +32,8 @@ const KD = 25;          // nM — simulated aptamer dissociation constant
 const RCT_MIN = 300;    // Ω
 const RCT_MAX = 800;    // Ω
 const RS = 200;         // Ω — solution resistance (constant)
+const CDL = 20e-6;      // F — double-layer capacitance (20 µF)
+const AW_BASE = 80;     // Ω/√s — Warburg coefficient (concentration-independent)
 const VT_BASELINE = 0.30;   // V
 const VT_MAX_SHIFT = 0.40;  // V
 const ID_MAX = 50;          // µA at top of analyte curve
@@ -55,7 +57,6 @@ export function useSimulatedEIS(speed: number = 200) {
         ? (RCT_MAX - RCT_MIN) * concentration / (concentration + KD)
         : 0;
     const Rct = RCT_MIN + deltaRct;
-    const R = Rct / 2;
 
     const freqMin = 0.1;
     const freqMax = 1e5;
@@ -64,10 +65,35 @@ export function useSimulatedEIS(speed: number = 200) {
 
     const points: EISDataPoint[] = [];
     for (let i = 0; i < totalPoints; i++) {
-      const theta = (Math.PI * i) / (totalPoints - 1);
-      const zReal = RS + R - R * Math.cos(theta) + noise(2);
-      const zImag = R * Math.sin(theta) + noise(2);
       const frequency = Math.pow(10, logMax - (i / (totalPoints - 1)) * (logMax - logMin));
+      const omega = 2 * Math.PI * frequency;
+
+      // Warburg impedance: Zw = Aw/√ω · (1 − j)
+      const wMag = AW_BASE / Math.sqrt(omega);
+      const zwRe = wMag;
+      const zwIm = -wMag;
+
+      // Faradaic branch: Zf = Rct + Zw
+      const zfRe = Rct + zwRe;
+      const zfIm = zwIm;
+
+      // Admittance of faradaic branch: Yf = 1/Zf
+      const zfMag2 = zfRe * zfRe + zfIm * zfIm;
+      const yfRe = zfRe / zfMag2;
+      const yfIm = -zfIm / zfMag2;
+
+      // Parallel with Cdl: Ycdl = jωCdl
+      const yTotRe = yfRe;
+      const yTotIm = yfIm + omega * CDL;
+
+      // Parallel impedance: Zp = 1/Ytot
+      const yMag2 = yTotRe * yTotRe + yTotIm * yTotIm;
+      const zpRe = yTotRe / yMag2;
+      const zpIm = -yTotIm / yMag2;
+
+      // Total impedance: Z = Rs + Zp
+      const zReal = RS + zpRe + noise(2);
+      const zImag = -zpIm + noise(2); // store as positive (negative imag flipped)
       const zMag = Math.sqrt(zReal * zReal + zImag * zImag);
       const phase = -Math.atan2(zImag, zReal) * (180 / Math.PI);
       points.push({
