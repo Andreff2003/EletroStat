@@ -114,7 +114,7 @@ export function useWebSocketData(): UseWebSocketDataReturn {
                   zImag: msg.zImag,
                   frequency: msg.frequency,
                   zMag: msg.zMag ?? Math.sqrt(msg.zReal ** 2 + msg.zImag ** 2),
-                  phase: msg.phase ?? Math.atan2(-msg.zImag, msg.zReal) * (180 / Math.PI),
+                  phase: msg.phase ?? -Math.atan2(msg.zImag, msg.zReal) * (180 / Math.PI),
                 },
               ]);
               break;
