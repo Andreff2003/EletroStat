@@ -49,6 +49,7 @@ export interface CVParams {
   n: number;          // electrons
   cMM: number;        // mM
   areaCm2: number;    // cm²
+  cvModel: "reversible" | "quasi-reversible";
 }
 
 export const DEFAULT_CV_PARAMS: CVParams = {
@@ -60,6 +61,7 @@ export const DEFAULT_CV_PARAMS: CVParams = {
   n: 1,
   cMM: 5,
   areaCm2: 0.0707,
+  cvModel: "reversible",
 };
 
 interface ParametersPanelProps {
@@ -280,6 +282,31 @@ const ParametersPanel = ({
               onChange={(v) => onChangeCV({ ...cvParams, areaCm2: v })}
               disabled={disabled}
             />
+            <div className="flex flex-col gap-1 col-span-2">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                CV Model
+              </Label>
+              <select
+                disabled={disabled}
+                value={cvParams.cvModel}
+                onChange={(e) =>
+                  onChangeCV({
+                    ...cvParams,
+                    cvModel: e.target.value as CVParams["cvModel"],
+                  })
+                }
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="reversible">Reversible (Randles–Ševčík)</option>
+                <option value="quasi-reversible">
+                  Quasi-reversible (Butler–Volmer)
+                </option>
+              </select>
+              <span className="text-[10px] text-muted-foreground font-mono">
+                Default: reversible. Quasi-reversible is an educational
+                approximation; D apparent may be biased.
+              </span>
+            </div>
           </div>
         )}
       </CollapsibleContent>
