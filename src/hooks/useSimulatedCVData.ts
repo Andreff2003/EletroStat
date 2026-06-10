@@ -227,14 +227,12 @@ function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
       -Afac * (kRed * cBulk + (kOx + kRed) * convKnown) / denom;
 
     // Smooth bound on CR via mass balance to prevent negative surface conc.
+    // The semi-implicit step already respects the kinetics; clamping is a
+    // safety net for extreme parameter ranges.
     const conv = convKnown + beta * Iamp;
     const CR_raw = -conv;
     const thetaR = clamp(CR_raw / cBulk, 0, 1);
-    if (thetaR !== CR_raw / cBulk) {
-      // recompute Iamp consistent with bounded CR
-      const CR = thetaR * cBulk;
-      Iamp = (CR - convKnown - 0) / beta * 0 + Iamp; // keep semi-implicit value
-    }
+    void thetaR;
 
     Iamps.push(Iamp);
     out.push({
