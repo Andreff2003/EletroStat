@@ -239,7 +239,7 @@ export function computeCVMetrics(
     IpaIpcRatio <= 1.1
   ) {
     reversibility = "reversible";
-  } else if (deltaEp <= expectedDeltaEp + 150 && IpaIpcRatio >= 0.7 && IpaIpcRatio <= 1.5) {
+  } else if (deltaEp <= expectedDeltaEp + 200 && IpaIpcRatio >= 0.7 && IpaIpcRatio <= 1.3) {
     reversibility = "quasi-reversible";
   } else {
     reversibility = "irreversible";
