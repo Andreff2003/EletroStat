@@ -137,9 +137,30 @@ export function computeCVMetrics(
 
   const warnings: string[] = [];
 
-  const { switchIdx, goesPositive } = findSwitchIdx(sample);
-  const fwd = sample.slice(0, switchIdx + 1);
-  const rev = sample.slice(switchIdx);
+  // Prefer the branch tags emitted by the simulator/hardware when present.
+  const hasBranches = sample.some(
+    (p) => p.branch === "forward" || p.branch === "reverse",
+  );
+  let fwd: CVDataPoint[];
+  let rev: CVDataPoint[];
+  let goesPositive: boolean;
+  if (hasBranches) {
+    fwd = sample.filter((p) => p.branch === "forward");
+    rev = sample.filter((p) => p.branch === "reverse");
+    if (fwd.length < 2 || rev.length < 2) {
+      const fb = findSwitchIdx(sample);
+      fwd = sample.slice(0, fb.switchIdx + 1);
+      rev = sample.slice(fb.switchIdx);
+      goesPositive = fb.goesPositive;
+    } else {
+      goesPositive = fwd[fwd.length - 1].E > fwd[0].E;
+    }
+  } else {
+    const fb = findSwitchIdx(sample);
+    fwd = sample.slice(0, fb.switchIdx + 1);
+    rev = sample.slice(fb.switchIdx);
+    goesPositive = fb.goesPositive;
+  }
 
   // Per-branch baseline.
   const fwdBase = fitBranchBaseline(fwd);
