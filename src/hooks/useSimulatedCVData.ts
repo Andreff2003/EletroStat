@@ -2,15 +2,29 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 /**
  * ============================================================
- * SIMULATED CV DATA — Butler-Volmer + semi-infinite diffusion
+ * SIMULATED CV DATA — two educational models
  * ------------------------------------------------------------
- * This is an EDUCATIONAL approximation, not a full equivalent
- * to EC-Lab, CHI or Gamry CV simulators. It uses:
- *   - Butler-Volmer kinetics at the electrode surface
- *   - Semi-infinite linear diffusion via product-integration
- *     of the singular Cottrell kernel 1/sqrt(t - tau)
- *   - Equal diffusion coefficients for O and R
- *   - First-order mass balance: CO_surf + CR_surf ≈ cBulk
+ * Two CV models are exposed:
+ *
+ *  A) "reversible" — analytical / parametric reversible model.
+ *     Produces two smooth Gaussian-like peaks placed at
+ *       Epc = E0' - 59.16 mV / (2n)
+ *       Epa = E0' + 59.16 mV / (2n)
+ *     with peak current from Randles–Ševčík:
+ *       ip = 0.4463 · n · F · A · C · sqrt(n·F·D·v / (R·T))
+ *     plus a small capacitive baseline (Cdl · v).  This is the
+ *     DEFAULT model and is meant to behave well: ΔEp ≈ 59/n mV,
+ *     |Ipa/Ipc| ≈ 1, ip ∝ C·sqrt(v).  It is NOT a Nicholson–Shain
+ *     digital simulation — it is an educational parametric shape.
+ *
+ *  B) "quasi-reversible" — Butler–Volmer kinetics + semi-infinite
+ *     diffusion (product-integration of the Cottrell kernel),
+ *     solved semi-implicitly per step.  Equal D for O and R,
+ *     first-order mass balance CO_surf + CR_surf ≈ cBulk.
+ *     Educational approximation only; D_apparent from
+ *     Randles–Ševčík may be biased for this regime.
+ *
+ *  C) Reserved for future "live" / real-hardware data path.
  *
  * Sign convention (kept consistent across the whole project):
  *   anodic current  → positive (oxidation, R → O)
@@ -29,6 +43,8 @@ export interface CVDataPoint {
   Icorr?: number;                             // µA — baseline-corrected current (optional)
 }
 
+export type CVModel = "reversible" | "quasi-reversible";
+
 export interface CVSimParams {
   scanRate: number;   // mV/s
   eStart: number;     // V
@@ -38,6 +54,7 @@ export interface CVSimParams {
   n: number;          // electrons transferred
   cMM: number;        // bulk concentration of O, mM
   areaCm2: number;    // electrode area, cm²
+  cvModel?: CVModel;  // default: "reversible"
 }
 
 export const DEFAULT_CV_PARAMS: CVSimParams = {
@@ -49,6 +66,7 @@ export const DEFAULT_CV_PARAMS: CVSimParams = {
   n: 1,
   cMM: 5,
   areaCm2: 0.0707,
+  cvModel: "reversible",
 };
 
 // Physical constants
@@ -60,6 +78,7 @@ const D = 7.26e-6;     // cm²/s
 const K0 = 0.01;       // cm/s
 const ALPHA = 0.5;
 const K_MAX = 10;      // cm/s — numerical safety ceiling (educational)
+const CDL_PER_AREA = 20e-6; // F/cm² — typical aqueous double-layer capacitance
 
 export const CV_E0_PRIME = E0_PRIME;
 
@@ -87,25 +106,15 @@ function validateParams(p: CVSimParams): string | null {
   return null;
 }
 
-function buildCVPoints(params: CVSimParams): CVDataPoint[] {
-  const invalid = validateParams(params);
-  if (invalid) {
-    console.warn(`[CV simulation] invalid params — ${invalid}`);
-    return [];
-  }
-  const { scanRate, eStart, eVertex1, eVertex2, nCycles, n, cMM, areaCm2 } = params;
+type Seg = { E: number; branch: "forward" | "reverse" | "return"; cycle: number; dir: 1 | -1 };
 
-  const cBulk = cMM * 1e-6;     // mol/cm³
-  const v = scanRate / 1000;    // V/s
-  const stepV = 0.001;          // 1 mV per step — smoother CV
-  const dt = stepV / v;         // s
+function buildPotentialProgram(params: CVSimParams): { segs: Seg[]; dt: number; stepV: number } {
+  const v = params.scanRate / 1000; // V/s
+  const stepV = 0.001;              // 1 mV per step
+  const dt = stepV / v;
 
-  // Build the potential program from the current cursor. Each segment
-  // carries its own cycle index so we never have to derive it from a
-  // total-points / nCycles ratio (which goes wrong with return segments).
-  type Seg = { E: number; branch: "forward" | "reverse" | "return"; cycle: number };
-  let cur = eStart;
-  const segs: Seg[] = [{ E: cur, branch: "forward", cycle: 1 }];
+  let cur = params.eStart;
+  const segs: Seg[] = [{ E: cur, branch: "forward", cycle: 1, dir: 1 }];
   const addRamp = (
     from: number,
     to: number,
@@ -113,72 +122,119 @@ function buildCVPoints(params: CVSimParams): CVDataPoint[] {
     cycle: number,
   ) => {
     const steps = Math.max(1, Math.round(Math.abs(to - from) / stepV));
+    const dir: 1 | -1 = to >= from ? 1 : -1;
     for (let i = 1; i <= steps; i++) {
-      segs.push({ E: from + (to - from) * (i / steps), branch, cycle });
+      segs.push({ E: from + (to - from) * (i / steps), branch, cycle, dir });
     }
   };
-  for (let c = 1; c <= nCycles; c++) {
-    addRamp(cur, eVertex1, "forward", c);
-    cur = eVertex1;
-    addRamp(cur, eVertex2, "reverse", c);
-    cur = eVertex2;
-    if (c < nCycles && Math.abs(cur - eStart) > 1e-9) {
-      addRamp(cur, eStart, "return", c);
-      cur = eStart;
+  for (let c = 1; c <= params.nCycles; c++) {
+    addRamp(cur, params.eVertex1, "forward", c);
+    cur = params.eVertex1;
+    addRamp(cur, params.eVertex2, "reverse", c);
+    cur = params.eVertex2;
+    if (c < params.nCycles && Math.abs(cur - params.eStart) > 1e-9) {
+      addRamp(cur, params.eStart, "return", c);
+      cur = params.eStart;
     }
   }
+  // first point has no defined direction yet; copy from next
+  if (segs.length >= 2) segs[0].dir = segs[1].dir;
+  return { segs, dt, stepV };
+}
 
-  const totalPts = segs.length;
+/**
+ * Reversible parametric model — two Gaussian peaks (cathodic on the
+ * decreasing-E branch, anodic on the increasing-E branch) plus a tiny
+ * capacitive baseline. Designed to satisfy ΔEp≈59/n mV and |Ipa/Ipc|≈1.
+ */
+function buildReversibleCV(params: CVSimParams): CVDataPoint[] {
+  const { segs, dt } = buildPotentialProgram(params);
+  const { n, cMM, areaCm2, scanRate } = params;
+
+  const cBulk = cMM * 1e-6; // mol/cm³
+  const vVs = scanRate / 1000;
+
+  // Randles–Ševčík peak current (A)
+  const ipA =
+    0.4463 *
+    n *
+    F *
+    areaCm2 *
+    cBulk *
+    Math.sqrt((n * F * D * vVs) / (R * T));
+  const ipUA = ipA * 1e6;
+
+  const Epc = E0_PRIME - 0.05916 / (2 * n);
+  const Epa = E0_PRIME + 0.05916 / (2 * n);
+  const sigmaE = Math.max(0.035 / Math.sqrt(n), 0.015);
+  const peakRatio = 1.0;
+
+  // Capacitive baseline — Cdl·v. Tiny for typical defaults.
+  const Cdl = CDL_PER_AREA * areaCm2;          // F
+  const Icap_uA = Cdl * vVs * 1e6;             // µA per direction unit
+
+  const noiseAmp = Math.sqrt(scanRate) * 0.005;
+
+  const out: CVDataPoint[] = [];
+  for (let i = 0; i < segs.length; i++) {
+    const { E, branch, cycle, dir } = segs[i];
+    // Cathodic peak on decreasing-E branch (dir=-1), anodic on increasing.
+    const cath = -ipUA * Math.exp(-0.5 * ((E - Epc) / sigmaE) ** 2);
+    const an   = peakRatio * ipUA * Math.exp(-0.5 * ((E - Epa) / sigmaE) ** 2);
+    const faradaic = dir < 0 ? cath : an;
+    const capacitive = dir * Icap_uA;
+    const I = faradaic + capacitive + gaussianNoise(noiseAmp);
+    out.push({ E, I, cycle, t: i * dt, branch });
+  }
+  return out;
+}
+
+/**
+ * Quasi-reversible model — Butler–Volmer + semi-infinite diffusion
+ * solved semi-implicitly. Educational approximation; D_apparent from
+ * Randles–Ševčík may be biased when ΔEp > the reversible value.
+ */
+function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
+  const { segs, dt } = buildPotentialProgram(params);
+  const { n, cMM, areaCm2, scanRate } = params;
+
+  const cBulk = cMM * 1e-6;
   const sqrtPiD = Math.sqrt(Math.PI * D);
   const sqrtDt = Math.sqrt(dt);
-  const noiseAmp = Math.sqrt(scanRate) * 0.005; // µA — reduced for stability
+  const noiseAmp = Math.sqrt(scanRate) * 0.005;
 
-  // Semi-implicit convolution coefficient (Cottrell kernel split into
-  // known history + current-step contribution).
   const Afac = n * F * areaCm2;
-  const beta = (2 * sqrtDt) / (Afac * sqrtPiD); // (mol/cm³) / A
+  const beta = (2 * sqrtDt) / (Afac * sqrtPiD);
 
   const Iamps: number[] = [];
   const out: CVDataPoint[] = [];
 
-  for (let i = 0; i < totalPts; i++) {
+  for (let i = 0; i < segs.length; i++) {
     const { E, branch, cycle } = segs[i];
     const eta = E - E0_PRIME;
-
-    // Butler-Volmer rates with educational numerical ceiling.
     const kRed = Math.min(K_MAX, K0 * safeExp(-ALPHA * n * F * eta / (R * T)));
     const kOx  = Math.min(K_MAX, K0 * safeExp((1 - ALPHA) * n * F * eta / (R * T)));
 
-    // Convolution from past currents only. The current step's contribution
-    // is folded analytically below so we can solve for I_i implicitly.
     let sumHist = 0;
     for (let j = 0; j < i; j++) {
       const k = i - j;
       sumHist += Iamps[j] * 2 * (Math.sqrt(k) - Math.sqrt(k - 1));
     }
-    const convKnown = (sumHist * sqrtDt) / (Afac * sqrtPiD); // mol/cm³
+    const convKnown = (sumHist * sqrtDt) / (Afac * sqrtPiD);
 
-    // Semi-implicit BV + diffusion:
-    //   CO = cBulk + convKnown + beta * I_i
-    //   CR = -(convKnown + beta * I_i)
-    //   I_i = Afac * (kOx * CR - kRed * CO)
-    // → I_i [1 + Afac·beta·(kOx + kRed)] = -Afac·[kRed·cBulk + (kOx+kRed)·convKnown]
     const denom = 1 + Afac * beta * (kOx + kRed);
     let Iamp =
       -Afac * (kRed * cBulk + (kOx + kRed) * convKnown) / denom;
 
-    // Recover surface concentrations and apply a smooth (not jumpy) bound
-    // on CR via mass balance — preserves CO + CR = cBulk.
+    // Smooth bound on CR via mass balance to prevent negative surface conc.
+    // The semi-implicit step already respects the kinetics; clamping is a
+    // safety net for extreme parameter ranges.
     const conv = convKnown + beta * Iamp;
-    let CR = -conv;
-    const thetaR = clamp(CR / cBulk, 0, 1);
-    CR = thetaR * cBulk;
-    const CO = cBulk - CR;
-    // Accept the implicit Iamp; smooth clamp above prevents brusque jumps.
-    void CO;
+    const CR_raw = -conv;
+    const thetaR = clamp(CR_raw / cBulk, 0, 1);
+    void thetaR;
 
     Iamps.push(Iamp);
-
     out.push({
       E,
       I: Iamp * 1e6 + gaussianNoise(noiseAmp),
@@ -188,6 +244,18 @@ function buildCVPoints(params: CVSimParams): CVDataPoint[] {
     });
   }
   return out;
+}
+
+function buildCVPoints(params: CVSimParams): CVDataPoint[] {
+  const invalid = validateParams(params);
+  if (invalid) {
+    console.warn(`[CV simulation] invalid params — ${invalid}`);
+    return [];
+  }
+  const model = params.cvModel ?? "reversible";
+  return model === "quasi-reversible"
+    ? buildQuasiReversibleCV(params)
+    : buildReversibleCV(params);
 }
 
 export function useSimulatedCVData(speed: number = 40) {

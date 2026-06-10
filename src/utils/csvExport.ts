@@ -431,6 +431,7 @@ export function exportCVData(
   metrics: CVMetrics | null,
   scanRate_mVs: number,
   source: ExportSource = "simulated",
+  cvModel: string = "reversible",
 ) {
   const id = `cv_${Date.now()}`;
   const ts = fmtTs(Date.now());
@@ -445,7 +446,7 @@ export function exportCVData(
     ]));
   }
   const procHeaders = [
-    "measurement_id", "timestamp", "scan_rate_mVs",
+    "measurement_id", "timestamp", "scan_rate_mVs", "cv_model",
     "Ipa_raw_uA", "Ipc_raw_uA",
     "Ipa_corrected_uA", "Ipc_corrected_uA",
     "Epa_V", "Epc_V", "E0prime_V",
@@ -457,7 +458,7 @@ export function exportCVData(
   const proc = [sectionHeader("PROCESSED RESULTS"), toRow(procHeaders)];
   if (metrics) {
     proc.push(toRow([
-      id, ts, fmtSig(scanRate_mVs),
+      id, ts, fmtSig(scanRate_mVs), fmtStr(cvModel),
       fmtSig(metrics.IpaRaw), fmtSig(metrics.IpcRaw),
       fmtSig(metrics.IpaCorrected), fmtSig(metrics.IpcCorrected),
       fmtSig(metrics.Epa), fmtSig(metrics.Epc), fmtSig(metrics.E0prime),

@@ -913,7 +913,7 @@ const Index = () => {
                 onClick={() => {
                   const data = dataSource === "simulated" ? cv.data : ws.cvData;
                   const metrics = computeCVMetrics(data, { scanRate_mVs: cvParams.scanRate, n: cvParams.n, cMM: cvParams.cMM, areaCm2: cvParams.areaCm2 });
-                  exportCVData(data, metrics, cvParams.scanRate, dataSource);
+                  exportCVData(data, metrics, cvParams.scanRate, dataSource, cvParams.cvModel);
                 }}
                 disabled={(dataSource === "simulated" ? cv.data.length : ws.cvData.length) === 0}
                 className="font-mono text-xs"
@@ -1205,6 +1205,12 @@ const Index = () => {
               </div>
               {cvMetrics && (
                 <>
+                  {cvParams.cvModel === "quasi-reversible" && (
+                    <div className="text-[11px] font-mono text-yellow-500 border border-yellow-500/40 bg-yellow-500/10 rounded-md p-2">
+                      ⚠ Quasi-reversible model — D apparent from
+                      Randles–Ševčík may be biased.
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                     {[
                       { label: "Ipa raw", value: Number.isFinite(cvMetrics.IpaRaw) ? `${cvMetrics.IpaRaw.toFixed(2)} µA` : "—", t: "Anodic peak current — uncorrected" },
