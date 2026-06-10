@@ -36,32 +36,148 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
       : f0.toExponential(2)
     : "—";
 
+  const fitAny = fit as RandlesFitResult & {
+    warburgStartFreq?: number;
+    warburgDominated?: boolean;
+    rctResolved?: boolean;
+    cdlResolved?: boolean;
+  };
+  const warburgStartFreq = fitAny.warburgStartFreq ?? 0;
+  const hasWarburg = warburgStartFreq > 0;
+  const warburgDominated = fitAny.warburgDominated === true;
+  const rctResolved = fitAny.rctResolved !== false;
+  const cdlResolved = fitAny.cdlResolved !== false;
+
+  const isAuto = fit.auto === true;
+  const errs = fit.errors;
+  const fmtErr = (name: string): string => {
+    const e = errs?.[name];
+    return Number.isFinite(e) ? ` ± ${e!.toFixed(1)}%` : "";
+  };
+
+  const rsCard = (
+    <div key="rs" className="bg-secondary rounded-md p-2">
+      <div className="text-[10px] text-muted-foreground font-mono uppercase">Rs</div>
+      <div className="text-sm font-mono text-foreground">{fmt(fit.Rs, 1)} Ω<span className="text-[10px] text-muted-foreground">{fmtErr("Rs")}</span></div>
+    </div>
+  );
+  const rctCard = (
+    <div
+      key="rct"
+      className={
+        rctResolved
+          ? "bg-primary/15 border border-primary/40 rounded-md p-2"
+          : "bg-muted/40 border border-border rounded-md p-2"
+      }
+    >
+      <div
+        className={
+          rctResolved
+            ? "text-[10px] text-primary font-mono uppercase"
+            : "text-[10px] text-muted-foreground font-mono uppercase"
+        }
+      >
+        Rct {rctResolved ? "★" : ""}
+      </div>
+      <div
+        className={
+          rctResolved
+            ? "text-sm font-mono text-primary font-semibold"
+            : "text-sm font-mono text-muted-foreground"
+        }
+      >
+        {fmt(fit.Rct, 1)} Ω<span className="text-[10px] text-muted-foreground font-normal">{fmtErr("Rct")}</span>
+      </div>
+      {!rctResolved && (
+        <div className="text-[9px] font-mono text-muted-foreground mt-0.5">
+          (not resolved — diffusion-limited)
+        </div>
+      )}
+    </div>
+  );
+  const cdlCard = (
+    <div key="cdl" className="bg-secondary rounded-md p-2">
+      <div className="text-[10px] text-muted-foreground font-mono uppercase">Cdl</div>
+      <div className="text-sm font-mono text-foreground">
+        {cdlMicroF >= 0.01 ? fmt(cdlMicroF, 3) : cdlMicroF.toExponential(2)} µF
+        <span className="text-[10px] text-muted-foreground">{fmtErr("Cdl")}</span>
+      </div>
+      {!cdlResolved && (
+        <div className="text-[9px] font-mono text-muted-foreground mt-0.5">(default)</div>
+      )}
+    </div>
+  );
+  const awCard = (
+    <div
+      key="aw"
+      className={
+        warburgDominated
+          ? "bg-primary/15 border border-primary/40 rounded-md p-2"
+          : "bg-secondary rounded-md p-2"
+      }
+    >
+      <div
+        className={
+          warburgDominated
+            ? "text-[10px] text-primary font-mono uppercase"
+            : "text-[10px] text-muted-foreground font-mono uppercase"
+        }
+      >
+        Aw {warburgDominated ? "★" : ""}
+      </div>
+      <div
+        className={
+          warburgDominated
+            ? "text-sm font-mono text-primary font-semibold"
+            : "text-sm font-mono text-foreground"
+        }
+      >
+        {fmt(fit.Aw, 2)} Ω/√s
+      </div>
+    </div>
+  );
+
+  const paramCards = warburgDominated
+    ? [rsCard, awCard, rctCard, cdlCard]
+    : [rsCard, rctCard, cdlCard, awCard];
+
   return (
     <div className="rounded-lg border border-border bg-card p-3 space-y-3">
-      <h3 className="text-sm font-mono text-muted-foreground">
-        Equivalent Circuit (Randles)
-      </h3>
-
-      <div className="grid grid-cols-2 gap-2">
-        <div className="bg-secondary rounded-md p-2">
-          <div className="text-[10px] text-muted-foreground font-mono uppercase">Rs</div>
-          <div className="text-sm font-mono text-foreground">{fmt(fit.Rs, 1)} Ω</div>
-        </div>
-        <div className="bg-primary/15 border border-primary/40 rounded-md p-2">
-          <div className="text-[10px] text-primary font-mono uppercase">Rct ★</div>
-          <div className="text-sm font-mono text-primary font-semibold">{fmt(fit.Rct, 1)} Ω</div>
-        </div>
-        <div className="bg-secondary rounded-md p-2">
-          <div className="text-[10px] text-muted-foreground font-mono uppercase">Cdl</div>
-          <div className="text-sm font-mono text-foreground">
-            {cdlMicroF >= 0.01 ? fmt(cdlMicroF, 3) : cdlMicroF.toExponential(2)} µF
-          </div>
-        </div>
-        <div className="bg-secondary rounded-md p-2">
-          <div className="text-[10px] text-muted-foreground font-mono uppercase">Aw</div>
-          <div className="text-sm font-mono text-foreground">{fmt(fit.Aw, 2)} Ω/√s</div>
-        </div>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-mono text-muted-foreground">
+          Equivalent Circuit (Randles){isAuto ? " · auto" : ""}
+        </h3>
+        {isAuto && fit.chiSquared !== undefined && (
+          fit.chiSquared < 0.01 ? (
+            <span className="text-[10px] font-mono text-graph-primary">✓ good fit</span>
+          ) : fit.chiSquared > 0.05 ? (
+            <span className="text-[10px] font-mono text-destructive">⚠ poor fit</span>
+          ) : null
+        )}
       </div>
+
+      <div className="grid grid-cols-2 gap-2">{paramCards}</div>
+
+      {fit.semicirclePoints !== undefined && fit.totalPoints !== undefined && (
+        <div className="text-[10px] font-mono text-muted-foreground">
+          Fit region:{" "}
+          {hasWarburg ? `${warburgStartFreq.toFixed(1)} Hz` : "full sweep"}
+          {hasWarburg ? " – 100 kHz" : ""}
+          {" "}({fit.semicirclePoints} of {fit.totalPoints} points)
+        </div>
+      )}
+
+      {hasWarburg && (
+        <div className="bg-blue-950/40 border border-blue-700/40 rounded p-2 text-xs">
+          <p className="text-blue-300 font-semibold">
+            ℹ Warburg tail detected below {warburgStartFreq.toFixed(1)} Hz
+          </p>
+          <p className="text-muted-foreground mt-1">
+            Rct and Cdl extracted from semicircle region only.
+            Aw (diffusion coefficient) extracted from Warburg tail.
+          </p>
+        </div>
+      )}
 
       <div className="flex items-center justify-between text-xs font-mono">
         <span className="text-muted-foreground">Fit error</span>
@@ -69,6 +185,26 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
           {fmt(fit.fitErrorPct, 2)} %
         </span>
       </div>
+
+      {isAuto && fit.chiSquared !== undefined && (
+        <div className="flex items-center justify-between text-xs font-mono">
+          <span className="text-muted-foreground">χ²_red</span>
+          <span
+            className={
+              fit.chiSquared < 0.01
+                ? "text-graph-primary"
+                : fit.chiSquared > 0.05
+                  ? "text-destructive"
+                  : "text-foreground"
+            }
+          >
+            {fit.chiSquared.toExponential(2)}
+            <span className="text-muted-foreground ml-2">
+              (N={fit.semicirclePoints}, dof={fit.dof})
+            </span>
+          </span>
+        </div>
+      )}
 
       <TooltipProvider delayDuration={150}>
         <Tooltip>

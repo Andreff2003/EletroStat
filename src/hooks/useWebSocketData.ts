@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { EISDataPoint, FETTransferPoint, FETTimePoint } from "./useSimulatedData";
+import type { CVDataPoint } from "./useSimulatedCVData";
 
 /**
  * ============================================================
@@ -47,6 +48,10 @@ interface UseWebSocketDataReturn {
   fetTimeData: FETTimePoint[];
   clearFET: () => void;
 
+  // CV data
+  cvData: CVDataPoint[];
+  clearCV: () => void;
+
   // Send commands to ESP32
   sendCommand: (command: string, payload?: Record<string, unknown>) => void;
 }
@@ -60,6 +65,7 @@ export function useWebSocketData(): UseWebSocketDataReturn {
   const [fetBaseline, setFetBaseline] = useState<FETTransferPoint[]>([]);
   const [fetAnalyte, setFetAnalyte] = useState<FETTransferPoint[]>([]);
   const [fetTimeData, setFetTimeData] = useState<FETTimePoint[]>([]);
+  const [cvData, setCvData] = useState<CVDataPoint[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -114,7 +120,7 @@ export function useWebSocketData(): UseWebSocketDataReturn {
                   zImag: msg.zImag,
                   frequency: msg.frequency,
                   zMag: msg.zMag ?? Math.sqrt(msg.zReal ** 2 + msg.zImag ** 2),
-                  phase: msg.phase ?? -Math.atan2(msg.zImag, msg.zReal) * (180 / Math.PI),
+                  phase: msg.phase ?? Math.atan2(-msg.zImag, msg.zReal) * (180 / Math.PI),
                 },
               ]);
               break;
@@ -130,6 +136,26 @@ export function useWebSocketData(): UseWebSocketDataReturn {
             case "fet_time":
               setFetTimeData((prev) => [...prev, { time: msg.time, id: msg.id }]);
               break;
+
+            case "cv_data": {
+              const E = Number(msg.E);
+              const I = Number(msg.I);
+              if (!Number.isFinite(E) || !Number.isFinite(I)) {
+                console.warn("[ws] cv_data ignored — invalid E/I", msg);
+                break;
+              }
+              const cycleRaw = msg.cycle != null ? Number(msg.cycle) : 1;
+              const cycle = Number.isFinite(cycleRaw) && cycleRaw >= 1
+                ? Math.floor(cycleRaw)
+                : 1;
+              const tRaw = msg.timestamp != null ? Number(msg.timestamp)
+                : msg.t != null ? Number(msg.t) : 0;
+              const t = Number.isFinite(tRaw) ? tRaw : 0;
+              const branch = msg.branch === "forward" || msg.branch === "reverse" || msg.branch === "return"
+                ? msg.branch : undefined;
+              setCvData((prev) => [...prev, { E, I, cycle, t, branch }]);
+              break;
+            }
 
             default:
               // Unknown message type — ignore
@@ -160,6 +186,9 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     setFetAnalyte([]);
     setFetTimeData([]);
   }, []);
+  const clearCV = useCallback(() => {
+    setCvData([]);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -180,6 +209,9 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     fetAnalyte,
     fetTimeData,
     clearFET,
+    cvData,
+    clearCV,
     sendCommand,
   };
 }
+

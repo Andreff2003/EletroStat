@@ -33,7 +33,7 @@ const RCT_MIN = 300;    // Ω
 const RCT_MAX = 800;    // Ω
 const RS = 200;         // Ω — solution resistance (constant)
 const CDL = 20e-6;      // F — double-layer capacitance (20 µF)
-const AW_BASE = 80;     // Ω/√s — Warburg coefficient (concentration-independent)
+const AW_BASE = 20;     // Ω/√s — Warburg coefficient (concentration-independent)
 const VT_BASELINE = 0.30;   // V
 const VT_MAX_SHIFT = 0.40;  // V
 const ID_MAX = 50;          // µA at top of analyte curve
@@ -93,9 +93,9 @@ export function useSimulatedEIS(speed: number = 200) {
 
       // Total impedance: Z = Rs + Zp
       const zReal = RS + zpRe + noise(2);
-      const zImag = -zpIm + noise(2); // store as positive (negative imag flipped)
+      const zImag = zpIm + noise(2); // true Im(Z); negative for capacitive behavior
       const zMag = Math.sqrt(zReal * zReal + zImag * zImag);
-      const phase = -Math.atan2(zImag, zReal) * (180 / Math.PI);
+      const phase = Math.atan2(zImag, zReal) * (180 / Math.PI);
       points.push({
         zReal: Math.round(zReal * 10) / 10,
         zImag: Math.round(zImag * 10) / 10,
@@ -163,17 +163,28 @@ export function useSimulatedFETTransfer(speed: number = 100) {
     const base: FETTransferPoint[] = [];
     const analyte: FETTransferPoint[] = [];
 
+    // Transconductance constant K (∝ μCox·W/L) — same for both curves so the
+    // analyte transfer is a pure horizontal shift of the baseline (parallel
+    // curves with identical Ion at the top of the sweep).
+    const K = ID_MAX / ((vgMax - VtBase) ** 2);
+
+    // Subthreshold model parameters (standard MOSFET physics)
+    const VT_THERMAL = 0.02585; // V (kT/q at 300 K)
+    const N_IDEAL = 2.0;        // ideality factor — gives SS ≈ 120 mV/dec
+    const I0 = 0.1;             // µA — small enough that 10%*Ion >> I0 at all concentrations
+
     for (let i = 0; i < totalPoints; i++) {
       const vg = vgMin + (i / (totalPoints - 1)) * (vgMax - vgMin);
 
-      const normB = (vg - VtBase) / (vgMax - VtBase);
-      const idB = ID_MAX * Math.max(0, normB) ** 2 + noise(0.2) + 0.05;
+      const subB = vg < VtBase    ? I0 * Math.exp((vg - VtBase)    / (N_IDEAL * VT_THERMAL)) : I0;
+      const subA = vg < VtAnalyte ? I0 * Math.exp((vg - VtAnalyte) / (N_IDEAL * VT_THERMAL)) : I0;
 
-      const normA = (vg - VtAnalyte) / (vgMax - VtAnalyte);
-      const idA = ID_MAX * Math.max(0, normA) ** 2 + noise(0.2) + 0.05;
+      const idB = K * Math.max(0, vg - VtBase)    ** 2 + subB + noise(0.2);
+      const idA = K * Math.max(0, vg - VtAnalyte) ** 2 + subA + noise(0.2);
 
-      base.push({ vg: Math.round(vg * 100) / 100, id: Math.round(idB * 100) / 100 });
-      analyte.push({ vg: Math.round(vg * 100) / 100, id: Math.round(idA * 100) / 100 });
+
+      base.push({ vg: Math.round(vg * 100) / 100, id: idB });
+      analyte.push({ vg: Math.round(vg * 100) / 100, id: idA });
     }
     return { base, analyte };
   }, []);
@@ -237,8 +248,12 @@ export function useSimulatedFETTime(speed: number = 200) {
     const injectionTime = 10;
     const bindingRate = 0.5;
 
+    // Fixed simulated time-step (seconds per tick) — decoupled from `speed`
+    // so playback rate changes do not warp the time axis.
+    const DT = 0.5;
+
     const interval = setInterval(() => {
-      const t = timeRef.current * (speed / 1000);
+      const t = timeRef.current * DT;
       let id: number;
       if (t < injectionTime) {
         id = baselineCurrent + noise(0.5);
@@ -252,7 +267,7 @@ export function useSimulatedFETTime(speed: number = 200) {
         id: Math.round(id * 100) / 100,
       }]);
       timeRef.current++;
-      if (t > 40) setIsRunning(false);
+      if (t > 60) setIsRunning(false);
     }, speed);
 
     return () => clearInterval(interval);

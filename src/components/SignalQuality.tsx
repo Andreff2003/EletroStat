@@ -1,34 +1,27 @@
 import { useMemo } from "react";
 import type { EISDataPoint, FETTransferPoint } from "@/hooks/useSimulatedData";
+import type { CVMetrics } from "@/utils/computeCVMetrics";
 
 /**
  * ============================================================
- * SIGNAL QUALITY PANEL
- * ============================================================
- * Computes real-time quality metrics from incoming EIS or
- * BioFET data and shows a traffic light + per-metric dots.
- *
- * EIS metrics:
- *  - Semicircle Fit (%): how well points form a semicircle
- *  - Point Noise (Ω):    avg jump between consecutive points
- *  - Rs Stability (Ω):   leftmost Z' value (solution resistance)
- *  - Total Points:       counter
- *
- * BioFET metrics:
- *  - Ion/Ioff Ratio
- *  - Subthreshold Slope (mV/dec)
- *  - Ioff current (µA)
- *  - Baseline Stability (%)
+ * SIGNAL QUALITY PANEL — EIS / BioFET / CV
  * ============================================================
  */
 
 type Level = "green" | "yellow" | "red" | "idle";
 
 interface SignalQualityProps {
-  mode: "eis" | "fet";
+  mode: "eis" | "fet" | "cv";
   eisData: EISDataPoint[];
   fetBaseline: FETTransferPoint[];
   fetAnalyte: FETTransferPoint[];
+  cnlsChiSquared?: number | null;
+  separatorZReal?: number | null;
+  fetVtBaseline?: number | null;
+  fetVtAnalyte?: number | null;
+  cvMetrics?: CVMetrics | null;
+  cvNElectrons?: number;
+  cvDeltaEpToleranceMv?: number;
 }
 
 // ---- helpers ----
@@ -61,7 +54,19 @@ const lightClass = (level: Level, active: boolean) => {
 };
 
 /** Compute EIS quality metrics. */
-function computeEISMetrics(data: EISDataPoint[]) {
+function computeEISMetrics(
+  dataAll: EISDataPoint[],
+  cnlsChiSquared?: number | null,
+  separatorZReal?: number | null,
+) {
+  // Restrict the geometric semicircle metric to the semicircle region when a
+  // separator is available (Warburg tail would otherwise corrupt circle fit).
+  const data = dataAll;
+  const semiData =
+    separatorZReal != null
+      ? dataAll.filter((d) => d.zReal <= separatorZReal)
+      : dataAll;
+
   if (data.length < 10) {
     return {
       level: "idle" as Level,
@@ -81,20 +86,31 @@ function computeEISMetrics(data: EISDataPoint[]) {
   const maxR = Math.max(...reals);
   const minR = Math.min(...reals);
 
-  // 1. Semicircle Fit (%) — center at midpoint of Z' axis, radius = half-width
-  const centerX = (maxR + minR) / 2;
-  const centerY = 0;
-  const R = (maxR - minR) / 2;
-  const distances = data.map((d) =>
-    Math.sqrt((d.zReal - centerX) ** 2 + (d.zImag - centerY) ** 2)
-  );
-  const meanD = distances.reduce((a, b) => a + b, 0) / distances.length;
-  const variance =
-    distances.reduce((a, b) => a + (b - meanD) ** 2, 0) / distances.length;
-  const stdDev = Math.sqrt(variance);
-  const fitPct = R > 1e-6
-    ? Math.max(0, Math.min(100, 100 - (stdDev / R) * 100))
-    : 0;
+  // 1. Semicircle Fit (%) — when the manual CNLS fit is available, derive from
+  // its modulus-weighted chi² (sqrt(chi²)*100 ≈ RMSE %). Otherwise fall back to
+  // a purely geometric circle-fit on the semicircle region only.
+  let fitPct: number;
+  if (Number.isFinite(cnlsChiSquared ?? NaN) && (cnlsChiSquared as number) >= 0) {
+    const errPct = Math.sqrt(cnlsChiSquared as number) * 100;
+    fitPct = Math.max(0, Math.min(100, 100 - errPct));
+  } else {
+    const sReals = semiData.map((d) => d.zReal);
+    const sMax = sReals.length ? Math.max(...sReals) : maxR;
+    const sMin = sReals.length ? Math.min(...sReals) : minR;
+    const centerX = (sMax + sMin) / 2;
+    const R = (sMax - sMin) / 2;
+    const pts = semiData.length >= 5 ? semiData : data;
+    const distances = pts.map((d) =>
+      Math.sqrt((d.zReal - centerX) ** 2 + d.zImag ** 2)
+    );
+    const meanD = distances.reduce((a, b) => a + b, 0) / distances.length;
+    const variance =
+      distances.reduce((a, b) => a + (b - meanD) ** 2, 0) / distances.length;
+    const stdDev = Math.sqrt(variance);
+    fitPct = R > 1e-6
+      ? Math.max(0, Math.min(100, 100 - (stdDev / R) * 100))
+      : 0;
+  }
 
   // 2. Point Noise (Ω) — avg consecutive Euclidean delta (need ≥5 points)
   let pointNoise = 0;
@@ -113,7 +129,7 @@ function computeEISMetrics(data: EISDataPoint[]) {
 
   // Per-metric levels
   const semicircleLevel: Level =
-    fitPct > 85 ? "green" : fitPct > 65 ? "yellow" : "red";
+    fitPct > 90 ? "green" : fitPct > 77 ? "yellow" : "red";
   const noiseLevel: Level =
     pointNoise < 15 ? "green" : pointNoise < 30 ? "yellow" : "red";
   const rsLevel: Level =
@@ -122,8 +138,8 @@ function computeEISMetrics(data: EISDataPoint[]) {
 
   // Overall traffic light
   let level: Level = "red";
-  if (fitPct > 85 && pointNoise < 15) level = "green";
-  else if (fitPct > 65 || pointNoise < 30) level = "yellow";
+  if (fitPct > 90 && pointNoise < 15) level = "green";
+  else if (fitPct > 77 || pointNoise < 30) level = "yellow";
 
   return {
     level,
@@ -165,49 +181,58 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
   const ionIoff = ion / ioffSafe;
 
   // 2. Subthreshold Slope (mV/dec)
-  // Region: id between Ioff and 10% of Ion
+  // Fit local log10(id) vs Vg windows in the rising transition region. This
+  // avoids depending on the Ioff floor and ignores noisy deep-cutoff points.
   const sortedByVg = [...analyte].sort((a, b) => a.vg - b.vg);
-  const subRegion = sortedByVg.filter((p) => {
+  const transRegion = sortedByVg.filter((p) => {
     const v = Math.abs(p.id);
-    return v >= ioffRaw && v <= 0.1 * ion;
+    return v > 1e-6 && v < 0.2 * ion;
   });
   let ss = 0;
-  if (subRegion.length >= 2) {
-    const lo = subRegion[0];
-    const hi = subRegion[subRegion.length - 1];
-    const idLow = Math.max(Math.abs(lo.id), 1e-9);
-    const idHigh = Math.max(Math.abs(hi.id), 1e-9);
-    const dLog = Math.log10(idHigh) - Math.log10(idLow);
-    if (Math.abs(dLog) > 1e-6) {
-      ss = Math.abs(((hi.vg - lo.vg) / dLog) * 1000);
+  let bestSlope = 0;
+  for (let windowSize = 4; windowSize <= 6; windowSize++) {
+    for (let start = 0; start + windowSize <= transRegion.length; start++) {
+      const window = transRegion.slice(start, start + windowSize);
+      const xs = window.map((p) => p.vg);
+      const ys = window.map((p) => Math.log10(Math.max(Math.abs(p.id), 1e-12)));
+      const n = xs.length;
+      const sumX = xs.reduce((a, b) => a + b, 0);
+      const sumY = ys.reduce((a, b) => a + b, 0);
+      const sumXY = xs.reduce((a, _, i) => a + xs[i] * ys[i], 0);
+      const sumX2 = xs.reduce((a, b) => a + b * b, 0);
+      const denom = n * sumX2 - sumX * sumX;
+      if (Math.abs(denom) <= 1e-12) continue;
+
+      const slope = (n * sumXY - sumX * sumY) / denom;
+      if (slope <= 0.1) continue;
+
+      const intercept = (sumY - slope * sumX) / n;
+      const meanY = sumY / n;
+      const total = ys.reduce((a, y) => a + (y - meanY) ** 2, 0);
+      const residual = ys.reduce((a, y, i) => a + (y - (slope * xs[i] + intercept)) ** 2, 0);
+      const rSquared = total > 1e-12 ? 1 - residual / total : 0;
+      if (rSquared > 0.8 && slope > bestSlope) bestSlope = slope;
     }
   }
+  if (bestSlope > 0) ss = 1000 / bestSlope;
 
   // 3. Ioff (µA) — minimum id in analyte
   const ioff = ioffRaw;
 
-  // 4. Baseline Stability (%) — flat region = first 20% of vg range where id < 5% of Ion
+  // 4. Baseline Stability (%) — noise floor of deep cutoff relative to Ion
   let stability = 0;
   if (baseline.length >= 5) {
     const baseSorted = [...baseline].sort((a, b) => a.vg - b.vg);
-    const vgMin = baseSorted[0].vg;
-    const vgMax = baseSorted[baseSorted.length - 1].vg;
-    const vgCutoff = vgMin + 0.2 * (vgMax - vgMin);
+    const nDeep = Math.max(3, Math.floor(baseSorted.length * 0.1));
+    const deepRegion = baseSorted.slice(0, nDeep);
+    const deepIds = deepRegion.map((p) => Math.abs(p.id));
+    const mean = deepIds.reduce((a, b) => a + b, 0) / deepIds.length;
+    const variance = deepIds.reduce((a, b) => a + (b - mean) ** 2, 0) / deepIds.length;
+    const std = Math.sqrt(variance);
     const baseIon = Math.max(...baseline.map((d) => Math.abs(d.id)));
-    const flatRegion = baseSorted.filter(
-      (p) => p.vg <= vgCutoff && Math.abs(p.id) < 0.05 * baseIon
-    );
-    if (flatRegion.length >= 2) {
-      const flatIds = flatRegion.map((p) => Math.abs(p.id));
-      const mean = flatIds.reduce((a, b) => a + b, 0) / flatIds.length;
-      const variance =
-        flatIds.reduce((a, b) => a + (b - mean) ** 2, 0) / flatIds.length;
-      const std = Math.sqrt(variance);
-      stability =
-        mean > 1e-9
-          ? Math.max(0, Math.min(100, 100 - (std / mean) * 100))
-          : 0;
-    }
+    stability = baseIon > 1e-9
+      ? Math.max(0, Math.min(100, 100 - (std / baseIon) * 100))
+      : 100;
   }
 
   const ionLevel: Level = ionIoff > 100 ? "green" : ionIoff > 20 ? "yellow" : "red";
@@ -216,8 +241,8 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
   const stabilityLevel: Level = stability > 90 ? "green" : stability > 70 ? "yellow" : "red";
 
   let level: Level = "red";
-  if (ionIoff > 100 && ss > 0 && ss < 200) level = "green";
-  else if (ionIoff > 20 || (ss > 0 && ss < 400)) level = "yellow";
+  if (ionIoff > 100 && ioff < 1 && stability > 70) level = "green";
+  else if (ionIoff > 20 || stability > 50) level = "yellow";
 
   return {
     level,
@@ -253,27 +278,103 @@ interface MetricRowProps {
   level: Level;
 }
 
-const MetricRow = ({ label, value, level }: MetricRowProps) => (
-  <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/40 last:border-0">
+const MetricRow = ({ label, value, level, title }: MetricRowProps & { title?: string }) => (
+  <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/40 last:border-0" title={title}>
     <div className="flex items-center gap-2 min-w-0">
       <div className={`w-2 h-2 rounded-full shrink-0 ${dotClass(level)}`} />
-      <span className="text-[11px] font-mono text-muted-foreground truncate">{label}</span>
+      <span className="text-[11px] font-mono text-muted-foreground truncate">
+        {label}
+        {title ? <span className="ml-1 opacity-60">ⓘ</span> : null}
+      </span>
     </div>
     <span className="text-xs font-mono text-foreground tabular-nums">{value}</span>
   </div>
 );
 
-const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte }: SignalQualityProps) => {
-  const eisMetrics = useMemo(() => computeEISMetrics(eisData), [eisData]);
+const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared, separatorZReal, fetVtBaseline, fetVtAnalyte, cvMetrics, cvNElectrons = 1, cvDeltaEpToleranceMv = 20 }: SignalQualityProps) => {
+  const eisMetrics = useMemo(
+    () => computeEISMetrics(eisData, cnlsChiSquared, separatorZReal),
+    [eisData, cnlsChiSquared, separatorZReal],
+  );
   const fetMetrics = useMemo(
     () => computeFETMetrics(fetAnalyte, fetBaseline),
     [fetAnalyte, fetBaseline]
   );
 
-  const m = mode === "eis" ? eisMetrics : fetMetrics;
+  const deltaVtMv =
+    fetVtBaseline != null && fetVtAnalyte != null && Number.isFinite(fetVtBaseline) && Number.isFinite(fetVtAnalyte)
+      ? (fetVtAnalyte - fetVtBaseline) * 1000
+      : null;
+  const deltaVtLevel: Level =
+    deltaVtMv == null
+      ? "idle"
+      : Math.abs(deltaVtMv) > 50
+        ? "green"
+        : Math.abs(deltaVtMv) > 10
+          ? "yellow"
+          : "red";
+  const deltaVtStr =
+    deltaVtMv == null
+      ? "—"
+      : `${deltaVtMv >= 0 ? "+" : ""}${deltaVtMv.toFixed(0)} mV`;
+
+  const cvLevels = useMemo(() => {
+    if (!cvMetrics) {
+      return {
+        level: "idle" as Level, ready: false,
+        reversibilityLevel: "idle" as Level, deltaEpLevel: "idle" as Level,
+        ratioLevel: "idle" as Level, peakLevel: "idle" as Level, dLevel: "idle" as Level,
+      };
+    }
+    const { reversibility, deltaEp, IpaIpcRatio, hasAnodic, hasCathodic, D_valid, n_est_valid } = cvMetrics;
+    const reversibilityLevel: Level =
+      reversibility === "reversible" ? "green"
+      : reversibility === "quasi-reversible" ? "yellow"
+      : "red";
+
+    // ΔEp gated by the EXPECTED ΔEp for the configured n (59.16/n at 25 °C).
+    const expected = 59.16 / Math.max(1, cvNElectrons);
+    const tol = Math.max(5, cvDeltaEpToleranceMv);
+    let deltaEpLevel: Level = "red";
+    if (Number.isFinite(deltaEp)) {
+      const dev = Math.abs(deltaEp - expected);
+      if (dev <= tol) deltaEpLevel = "green";
+      else if (dev <= tol * 3) deltaEpLevel = "yellow";
+    }
+
+    const ratioLevel: Level =
+      Number.isFinite(IpaIpcRatio) && IpaIpcRatio >= 0.9 && IpaIpcRatio <= 1.1 ? "green"
+      : Number.isFinite(IpaIpcRatio) && IpaIpcRatio >= 0.7 && IpaIpcRatio <= 1.3 ? "yellow"
+      : "red";
+    const peaksFound = (hasAnodic ? 1 : 0) + (hasCathodic ? 1 : 0);
+    const peakLevel: Level = peaksFound === 2 ? "green" : peaksFound === 1 ? "yellow" : "red";
+    // D is informational — no universal green threshold without an expected D.
+    const dLevel: Level = D_valid ? "yellow" : "idle";
+
+    let overall: Level = "red";
+    const allGreen =
+      reversibility === "reversible" &&
+      peakLevel === "green" &&
+      ratioLevel === "green" &&
+      deltaEpLevel === "green" &&
+      n_est_valid;
+    if (allGreen) overall = "green";
+    else if (
+      reversibility !== "irreversible" &&
+      peakLevel !== "red" &&
+      (deltaEpLevel === "yellow" || ratioLevel === "yellow" || deltaEpLevel === "green")
+    ) {
+      overall = "yellow";
+    }
+    if (peaksFound < 2 || reversibility === "irreversible") overall = "red";
+    return { level: overall, ready: true, reversibilityLevel, deltaEpLevel, ratioLevel, peakLevel, dLevel };
+  }, [cvMetrics, cvNElectrons, cvDeltaEpToleranceMv]);
+
+  const m = mode === "eis" ? eisMetrics : mode === "fet" ? fetMetrics : cvLevels;
   const level: Level = m.level;
   const ready = m.ready;
   const pending = "Calculating...";
+  const modeLabel = mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : "CV";
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -282,7 +383,7 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte }: SignalQuality
           Signal Quality
         </h3>
         <span className="text-[10px] font-mono text-muted-foreground">
-          {mode === "eis" ? "EIS" : "BioFET"}
+          {modeLabel}
         </span>
       </div>
 
@@ -303,58 +404,45 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte }: SignalQuality
         </div>
       </div>
 
-      {/* Per-metric rows */}
       <div className="space-y-0">
-        {mode === "eis" ? (
+        {mode === "eis" && (
           <>
-            <MetricRow
-              label="Semicircle Fit"
-              value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending}
-              level={eisMetrics.semicircleLevel}
-            />
-            <MetricRow
-              label="Point Noise"
-              value={ready ? `${eisMetrics.pointNoise.toFixed(1)} Ω` : pending}
-              level={eisMetrics.noiseLevel}
-            />
-            <MetricRow
-              label="Rs Stability"
-              value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending}
-              level={eisMetrics.rsLevel}
-            />
-            <MetricRow
-              label="Total Points"
-              value={`${eisMetrics.totalPoints}`}
-              level={eisMetrics.pointsLevel}
-            />
+            <MetricRow label="Semicircle Fit" value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending} level={eisMetrics.semicircleLevel} />
+            <MetricRow label="Point Noise" value={ready ? `${eisMetrics.pointNoise.toFixed(1)} Ω` : pending} level={eisMetrics.noiseLevel} />
+            <MetricRow label="Rs (Ω)" value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending} level={eisMetrics.rsLevel} />
+            <MetricRow label="Total Points" value={`${eisMetrics.totalPoints}`} level={eisMetrics.pointsLevel} />
           </>
-        ) : (
+        )}
+        {mode === "fet" && (
           <>
-            <MetricRow
-              label="Ion / Ioff Ratio"
-              value={ready ? fetMetrics.ionIoff.toFixed(1) : pending}
-              level={fetMetrics.ionLevel}
-            />
+            <MetricRow label="Ion / Ioff Ratio" value={ready ? fetMetrics.ionIoff.toFixed(1) : pending} level={fetMetrics.ionLevel} />
+            <MetricRow label="ΔVt" value={deltaVtStr} level={deltaVtLevel} />
             <MetricRow
               label="Subthreshold Slope"
-              value={
-                ready
-                  ? fetMetrics.subthresholdSlope > 0
-                    ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec`
-                    : "—"
-                  : pending
-              }
+              title="SS is approximate — quadratic model only"
+              value={ready ? (fetMetrics.subthresholdSlope > 0 ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec` : "—") : pending}
               level={fetMetrics.ssLevel}
             />
+            <MetricRow label="Ioff Current" value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending} level={fetMetrics.ioffLevel} />
+            <MetricRow label="Baseline Stability" value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending} level={fetMetrics.stabilityLevel} />
+          </>
+        )}
+        {mode === "cv" && (
+          <>
+            <MetricRow label="Reversibility" value={cvMetrics ? cvMetrics.reversibility : pending} level={cvLevels.reversibilityLevel} />
             <MetricRow
-              label="Ioff Current"
-              value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending}
-              level={fetMetrics.ioffLevel}
+              label={`ΔEp (exp. ${(59.16 / Math.max(1, cvNElectrons)).toFixed(0)} mV)`}
+              title={`Expected ΔEp = 59.16 / n at 25 °C for n=${cvNElectrons}`}
+              value={cvMetrics && Number.isFinite(cvMetrics.deltaEp) ? `${cvMetrics.deltaEp.toFixed(0)} mV` : "—"}
+              level={cvLevels.deltaEpLevel}
             />
+            <MetricRow label="|Ipa/Ipc|" value={cvMetrics && Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—"} level={cvLevels.ratioLevel} />
+            <MetricRow label="Peaks Detected" value={cvMetrics ? `${(cvMetrics.hasAnodic ? 1 : 0) + (cvMetrics.hasCathodic ? 1 : 0)} / 2` : pending} level={cvLevels.peakLevel} />
             <MetricRow
-              label="Baseline Stability"
-              value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending}
-              level={fetMetrics.stabilityLevel}
+              label="D apparent"
+              title="Informational — no reference D configured"
+              value={cvMetrics && cvMetrics.D_valid && Number.isFinite(cvMetrics.D_apparent) ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s` : "—"}
+              level={cvLevels.dLevel}
             />
           </>
         )}

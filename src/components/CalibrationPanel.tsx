@@ -359,29 +359,17 @@ const CalibrationPanel = ({
 
       {/* Live parameters box */}
       {mode === "eis" ? (
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 gap-2">
           <div className="bg-secondary rounded-md p-2">
-            <div className="text-[10px] text-muted-foreground font-mono uppercase">Rs</div>
+            <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔRct</div>
             <div className="text-sm font-mono text-foreground">
-              {currentRs != null ? `${currentRs.toFixed(1)} Ω` : "—"}
-            </div>
-          </div>
-          <div className="bg-secondary rounded-md p-2">
-            <div className="text-[10px] text-muted-foreground font-mono uppercase">Rct</div>
-            <div className="text-sm font-mono text-foreground">
-              {currentRct != null ? `${currentRct.toFixed(1)} Ω` : "—"}
+              {`${deltaRct.toFixed(1)} Ω`}
             </div>
             {geometricFallback && (
               <div className="text-[9px] font-mono text-yellow-500 leading-tight mt-0.5">
                 ⚠ Fit did not converge — using geometric estimate
               </div>
             )}
-          </div>
-          <div className="bg-secondary rounded-md p-2">
-            <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔRct</div>
-            <div className="text-sm font-mono text-foreground">
-              {`${deltaRct.toFixed(1)} Ω`}
-            </div>
           </div>
         </div>
       ) : (
