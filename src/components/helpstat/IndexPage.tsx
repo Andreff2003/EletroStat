@@ -913,7 +913,7 @@ const Index = () => {
                 onClick={() => {
                   const data = dataSource === "simulated" ? cv.data : ws.cvData;
                   const metrics = computeCVMetrics(data, { scanRate_mVs: cvParams.scanRate, n: cvParams.n, cMM: cvParams.cMM, areaCm2: cvParams.areaCm2 });
-                  exportCVData(data, metrics, cvParams.scanRate, dataSource);
+                  exportCVData(data, metrics, cvParams.scanRate, dataSource, cvParams.cvModel);
                 }}
                 disabled={(dataSource === "simulated" ? cv.data.length : ws.cvData.length) === 0}
                 className="font-mono text-xs"
