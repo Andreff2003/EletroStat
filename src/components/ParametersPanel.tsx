@@ -40,12 +40,36 @@ export const DEFAULT_FET_PARAMS: FETParams = {
   intervalMs: 200,
 };
 
+export interface CVParams {
+  scanRate: number;   // mV/s
+  eStart: number;     // V
+  eVertex1: number;   // V
+  eVertex2: number;   // V
+  nCycles: number;
+  n: number;          // electrons
+  cMM: number;        // mM
+  areaCm2: number;    // cm²
+}
+
+export const DEFAULT_CV_PARAMS: CVParams = {
+  scanRate: 100,
+  eStart: 0.6,
+  eVertex1: -0.2,
+  eVertex2: 0.6,
+  nCycles: 1,
+  n: 1,
+  cMM: 5,
+  areaCm2: 0.0707,
+};
+
 interface ParametersPanelProps {
-  mode: "eis" | "fet";
+  mode: "eis" | "fet" | "cv";
   eisParams: EISParams;
   fetParams: FETParams;
+  cvParams?: CVParams;
   onChangeEIS: (params: EISParams) => void;
   onChangeFET: (params: FETParams) => void;
+  onChangeCV?: (params: CVParams) => void;
   disabled?: boolean;
 }
 
@@ -86,11 +110,14 @@ const ParametersPanel = ({
   mode,
   eisParams,
   fetParams,
+  cvParams,
   onChangeEIS,
   onChangeFET,
+  onChangeCV,
   disabled,
 }: ParametersPanelProps) => {
   const [open, setOpen] = useState(false);
+  const modeLabel = mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : "CV";
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border border-border bg-card">
@@ -99,7 +126,7 @@ const ParametersPanel = ({
           <Settings2 className="h-4 w-4 text-primary" />
           <span className="font-mono text-sm text-foreground">Measurement Parameters</span>
           <span className="font-mono text-[10px] text-muted-foreground uppercase">
-            {mode === "eis" ? "EIS" : "BioFET"}
+            {modeLabel}
           </span>
         </div>
         <ChevronDown
@@ -108,7 +135,7 @@ const ParametersPanel = ({
       </CollapsibleTrigger>
 
       <CollapsibleContent className="border-t border-border px-3 pb-3 pt-3">
-        {mode === "eis" ? (
+        {mode === "eis" && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <NumField
               label="Frequency Min (Hz)"
@@ -145,7 +172,8 @@ const ParametersPanel = ({
               disabled={disabled}
             />
           </div>
-        ) : (
+        )}
+        {mode === "fet" && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <NumField
               label="Vg Min (V)"
@@ -182,9 +210,82 @@ const ParametersPanel = ({
             />
           </div>
         )}
+        {mode === "cv" && cvParams && onChangeCV && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <NumField
+              label="Scan Rate (mV/s)"
+              value={cvParams.scanRate}
+              min={10}
+              max={500}
+              step={10}
+              onChange={(v) => onChangeCV({ ...cvParams, scanRate: v })}
+              disabled={disabled}
+              hint="10 – 500"
+            />
+            <NumField
+              label="E Start (V)"
+              value={cvParams.eStart}
+              min={-2}
+              max={2}
+              onChange={(v) => onChangeCV({ ...cvParams, eStart: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="E Vertex 1 (V)"
+              value={cvParams.eVertex1}
+              min={-2}
+              max={2}
+              onChange={(v) => onChangeCV({ ...cvParams, eVertex1: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="E Vertex 2 (V)"
+              value={cvParams.eVertex2}
+              min={-2}
+              max={2}
+              onChange={(v) => onChangeCV({ ...cvParams, eVertex2: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Cycles"
+              value={cvParams.nCycles}
+              min={1}
+              max={5}
+              step={1}
+              onChange={(v) => onChangeCV({ ...cvParams, nCycles: Math.round(v) })}
+              disabled={disabled}
+            />
+            <NumField
+              label="n (electrons)"
+              value={cvParams.n}
+              min={1}
+              max={4}
+              step={1}
+              onChange={(v) => onChangeCV({ ...cvParams, n: Math.round(v) })}
+              disabled={disabled}
+            />
+            <NumField
+              label="C (mM)"
+              value={cvParams.cMM}
+              min={0.01}
+              max={1000}
+              onChange={(v) => onChangeCV({ ...cvParams, cMM: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="A (cm²)"
+              value={cvParams.areaCm2}
+              min={1e-4}
+              max={10}
+              onChange={(v) => onChangeCV({ ...cvParams, areaCm2: v })}
+              disabled={disabled}
+            />
+          </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );
 };
 
 export default ParametersPanel;
+

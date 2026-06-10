@@ -1,11 +1,22 @@
 import type { EISDataPoint, FETTransferPoint, FETTimePoint } from "@/hooks/useSimulatedData";
+import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
+import type { CVMetrics } from "@/utils/computeCVMetrics";
 import type { StoredMeasurement } from "./sessionStore";
 import { getActivityLog, type ActivityEntry } from "./activityLog";
 
 // ───────────────────────── helpers ─────────────────────────
 
-const DELIM = "\t";
+const DELIM = ",";
 const BOM = "\uFEFF";
+const SECTION_PAD = 8; // empty columns after section header
+
+/** Escape a CSV field per RFC 4180: quote if it contains comma, quote, CR or LF. */
+function csvEscape(s: string): string {
+  if (/[",\r\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
 
 function pad2(n: number) {
   return n.toString().padStart(2, "0");
@@ -40,17 +51,17 @@ function toRow(cells: (string | number)[]): string {
   return cells
     .map((c) => {
       if (typeof c === "number") return Number.isFinite(c) ? c.toString() : "N/A";
-      return c;
+      return csvEscape(c);
     })
     .join(DELIM);
 }
 
 function downloadTSV(filename: string, content: string) {
-  const blob = new Blob([BOM + content], { type: "text/tab-separated-values;charset=utf-8;" });
+  const blob = new Blob([BOM + content], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = filename;
+  link.download = filename.replace(/\.tsv$/i, ".csv");
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -140,8 +151,8 @@ const CAL_HEADERS = [
 ];
 
 function sectionHeader(label: string): string {
-  // First cell holds the bold section marker; remaining cells empty for spreadsheet clarity.
-  return `=== ${label} ===`;
+  // First cell holds the section marker; pad with empty cells so it sits alone in column A.
+  return `=== ${label} ===` + DELIM.repeat(SECTION_PAD);
 }
 
 function buildRawSection(measurements: StoredMeasurement[]): string {
@@ -395,4 +406,70 @@ export function exportCalibrationCSV(
     buildCalibrationSection(points),
   ].join(BLANK);
   downloadTSV(`calibration_${mode}_${Date.now()}.tsv`, out);
+}
+
+// ───────────────────────── CV ─────────────────────────
+
+const RAW_CV_HEADERS = [
+  "measurement_id", "timestamp", "time_s", "cycle", "branch",
+  "E_V", "I_uA", "baseline_uA", "I_corrected_uA",
+];
+
+/** Format a number with 6 sig figs, scientific for tiny values. */
+function fmtSig(v: unknown): string {
+  if (v == null) return "N/A";
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return "N/A";
+  if (n !== 0 && (Math.abs(n) < 1e-3 || Math.abs(n) >= 1e6)) {
+    return n.toExponential(6);
+  }
+  return n.toPrecision(7);
+}
+
+export function exportCVData(
+  data: CVDataPoint[],
+  metrics: CVMetrics | null,
+  scanRate_mVs: number,
+  source: ExportSource = "simulated",
+) {
+  const id = `cv_${Date.now()}`;
+  const ts = fmtTs(Date.now());
+  const raw = [sectionHeader("RAW DATA"), toRow(RAW_CV_HEADERS)];
+  for (const p of data) {
+    raw.push(toRow([
+      id, ts,
+      fmtSig(p.t), `${p.cycle}`, fmtStr(p.branch ?? ""),
+      fmtSig(p.E), fmtSig(p.I),
+      fmtSig(p.baseline),
+      fmtSig(p.Icorr),
+    ]));
+  }
+  const procHeaders = [
+    "measurement_id", "timestamp", "scan_rate_mVs",
+    "Ipa_raw_uA", "Ipc_raw_uA",
+    "Ipa_corrected_uA", "Ipc_corrected_uA",
+    "Epa_V", "Epc_V", "E0prime_V",
+    "deltaEp_mV", "abs_Ipa_over_Ipc",
+    "n_est", "n_est_valid",
+    "D_apparent_cm2_s", "D_valid",
+    "reversibility", "baseline_method", "warnings",
+  ];
+  const proc = [sectionHeader("PROCESSED RESULTS"), toRow(procHeaders)];
+  if (metrics) {
+    proc.push(toRow([
+      id, ts, fmtSig(scanRate_mVs),
+      fmtSig(metrics.IpaRaw), fmtSig(metrics.IpcRaw),
+      fmtSig(metrics.IpaCorrected), fmtSig(metrics.IpcCorrected),
+      fmtSig(metrics.Epa), fmtSig(metrics.Epc), fmtSig(metrics.E0prime),
+      fmtSig(metrics.deltaEp), fmtSig(metrics.IpaIpcRatio),
+      fmtSig(metrics.n_electrons), metrics.n_est_valid ? "Yes" : "No",
+      fmtSig(metrics.D_apparent), metrics.D_valid ? "Yes" : "No",
+      metrics.reversibility, metrics.baselineMethod,
+      metrics.warnings.length ? metrics.warnings.join(" | ") : "N/A",
+    ]));
+  } else {
+    proc.push(toRow(procHeaders.map(() => "N/A")));
+  }
+  const out = [metaRow(1, source), raw.join("\n"), proc.join("\n")].join(BLANK);
+  downloadTSV(`cv_data_${Date.now()}.tsv`, out);
 }

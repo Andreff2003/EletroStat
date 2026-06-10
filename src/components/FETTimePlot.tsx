@@ -1,21 +1,10 @@
+import { useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine,
+  Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from "recharts";
 import type { FETTimePoint } from "@/hooks/useSimulatedData";
 
-/**
- * FET TIME RESPONSE — Id vs Time
- * 
- * X-axis: Time (seconds)
- * Y-axis: Drain current Id (µA)
- * 
- * Shows real-time current measurement at fixed gate voltage.
- * When cortisol is injected (~10s), the current drops due to
- * analyte binding on the gate surface.
- * 
- * The vertical reference line marks analyte injection time.
- */
 interface FETTimePlotProps {
   data: FETTimePoint[];
   markers?: { time: number; label: string }[];
@@ -25,21 +14,77 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
   const lines = markers && markers.length > 0
     ? markers
     : [{ time: 10, label: "Cortisol injection" }];
+
+  const [zoomArea, setZoomArea] = useState<{ x1: number; x2: number } | null>(null);
+  const [zoomDomain, setZoomDomain] = useState<{ x: [number, number]; y: [number, number] } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+
+  const handleMouseDown = (e: any) => {
+    const xVal = e?.activePayload?.[0]?.payload?.time;
+    if (xVal == null) return;
+    setIsSelecting(true);
+    setZoomArea({ x1: xVal, x2: xVal });
+  };
+  const handleMouseMove = (e: any) => {
+    if (!isSelecting) return;
+    const xVal = e?.activePayload?.[0]?.payload?.time;
+    if (xVal == null) return;
+    setZoomArea((prev) => (prev ? { ...prev, x2: xVal } : null));
+  };
+  const handleMouseUp = () => {
+    if (!isSelecting || !zoomArea) { setIsSelecting(false); return; }
+    setIsSelecting(false);
+    const x1 = Math.min(zoomArea.x1, zoomArea.x2);
+    const x2 = Math.max(zoomArea.x1, zoomArea.x2);
+    if (Math.abs(x2 - x1) < 1e-6) { setZoomArea(null); return; }
+    const visible = data.filter((p) => p.time >= x1 && p.time <= x2);
+    const ys = visible.map((p) => p.id).filter((v) => Number.isFinite(v));
+    if (ys.length === 0) { setZoomArea(null); return; }
+    const yMin = Math.min(...ys);
+    const yMax = Math.max(...ys);
+    const pad = (yMax - yMin) * 0.05 || Math.abs(yMax) * 0.05 || 1;
+    setZoomDomain({ x: [x1, x2], y: [yMin - pad, yMax + pad] });
+    setZoomArea(null);
+  };
+
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full" style={{ position: "relative" }}>
+      {zoomDomain && (
+        <button
+          onClick={() => setZoomDomain(null)}
+          style={{
+            position: "absolute", top: 8, right: 8, zIndex: 10,
+            fontSize: "11px", padding: "3px 10px",
+            borderRadius: "4px", cursor: "pointer",
+            background: "hsl(220 18% 14%)",
+            border: "1px solid hsl(220 15% 22%)",
+            color: "hsl(210 20% 80%)",
+          }}
+        >
+          Reset Zoom
+        </button>
+      )}
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 10, right: 20, bottom: 40, left: 20 }}>
+        <LineChart
+          data={data}
+          margin={{ top: 10, right: 20, bottom: 40, left: 20 }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+        >
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 15% 15%)" />
           <XAxis
             dataKey="time"
             type="number"
-            domain={['auto', 'auto']}
+            domain={zoomDomain ? zoomDomain.x : ["auto", "auto"]}
+            allowDataOverflow
             label={{ value: "Time (s)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"
           />
           <YAxis
-            domain={['auto', 'auto']}
+            domain={zoomDomain ? zoomDomain.y : ["auto", "auto"]}
+            allowDataOverflow
             label={{ value: "Id (µA)", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(215 15% 50%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"
@@ -61,22 +106,13 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
               x={m.time}
               stroke="hsl(0 65% 50%)"
               strokeDasharray="4 4"
-              label={{
-                value: m.label,
-                fill: "hsl(0 65% 60%)",
-                fontSize: 11,
-                position: "top",
-              }}
+              label={{ value: m.label, fill: "hsl(0 65% 60%)", fontSize: 11, position: "top" }}
             />
           ))}
-          <Line
-            type="monotone"
-            dataKey="id"
-            stroke="hsl(200 80% 55%)"
-            strokeWidth={2}
-            dot={false}
-            isAnimationActive={false}
-          />
+          <Line type="monotone" dataKey="id" stroke="hsl(200 80% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
+          {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
+            <ReferenceArea x1={zoomArea.x1} x2={zoomArea.x2} strokeOpacity={0.3} fill="hsl(200 80% 55%)" fillOpacity={0.15} />
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>
