@@ -269,7 +269,7 @@ const ParametersPanel = ({
             <NumField
               label="C (mM)"
               value={cvParams.cMM}
-              min={0.01}
+              min={0}
               max={1000}
               onChange={(v) => onChangeCV({ ...cvParams, cMM: v })}
               disabled={disabled}
