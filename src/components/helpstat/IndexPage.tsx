@@ -715,6 +715,7 @@ const Index = () => {
     setEisCalibration([]);
     setFetCalibration([]);
     setEisOverlays([]);
+    setCvCalibration([]);
     toast("Session cleared");
   };
 
