@@ -1,5 +1,8 @@
 import type { CVMetrics } from "@/utils/computeCVMetrics";
-import { RS_PREFACTOR } from "@/utils/computeCVMetrics";
+import {
+  CV_RS_PREFACTOR as RS_PREFACTOR,
+  CV_DEFAULT_D_CM2_S,
+} from "@/utils/cvConstants";
 
 export type CVResponseMode = "mean" | "anodic" | "cathodic";
 
@@ -133,14 +136,20 @@ export function randlesSevcikIpUA(opts: {
 }
 
 export type CVCalibrationQuality = "green" | "yellow" | "red";
+export type CVSigmaSource = "blank-replicates" | "fit-residual" | "none";
 
 export interface CVCalibrationSummary {
   fit: LinearFit | null;
   sigmaBlank: number | null;
+  sigma_uA: number | null;
+  sigmaSource: CVSigmaSource;
   lod_mM: number | null;
   loq_mM: number | null;
   quality: CVCalibrationQuality;
   qualityReasons: string[];
+  nPoints: number;
+  nUniqueConcentrations: number;
+  nBlankReplicates: number;
 }
 
 export function summarizeCalibration(
@@ -152,10 +161,25 @@ export function summarizeCalibration(
     .filter((p) => p.y != null && Number.isFinite(p.y)) as { c: number; y: number }[];
   const fit =
     usable.length >= 2 ? fitLinearOLS(usable.map((p) => p.c), usable.map((p) => p.y)) : null;
-  const sigmaBlank = estimateSigmaBlank(points, mode, fit?.sigmaResidual ?? null);
+
+  // Decide sigma source independently so the UI can explain it.
+  const blanks = points
+    .filter((p) => p.concentration_mM === 0)
+    .map((p) => responseFor(p, mode))
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  let sigma_uA: number | null = null;
+  let sigmaSource: CVSigmaSource = "none";
+  if (blanks.length >= 3) {
+    const m = blanks.reduce((a, b) => a + b, 0) / blanks.length;
+    sigma_uA = Math.sqrt(blanks.reduce((a, v) => a + (v - m) ** 2, 0) / (blanks.length - 1));
+    sigmaSource = "blank-replicates";
+  } else if (fit && fit.sigmaResidual > 0) {
+    sigma_uA = fit.sigmaResidual;
+    sigmaSource = "fit-residual";
+  }
   const slope = fit?.slope ?? 0;
-  const lod = computeLOD(sigmaBlank, slope);
-  const loq = computeLOQ(sigmaBlank, slope);
+  const lod = computeLOD(sigma_uA, slope);
+  const loq = computeLOQ(sigma_uA, slope);
 
   const reasons: string[] = [];
   let quality: CVCalibrationQuality = "red";
@@ -172,5 +196,18 @@ export function summarizeCalibration(
     quality = "red";
     if (r2 < 0.98) reasons.push(`R² = ${r2.toFixed(3)} below 0.98`);
   }
-  return { fit, sigmaBlank, lod_mM: lod, loq_mM: loq, quality, qualityReasons: reasons };
+  const uniqueC = new Set(points.map((p) => p.concentration_mM)).size;
+  return {
+    fit,
+    sigmaBlank: sigmaSource === "blank-replicates" ? sigma_uA : null,
+    sigma_uA,
+    sigmaSource,
+    lod_mM: lod,
+    loq_mM: loq,
+    quality,
+    qualityReasons: reasons,
+    nPoints: points.length,
+    nUniqueConcentrations: uniqueC,
+    nBlankReplicates: blanks.length,
+  };
 }
