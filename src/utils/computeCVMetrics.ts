@@ -1,7 +1,24 @@
 import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
+import {
+  CV_F,
+  CV_R,
+  CV_T_DEFAULT_K,
+  CV_RS_PREFACTOR,
+} from "@/utils/cvConstants";
 
 export type CVReversibility = "reversible" | "quasi-reversible" | "irreversible";
-export type BaselineMethod = "per-branch-linear" | "global-linear" | "none";
+export type BaselineMethod =
+  | "per-branch-linear"
+  | "partial-per-branch-linear"
+  | "global-linear"
+  | "linear-edges"
+  | "none";
+export type BaselineMethodInput =
+  | "auto"
+  | "none"
+  | "linear-first-15"
+  | "linear-edges";
+export type DStatus = "valid" | "apparent" | "invalid";
 
 export interface CVMetrics {
   // Raw (uncorrected) peak currents in µA
@@ -25,11 +42,16 @@ export interface CVMetrics {
   n_est_valid: boolean;
   D_apparent: number;       // cm²/s
   D_valid: boolean;
+  D_status: DStatus;
   reversibility: CVReversibility;
   baselineMethod: BaselineMethod;
+  noise_uA: number;         // estimated noise (1.4826·MAD)
+  SNR_anodic: number;       // |Ipa_corr| / noise
+  SNR_cathodic: number;     // |Ipc_corr| / noise
   hasAnodic: boolean;
   hasCathodic: boolean;
   warnings: string[];
+  correctedData?: CVDataPoint[]; // copy with baseline/Icorr fields populated
 }
 
 export interface CVMetricsInput {
@@ -37,13 +59,14 @@ export interface CVMetricsInput {
   n: number;
   cMM: number;
   areaCm2: number;
+  baselineMethodInput?: BaselineMethodInput; // default "auto"
 }
 
 // Randles-Ševčík prefactor at 25 °C (0.4463 · F · sqrt(F/RT)) ≈ 268648.45
-const F = 96485.33212;
-const R = 8.314462618;
-const TEMP_K = 298.15;
-export const RS_PREFACTOR = 0.4463 * F * Math.sqrt(F / (R * TEMP_K));
+const F = CV_F;
+const R = CV_R;
+const TEMP_K = CV_T_DEFAULT_K;
+export const RS_PREFACTOR = CV_RS_PREFACTOR;
 
 /** Locate switching index by following the actual sign of dE/dt. */
 function findSwitchIdx(sample: CVDataPoint[]): { switchIdx: number; goesPositive: boolean } {
@@ -68,11 +91,9 @@ function findSwitchIdx(sample: CVDataPoint[]): { switchIdx: number; goesPositive
   return { switchIdx, goesPositive };
 }
 
-/** Linear baseline fit through the first ~15 % of a branch. */
-function fitBranchBaseline(branch: CVDataPoint[]): ((E: number) => number) | null {
-  if (branch.length < 4) return null;
-  const nFit = Math.max(3, Math.floor(branch.length * 0.15));
-  const seg = branch.slice(0, nFit);
+/** Generic linear fit y = m·x + b through the supplied segment. */
+function linearFit(seg: CVDataPoint[]): ((E: number) => number) | null {
+  if (seg.length < 2) return null;
   const sx = seg.reduce((a, p) => a + p.E, 0);
   const sy = seg.reduce((a, p) => a + p.I, 0);
   const sxx = seg.reduce((a, p) => a + p.E * p.E, 0);
@@ -88,6 +109,21 @@ function fitBranchBaseline(branch: CVDataPoint[]): ((E: number) => number) | nul
   return (E: number) => intercept + slope * E;
 }
 
+function fitBranchBaseline(
+  branch: CVDataPoint[],
+  method: BaselineMethodInput,
+): ((E: number) => number) | null {
+  if (method === "none" || branch.length < 4) return null;
+  if (method === "linear-edges") {
+    const nEdge = Math.max(2, Math.floor(branch.length * 0.1));
+    const seg = [...branch.slice(0, nEdge), ...branch.slice(branch.length - nEdge)];
+    return linearFit(seg);
+  }
+  // auto + linear-first-15
+  const nFit = Math.max(3, Math.floor(branch.length * 0.15));
+  return linearFit(branch.slice(0, nFit));
+}
+
 /** 3-point boxcar smoothing — used only to locate the index of the peak. */
 function smooth(branch: CVDataPoint[]): number[] {
   const out = branch.map((p) => p.I);
@@ -95,6 +131,22 @@ function smooth(branch: CVDataPoint[]): number[] {
     out[i] = (branch[i - 1].I + branch[i].I + branch[i + 1].I) / 3;
   }
   return out;
+}
+
+/** 1.4826 · MAD of the residuals of `seg` vs `baseline(E)`. */
+function noiseFromBranch(
+  branch: CVDataPoint[],
+  baseline: ((E: number) => number) | null,
+): number {
+  if (branch.length < 4) return 0;
+  const nFit = Math.max(3, Math.floor(branch.length * 0.15));
+  const seg = branch.slice(0, nFit);
+  const residuals = seg.map((p) => p.I - (baseline ? baseline(p.E) : 0));
+  const sorted = [...residuals].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const absDev = residuals.map((r) => Math.abs(r - median)).sort((a, b) => a - b);
+  const mad = absDev[Math.floor(absDev.length / 2)];
+  return 1.4826 * mad;
 }
 
 /**
@@ -136,6 +188,7 @@ export function computeCVMetrics(
   if (sample.length < 10) return null;
 
   const warnings: string[] = [];
+  const baselineInput: BaselineMethodInput = input.baselineMethodInput ?? "auto";
 
   // Prefer the branch tags emitted by the simulator/hardware when present.
   const hasBranches = sample.some(
@@ -162,13 +215,23 @@ export function computeCVMetrics(
     goesPositive = fb.goesPositive;
   }
 
-  // Per-branch baseline.
-  const fwdBase = fitBranchBaseline(fwd);
-  const revBase = fitBranchBaseline(rev);
-  let baselineMethod: BaselineMethod = "per-branch-linear";
-  if (!fwdBase || !revBase) {
-    baselineMethod = fwdBase || revBase ? "global-linear" : "none";
-    if (baselineMethod === "none") warnings.push("baseline fit failed; using raw currents");
+  // Per-branch baseline — method tracked exactly as applied.
+  const fwdBase = fitBranchBaseline(fwd, baselineInput);
+  const revBase = fitBranchBaseline(rev, baselineInput);
+  let baselineMethod: BaselineMethod;
+  if (baselineInput === "none") {
+    baselineMethod = "none";
+    warnings.push("Baseline disabled");
+  } else if (baselineInput === "linear-edges") {
+    baselineMethod = fwdBase && revBase ? "linear-edges" : "none";
+  } else if (fwdBase && revBase) {
+    baselineMethod = "per-branch-linear";
+  } else if (fwdBase || revBase) {
+    baselineMethod = "partial-per-branch-linear";
+    warnings.push("Baseline fallback used — only one branch fitted");
+  } else {
+    baselineMethod = "none";
+    warnings.push("Baseline fit failed; using raw currents");
   }
 
   // If the scan goes positive first, the anodic peak lives on the forward
@@ -181,11 +244,20 @@ export function computeCVMetrics(
   const anodic = findPeak(anodicBranch, anodicBase ?? null, "anodic");
   const cathodic = findPeak(cathodicBranch, cathodicBase ?? null, "cathodic");
 
-  // SNR-style validity threshold — ignore peaks under 50 nA of baseline-
-  // corrected current to avoid promoting noise to a "peak".
+  // Estimate noise from residuals on each branch and combine.
+  const noiseAn = noiseFromBranch(anodicBranch, anodicBase ?? null);
+  const noiseCa = noiseFromBranch(cathodicBranch, cathodicBase ?? null);
+  const noise_uA = Math.max(noiseAn, noiseCa);
+  if (noise_uA <= 0) {
+    warnings.push("Noise could not be estimated; using 0.05 µA fallback threshold");
+  }
   const SNR_MIN_uA = 0.05;
-  const hasAnodic = anodic != null && anodic.Icorr > SNR_MIN_uA;
-  const hasCathodic = cathodic != null && cathodic.Icorr < -SNR_MIN_uA;
+  const anodicThreshold = Math.max(SNR_MIN_uA, 3 * noise_uA);
+  const cathodicThreshold = -anodicThreshold;
+  const hasAnodic = anodic != null && anodic.Icorr > anodicThreshold;
+  const hasCathodic = cathodic != null && cathodic.Icorr < cathodicThreshold;
+  const SNR_anodic = anodic && noise_uA > 0 ? Math.abs(anodic.Icorr) / noise_uA : 0;
+  const SNR_cathodic = cathodic && noise_uA > 0 ? Math.abs(cathodic.Icorr) / noise_uA : 0;
 
   if (!hasAnodic) warnings.push("no clear anodic peak detected");
   if (!hasCathodic) warnings.push("no clear cathodic peak detected");
@@ -245,11 +317,25 @@ export function computeCVMetrics(
     reversibility = "irreversible";
   }
 
-  if (D_valid && reversibility === "irreversible") {
-    D_valid = false;
+  // D status: only "valid" for fully reversible systems.
+  let D_status: DStatus = "invalid";
+  if (D_valid && reversibility === "reversible") {
+    D_status = "valid";
+  } else if (D_valid && reversibility === "quasi-reversible") {
+    D_status = "apparent";
+    warnings.push(
+      "D apparent assumes reversible diffusion-controlled CV; value is informational for quasi-reversible data.",
+    );
+  } else if (!D_valid) {
+    warnings.push("D apparent unavailable: reversible valid peaks required.");
+  } else {
+    D_status = "invalid";
     D_apparent = NaN;
+    D_valid = false;
     warnings.push("D apparent suppressed — system is irreversible");
   }
+  // Backward compat: keep D_valid true only when status is valid.
+  D_valid = D_status === "valid";
 
   // n estimate — only meaningful for clean reversible diffusion-controlled
   // systems near 25 °C.
@@ -265,6 +351,20 @@ export function computeCVMetrics(
   ) {
     n_electrons = 59.16 / deltaEp;
     n_est_valid = true;
+  }
+
+  // Build corrected data series (baseline + Icorr per point) for CSV/UI.
+  let correctedData: CVDataPoint[] | undefined;
+  if (baselineMethod !== "none") {
+    correctedData = sample.map((p) => {
+      const isFwd = hasBranches
+        ? p.branch === "forward"
+        : sample.indexOf(p) <= (fwd.length - 1);
+      const base = isFwd ? fwdBase : revBase;
+      if (!base) return { ...p };
+      const bl = base(p.E);
+      return { ...p, baseline: bl, Icorr: p.I - bl };
+    });
   }
 
   return {
@@ -283,10 +383,15 @@ export function computeCVMetrics(
     n_est_valid,
     D_apparent,
     D_valid,
+    D_status,
     reversibility,
     baselineMethod,
+    noise_uA,
+    SNR_anodic,
+    SNR_cathodic,
     hasAnodic,
     hasCathodic,
     warnings,
+    correctedData,
   };
 }
