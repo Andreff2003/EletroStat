@@ -879,7 +879,11 @@ const Index = () => {
           onChangeEIS={setEisParams}
           onChangeFET={setFetParams}
           onChangeCV={setCvParams}
-          disabled={mode === "eis" ? isEISRunning : mode === "fet" ? isFETRunning : cv.isRunning}
+          disabled={
+            mode === "eis" ? isEISRunning :
+            mode === "fet" ? isFETRunning :
+            (dataSource === "simulated" ? cv.isRunning : isLiveCVRunning)
+          }
         />
       </div>
 
