@@ -28,6 +28,7 @@ import {
 } from "@/hooks/useSimulatedData";
 import { useSimulatedCVData, CV_E0_PRIME } from "@/hooks/useSimulatedCVData";
 import CVPlot from "@/components/CVPlot";
+import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
 import { computeCVMetrics } from "@/utils/computeCVMetrics";
 import {
   exportEISData,
@@ -107,6 +108,13 @@ interface OverlayCurve {
   data: EISDataPoint[];
 }
 
+interface CVOverlayCurve {
+  id: string;
+  label: string;
+  color: string;
+  data: CVDataPoint[];
+}
+
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet" | "cv">("eis");
   const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
@@ -139,6 +147,15 @@ const Index = () => {
   // Overlay mode (Nyquist)
   const [overlayMode, setOverlayMode] = useState(false);
   const [eisOverlays, setEisOverlays] = useState<OverlayCurve[]>([]);
+
+  // Overlay mode (CV)
+  const [cvOverlayMode, setCvOverlayMode] = useState(false);
+  const [cvOverlays, setCvOverlays] = useState<CVOverlayCurve[]>([]);
+  const [cvPlotMode, setCvPlotMode] = useState<"raw" | "corrected">("raw");
+
+  // Live CV state — separate from the simulated hook so the live ESP32 path
+  // does not depend on cv.isRunning (which is tied to the simulator).
+  const [isLiveCVRunning, setIsLiveCVRunning] = useState(false);
 
   // BioFET sample-addition markers
   const [fetMarkers, setFetMarkers] = useState<{ time: number; label: string }[]>([]);
@@ -716,6 +733,7 @@ const Index = () => {
     setFetCalibration([]);
     setEisOverlays([]);
     setCvCalibration([]);
+      setCvOverlays([]);
     toast("Session cleared");
   };
 
