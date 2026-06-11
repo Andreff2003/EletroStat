@@ -699,6 +699,18 @@ const Index = () => {
     };
   }, []);
 
+  // Live CV — react to cv_done / cv_error from ESP32.
+  useEffect(() => {
+    if (dataSource !== "live") return;
+    if (ws.cvStatus === "done" || ws.cvStatus === "error" || ws.cvStatus === "idle") {
+      setIsLiveCVRunning(false);
+      if (ws.cvStatus === "error" && ws.cvError) {
+        toast.error(`CV error: ${ws.cvError}`);
+      }
+    }
+    if (ws.cvStatus === "running") setIsLiveCVRunning(true);
+  }, [ws.cvStatus, ws.cvError, dataSource]);
+
   // "Running" now means status === running, not just connected/animating
   const isEISRunning = eisStatus === "running";
   const isFETRunning = fetStatus === "running";
