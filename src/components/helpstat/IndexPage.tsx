@@ -36,6 +36,7 @@ import {
   exportSessionCSV,
   exportCalibrationCSV as exportCalibrationTSV,
   exportCVData,
+  exportCVCalibrationCSV,
 } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
@@ -51,6 +52,14 @@ import CalibrationPanel, {
   computeEISParams,
   computeFETVt,
 } from "@/components/CalibrationPanel";
+import CVCalibrationPanel from "@/components/CVCalibrationPanel";
+import {
+  buildCVCalibrationPoint,
+  randlesSevcikIpUA,
+  responseFor,
+  type CVCalibrationPoint,
+  type CVResponseMode,
+} from "@/utils/cvCalibration";
 
 import CNLSFitResults from "@/components/CNLSFitResults";
 import {
@@ -109,6 +118,8 @@ const Index = () => {
   const [concentration, setConcentration] = useState<number>(0);
   const [eisCalibration, setEisCalibration] = useState<CalibrationPoint[]>([]);
   const [fetCalibration, setFetCalibration] = useState<CalibrationPoint[]>([]);
+  const [cvCalibration, setCvCalibration] = useState<CVCalibrationPoint[]>([]);
+  const [cvResponseMode, setCvResponseMode] = useState<CVResponseMode>("mean");
 
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
@@ -704,6 +715,7 @@ const Index = () => {
     setEisCalibration([]);
     setFetCalibration([]);
     setEisOverlays([]);
+    setCvCalibration([]);
     toast("Session cleared");
   };
 
@@ -1251,6 +1263,70 @@ const Index = () => {
                 fetAnalyte={[]}
                 cvMetrics={cvMetrics}
                 cvNElectrons={cvParams.n}
+              />
+              <CVCalibrationPanel
+                points={cvCalibration}
+                concentration_mM={cvParams.cMM}
+                onChangeConcentration={(v) =>
+                  setCvParams((prev) => ({ ...prev, cMM: v }))
+                }
+                responseMode={cvResponseMode}
+                onChangeResponseMode={setCvResponseMode}
+                onAddCurrent={() => {
+                  if (!cvMetrics) {
+                    toast.error("No CV metrics yet — run a CV sweep first.");
+                    return;
+                  }
+                  const pt = buildCVCalibrationPoint(
+                    cvParams.cMM,
+                    cvMetrics,
+                    cvParams.cvModel,
+                  );
+                  setCvCalibration((prev) => [
+                    ...prev.filter((p) => p.concentration_mM !== cvParams.cMM),
+                    pt,
+                  ]);
+                  logActivity(
+                    "calibration",
+                    `CV calibration point added — C=${cvParams.cMM} mM, response=${
+                      responseFor(pt, cvResponseMode)?.toFixed(2) ?? "n/a"
+                    } µA`,
+                  );
+                  toast.success(`Added CV point at ${cvParams.cMM} mM`);
+                }}
+                onClear={() => {
+                  setCvCalibration([]);
+                  toast("CV calibration cleared");
+                }}
+                onExport={() =>
+                  exportCVCalibrationCSV(cvCalibration, {
+                    source: dataSource,
+                    responseMode: cvResponseMode,
+                    n: cvParams.n,
+                    areaCm2: cvParams.areaCm2,
+                    scanRate_mVs: cvParams.scanRate,
+                  })
+                }
+                canAdd={!!cvMetrics && cvDataLive.length > 0 && !cv.isRunning}
+                currentMeasuredUA={(() => {
+                  if (!cvMetrics) return null;
+                  const tmp = buildCVCalibrationPoint(
+                    cvParams.cMM,
+                    cvMetrics,
+                    cvParams.cvModel,
+                  );
+                  return responseFor(tmp, cvResponseMode);
+                })()}
+                currentExpectedUA={randlesSevcikIpUA({
+                  n: cvParams.n,
+                  areaCm2: cvParams.areaCm2,
+                  cMM: cvParams.cMM,
+                  scanRate_mVs: cvParams.scanRate,
+                })}
+                cvModel={cvParams.cvModel}
+                n={cvParams.n}
+                areaCm2={cvParams.areaCm2}
+                scanRate_mVs={cvParams.scanRate}
               />
             </div>
           </div>
