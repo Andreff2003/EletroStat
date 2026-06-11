@@ -483,3 +483,98 @@ export function exportCVData(
   const out = [metaRow(1, source), raw.join("\n"), proc.join("\n")].join(BLANK);
   downloadTSV(`cv_data_${Date.now()}.tsv`, out);
 }
+
+// ───────────────────────── CV Calibration ─────────────────────────
+
+const CV_CAL_HEADERS = [
+  "concentration_mM",
+  "Ipa_corrected_uA",
+  "Ipc_abs_corrected_uA",
+  "response_mean_uA",
+  "expected_ip_uA",
+  "residual_uA",
+  "deltaEp_mV",
+  "abs_Ipa_over_Ipc",
+  "D_apparent_cm2_s",
+  "cv_model",
+  "timestamp",
+];
+
+export interface CVCalibrationExportOptions {
+  source?: ExportSource;
+  responseMode: CVResponseMode;
+  n: number;
+  areaCm2: number;
+  scanRate_mVs: number;
+}
+
+export function exportCVCalibrationCSV(
+  points: CVCalibrationPoint[],
+  opts: CVCalibrationExportOptions,
+) {
+  const source = opts.source ?? "simulated";
+  const summary = summarizeCalibration(points, opts.responseMode);
+  const lines: string[] = [];
+  lines.push(metaRow(points.length, source));
+  lines.push(sectionHeader("CV CALIBRATION"));
+  lines.push(toRow(CV_CAL_HEADERS));
+  const sorted = [...points].sort((a, b) => a.concentration_mM - b.concentration_mM);
+  for (const p of sorted) {
+    const expected = randlesSevcikIpUA({
+      n: opts.n,
+      areaCm2: opts.areaCm2,
+      cMM: p.concentration_mM,
+      scanRate_mVs: opts.scanRate_mVs,
+    });
+    const measured = responseFor(p, opts.responseMode);
+    const residual =
+      summary.fit != null && measured != null
+        ? measured - (summary.fit.slope * p.concentration_mM + summary.fit.intercept)
+        : null;
+    lines.push(
+      toRow([
+        fmtSig(p.concentration_mM),
+        fmtSig(p.Ipa_uA),
+        fmtSig(p.IpcAbs_uA),
+        fmtSig(p.responseMean_uA),
+        fmtSig(expected),
+        fmtSig(residual),
+        fmtSig(p.deltaEp_mV),
+        fmtSig(p.ratio),
+        fmtSig(p.Dapparent),
+        fmtStr(p.cvModel),
+        fmtTs(p.timestamp),
+      ]),
+    );
+  }
+  // Summary block
+  lines.push("");
+  lines.push(sectionHeader("CV CALIBRATION SUMMARY"));
+  lines.push(
+    toRow([
+      "response_mode",
+      "slope_uA_per_mM",
+      "intercept_uA",
+      "r2",
+      "n_points",
+      "sigma_blank_uA",
+      "LOD_mM",
+      "LOQ_mM",
+      "quality",
+    ]),
+  );
+  lines.push(
+    toRow([
+      opts.responseMode,
+      fmtSig(summary.fit?.slope),
+      fmtSig(summary.fit?.intercept),
+      fmtSig(summary.fit?.r2),
+      `${summary.fit?.nPoints ?? 0}`,
+      fmtSig(summary.sigmaBlank),
+      fmtSig(summary.lod_mM),
+      fmtSig(summary.loq_mM),
+      summary.quality,
+    ]),
+  );
+  downloadTSV(`cv_calibration_${Date.now()}.tsv`, lines.join("\n"));
+}
