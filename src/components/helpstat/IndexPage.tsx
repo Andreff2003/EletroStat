@@ -36,6 +36,7 @@ import {
   exportSessionCSV,
   exportCalibrationCSV as exportCalibrationTSV,
   exportCVData,
+  exportCVCalibrationCSV,
 } from "@/utils/csvExport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
@@ -51,6 +52,14 @@ import CalibrationPanel, {
   computeEISParams,
   computeFETVt,
 } from "@/components/CalibrationPanel";
+import CVCalibrationPanel from "@/components/CVCalibrationPanel";
+import {
+  buildCVCalibrationPoint,
+  randlesSevcikIpUA,
+  responseFor,
+  type CVCalibrationPoint,
+  type CVResponseMode,
+} from "@/utils/cvCalibration";
 
 import CNLSFitResults from "@/components/CNLSFitResults";
 import {
@@ -109,6 +118,8 @@ const Index = () => {
   const [concentration, setConcentration] = useState<number>(0);
   const [eisCalibration, setEisCalibration] = useState<CalibrationPoint[]>([]);
   const [fetCalibration, setFetCalibration] = useState<CalibrationPoint[]>([]);
+  const [cvCalibration, setCvCalibration] = useState<CVCalibrationPoint[]>([]);
+  const [cvResponseMode, setCvResponseMode] = useState<CVResponseMode>("mean");
 
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
