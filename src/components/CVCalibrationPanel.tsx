@@ -84,17 +84,16 @@ const CVCalibrationPanel = ({
     [points, responseMode],
   );
 
-  // Build chart data: measured points + linear fit line.
+  // Build chart data: one row per measured replicate + a separate fit polyline.
+  // We do NOT aggregate by concentration so replicates are visible.
   const chartData = useMemo(() => {
+    type Row = { concentration: number; measured?: number; fitSignal?: number };
     const usable = points
       .map((p) => ({ c: p.concentration_mM, y: responseFor(p, responseMode) }))
       .filter((p) => p.y != null && Number.isFinite(p.y)) as { c: number; y: number }[];
+    const measuredRows: Row[] = usable.map((p) => ({ concentration: p.c, measured: p.y }));
+    const fitRows: Row[] = [];
     const fit = summary.fit;
-    type Row = { concentration: number; measured?: number; fitSignal?: number };
-    const map = new Map<number, Row>();
-    for (const p of usable) {
-      map.set(p.c, { concentration: p.c, measured: p.y });
-    }
     if (fit && usable.length >= 2) {
       const xs = usable.map((p) => p.c);
       const xmin = Math.min(...xs);
@@ -102,13 +101,10 @@ const CVCalibrationPanel = ({
       const N = 40;
       for (let i = 0; i <= N; i++) {
         const c = xmin + ((xmax - xmin) * i) / N;
-        const existing = map.get(c);
-        const y = fit.slope * c + fit.intercept;
-        if (existing) existing.fitSignal = y;
-        else map.set(c, { concentration: c, fitSignal: y });
+        fitRows.push({ concentration: c, fitSignal: fit.slope * c + fit.intercept });
       }
     }
-    return Array.from(map.values()).sort((a, b) => a.concentration - b.concentration);
+    return [...measuredRows, ...fitRows].sort((a, b) => a.concentration - b.concentration);
   }, [points, responseMode, summary.fit]);
 
   const sortedPoints = useMemo(
