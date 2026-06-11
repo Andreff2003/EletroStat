@@ -1,4 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  CV_F as F,
+  CV_R as R,
+  CV_T_DEFAULT_K as T,
+  CV_DEFAULT_D_CM2_S as D,
+  CV_E0_PRIME_DEFAULT_V as E0_PRIME,
+} from "@/utils/cvConstants";
 
 /**
  * ============================================================
@@ -70,11 +77,6 @@ export const DEFAULT_CV_PARAMS: CVSimParams = {
 };
 
 // Physical constants
-const F = 96485.33212; // C/mol
-const R = 8.314462618; // J/(mol·K)
-const T = 298.15;      // K
-const E0_PRIME = 0.22; // V — Fe(CN)6³⁻/⁴⁻ formal potential
-const D = 7.26e-6;     // cm²/s
 const K0 = 0.01;       // cm/s
 const ALPHA = 0.5;
 const K_MAX = 10;      // cm/s — numerical safety ceiling (educational)
@@ -98,7 +100,7 @@ function validateParams(p: CVSimParams): string | null {
   if (!(p.scanRate > 0)) return "scanRate must be > 0";
   if (!(p.nCycles >= 1)) return "nCycles must be >= 1";
   if (!(p.n > 0)) return "n must be > 0";
-  if (!(p.cMM > 0)) return "cMM must be > 0";
+  if (!(p.cMM >= 0)) return "cMM must be >= 0";
   if (!(p.areaCm2 > 0)) return "areaCm2 must be > 0";
   if (![p.eStart, p.eVertex1, p.eVertex2].every(Number.isFinite)) {
     return "eStart, eVertex1, eVertex2 must be finite";
@@ -222,18 +224,25 @@ function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
     }
     const convKnown = (sumHist * sqrtDt) / (Afac * sqrtPiD);
 
-    const denom = 1 + Afac * beta * (kOx + kRed);
-    let Iamp =
-      -Afac * (kRed * cBulk + (kOx + kRed) * convKnown) / denom;
+    let Iamp = 0;
+    if (cBulk > 0) {
+      const denom = 1 + Afac * beta * (kOx + kRed);
+      Iamp = -Afac * (kRed * cBulk + (kOx + kRed) * convKnown) / denom;
 
-    // Smooth bound on CR via mass balance to prevent negative surface conc.
-    // The semi-implicit step already respects the kinetics; clamping is a
-    // safety net for extreme parameter ranges.
-    const conv = convKnown + beta * Iamp;
-    const CR_raw = -conv;
-    const thetaR = clamp(CR_raw / cBulk, 0, 1);
-    void thetaR;
-
+      // Mass-balance safety net: clamp surface CR to [0, cBulk]. If we hit a
+      // boundary, fall back to a non-implicit step bounded by the clamped CR
+      // so the reported current is physically consistent with the surface
+      // concentrations. Educational approximation only — not a full
+      // finite-difference Nicholson–Shain solver.
+      const CR_raw = -(convKnown + beta * Iamp);
+      const thetaR = clamp(CR_raw / cBulk, 0, 1);
+      const CR = thetaR * cBulk;
+      const CO = cBulk - CR;
+      if (thetaR <= 0 || thetaR >= 1) {
+        Iamp = Afac * (kOx * CR - kRed * CO);
+      }
+    }
+    // For blank (cBulk = 0) faradaic current is identically zero.
     Iamps.push(Iamp);
     out.push({
       E,
