@@ -35,6 +35,14 @@ interface CVPlotProps {
    * "positive-left" matches the classic electrochemistry convention.
    */
   axisConvention?: "positive-right" | "positive-left";
+  /**
+   * "raw" (default) plots the acquired I and marks IpaRaw/IpcRaw on the curve.
+   * "corrected" plots Icorr (baseline subtracted) and uses the corrected peaks.
+   * Markers always sit on the curve they reference.
+   */
+  plotMode?: "raw" | "corrected";
+  /** Optional saved curves drawn underneath the live trace. */
+  overlays?: { id: string; label: string; color: string; data: CVDataPoint[] }[];
 }
 
 type ChartMouseEvent = {
@@ -49,27 +57,50 @@ const CVPlot = ({
   metrics,
   e0Prime,
   axisConvention = "positive-right",
+  plotMode = "raw",
+  overlays = [],
 }: CVPlotProps) => {
   // One series per (cycle, branch). Repeated E values across forward / reverse
   // sweeps must NOT be joined; emitting one row per acquisition sample with
   // only the active series populated keeps the polyline in acquisition order.
+  const corrIndex = useMemo(() => {
+    const m = new Map<number, number>();
+    if (plotMode === "corrected" && metrics?.correctedData?.length === data.length) {
+      metrics.correctedData.forEach((p, i) => {
+        if (typeof p.Icorr === "number") m.set(i, p.Icorr);
+      });
+    }
+    return m;
+  }, [plotMode, metrics, data]);
+
   const { rows, seriesKeys } = useMemo(() => {
     const keys: string[] = [];
     const seen = new Set<string>();
     const rowsLocal: SeriesRow[] = [];
-    for (const p of data) {
+    // Overlay series first so live trace stays on top.
+    for (const ov of overlays) {
+      const key = `ov_${ov.id}`;
+      if (!seen.has(key)) { seen.add(key); keys.push(key); }
+      for (const p of ov.data) {
+        rowsLocal.push({ E: p.E, [key]: p.I });
+      }
+    }
+    for (let i = 0; i < data.length; i++) {
+      const p = data[i];
       const branch = p.branch ?? "forward";
       const key = `c${p.cycle}_${branch}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        keys.push(key);
-      }
-      rowsLocal.push({ E: p.E, [key]: p.I });
+      if (!seen.has(key)) { seen.add(key); keys.push(key); }
+      const y = corrIndex.has(i) ? corrIndex.get(i)! : p.I;
+      rowsLocal.push({ E: p.E, [key]: y });
     }
     return { rows: rowsLocal, seriesKeys: keys };
-  }, [data]);
+  }, [data, overlays, corrIndex]);
 
   const colorOf = (key: string): string => {
+    if (key.startsWith("ov_")) {
+      const ov = overlays.find((o) => `ov_${o.id}` === key);
+      return ov?.color ?? "hsl(220 10% 50%)";
+    }
     const m = /^c(\d+)_/.exec(key);
     const c = m ? parseInt(m[1], 10) : 1;
     return PALETTE[(c - 1) % PALETTE.length];
@@ -236,7 +267,7 @@ const CVPlot = ({
             {metrics?.hasAnodic && (
               <ReferenceDot
                 x={metrics.Epa}
-                y={metrics.Ipa}
+                y={plotMode === "corrected" ? metrics.IpaCorrected : metrics.IpaRaw}
                 r={5}
                 fill="hsl(160 70% 55%)"
                 stroke="hsl(160 70% 55%)"
@@ -251,7 +282,7 @@ const CVPlot = ({
             {metrics?.hasCathodic && (
               <ReferenceDot
                 x={metrics.Epc}
-                y={metrics.Ipc}
+                y={plotMode === "corrected" ? metrics.IpcCorrected : metrics.IpcRaw}
                 r={5}
                 fill="hsl(340 80% 60%)"
                 stroke="hsl(340 80% 60%)"
