@@ -571,6 +571,7 @@ export function exportCVCalibrationCSV(
       "sigma_blank_uA",
       "LOD_mM",
       "LOQ_mM",
+      "sigma_source",
       "quality",
     ]),
   );
@@ -584,6 +585,7 @@ export function exportCVCalibrationCSV(
       fmtSig(summary.sigma_uA),
       fmtSig(summary.lod_mM),
       fmtSig(summary.loq_mM),
+      summary.sigmaSource,
       summary.quality,
     ]),
   );
