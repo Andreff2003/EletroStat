@@ -932,14 +932,38 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={() => {
-                  if (dataSource === "simulated") cv.start(cvParams);
-                  else { ws.clearCV(); ws.sendCommand("start_cv", { ...cvParams }); }
+                  if (dataSource === "simulated") {
+                    cv.start(cvParams);
+                  } else {
+                    ws.clearCV();
+                    setIsLiveCVRunning(true);
+                    ws.sendCommand("start_cv", { ...cvParams });
+                  }
                 }}
-                disabled={cv.isRunning || (dataSource === "live" && ws.status !== "connected")}
+                disabled={
+                  (dataSource === "simulated" ? cv.isRunning : isLiveCVRunning) ||
+                  (dataSource === "live" && ws.status !== "connected")
+                }
                 className="font-mono text-xs"
               >▶ Start CV</Button>
-              <Button size="sm" variant="destructive" onClick={() => { cv.stop(); if (dataSource === "live") ws.sendCommand("stop"); }} disabled={!cv.isRunning} className="font-mono text-xs">■ Stop</Button>
-              <Button size="sm" variant="secondary" onClick={() => { cv.reset(); ws.clearCV(); }} className="font-mono text-xs">↺ Reset</Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  if (dataSource === "simulated") cv.stop();
+                  else { setIsLiveCVRunning(false); ws.sendCommand("stop"); }
+                }}
+                disabled={dataSource === "simulated" ? !cv.isRunning : !isLiveCVRunning}
+                className="font-mono text-xs"
+              >■ Stop</Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  cv.reset(); ws.clearCV(); setIsLiveCVRunning(false);
+                }}
+                className="font-mono text-xs"
+              >↺ Reset</Button>
               <Button
                 size="sm"
                 variant="outline"
