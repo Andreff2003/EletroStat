@@ -750,6 +750,9 @@ const Index = () => {
     eis.reset();
     fetTransfer.reset();
     fetTime.reset();
+    cv.reset();
+    ws.clearCV();
+    setIsLiveCVRunning(false);
     ws.clearEIS();
     ws.clearFET();
     setEisStatus("idle");
