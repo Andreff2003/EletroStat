@@ -51,6 +51,8 @@ interface UseWebSocketDataReturn {
   // CV data
   cvData: CVDataPoint[];
   clearCV: () => void;
+  cvStatus: "idle" | "running" | "done" | "error";
+  cvError: string | null;
 
   // Send commands to ESP32
   sendCommand: (command: string, payload?: Record<string, unknown>) => void;
@@ -66,6 +68,8 @@ export function useWebSocketData(): UseWebSocketDataReturn {
   const [fetAnalyte, setFetAnalyte] = useState<FETTransferPoint[]>([]);
   const [fetTimeData, setFetTimeData] = useState<FETTimePoint[]>([]);
   const [cvData, setCvData] = useState<CVDataPoint[]>([]);
+  const [cvStatus, setCvStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [cvError, setCvError] = useState<string | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -157,6 +161,25 @@ export function useWebSocketData(): UseWebSocketDataReturn {
               break;
             }
 
+            case "cv_status": {
+              const s = msg.status;
+              if (s === "idle" || s === "running" || s === "done" || s === "error") {
+                setCvStatus(s);
+                if (s !== "error") setCvError(null);
+              }
+              break;
+            }
+
+            case "cv_done":
+              setCvStatus("done");
+              break;
+
+            case "cv_error":
+              setCvStatus("error");
+              setCvError(typeof msg.message === "string" ? msg.message : "Unknown CV error");
+              console.warn("[ws] cv_error", msg);
+              break;
+
             default:
               // Unknown message type — ignore
               break;
@@ -188,6 +211,8 @@ export function useWebSocketData(): UseWebSocketDataReturn {
   }, []);
   const clearCV = useCallback(() => {
     setCvData([]);
+    setCvStatus("idle");
+    setCvError(null);
   }, []);
 
   // Cleanup on unmount
@@ -211,6 +236,8 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     clearFET,
     cvData,
     clearCV,
+    cvStatus,
+    cvError,
     sendCommand,
   };
 }

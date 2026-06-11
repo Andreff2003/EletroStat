@@ -28,6 +28,7 @@ import {
 } from "@/hooks/useSimulatedData";
 import { useSimulatedCVData, CV_E0_PRIME } from "@/hooks/useSimulatedCVData";
 import CVPlot from "@/components/CVPlot";
+import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
 import { computeCVMetrics } from "@/utils/computeCVMetrics";
 import {
   exportEISData,
@@ -107,6 +108,13 @@ interface OverlayCurve {
   data: EISDataPoint[];
 }
 
+interface CVOverlayCurve {
+  id: string;
+  label: string;
+  color: string;
+  data: CVDataPoint[];
+}
+
 const Index = () => {
   const [mode, setMode] = useState<"eis" | "fet" | "cv">("eis");
   const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
@@ -139,6 +147,15 @@ const Index = () => {
   // Overlay mode (Nyquist)
   const [overlayMode, setOverlayMode] = useState(false);
   const [eisOverlays, setEisOverlays] = useState<OverlayCurve[]>([]);
+
+  // Overlay mode (CV)
+  const [cvOverlayMode, setCvOverlayMode] = useState(false);
+  const [cvOverlays, setCvOverlays] = useState<CVOverlayCurve[]>([]);
+  const [cvPlotMode, setCvPlotMode] = useState<"raw" | "corrected">("raw");
+
+  // Live CV state — separate from the simulated hook so the live ESP32 path
+  // does not depend on cv.isRunning (which is tied to the simulator).
+  const [isLiveCVRunning, setIsLiveCVRunning] = useState(false);
 
   // BioFET sample-addition markers
   const [fetMarkers, setFetMarkers] = useState<{ time: number; label: string }[]>([]);
@@ -682,6 +699,18 @@ const Index = () => {
     };
   }, []);
 
+  // Live CV — react to cv_done / cv_error from ESP32.
+  useEffect(() => {
+    if (dataSource !== "live") return;
+    if (ws.cvStatus === "done" || ws.cvStatus === "error" || ws.cvStatus === "idle") {
+      setIsLiveCVRunning(false);
+      if (ws.cvStatus === "error" && ws.cvError) {
+        toast.error(`CV error: ${ws.cvError}`);
+      }
+    }
+    if (ws.cvStatus === "running") setIsLiveCVRunning(true);
+  }, [ws.cvStatus, ws.cvError, dataSource]);
+
   // "Running" now means status === running, not just connected/animating
   const isEISRunning = eisStatus === "running";
   const isFETRunning = fetStatus === "running";
@@ -716,6 +745,7 @@ const Index = () => {
     setFetCalibration([]);
     setEisOverlays([]);
     setCvCalibration([]);
+      setCvOverlays([]);
     toast("Session cleared");
   };
 
@@ -732,6 +762,9 @@ const Index = () => {
     eis.reset();
     fetTransfer.reset();
     fetTime.reset();
+    cv.reset();
+    ws.clearCV();
+    setIsLiveCVRunning(false);
     ws.clearEIS();
     ws.clearFET();
     setEisStatus("idle");
@@ -846,7 +879,11 @@ const Index = () => {
           onChangeEIS={setEisParams}
           onChangeFET={setFetParams}
           onChangeCV={setCvParams}
-          disabled={mode === "eis" ? isEISRunning : mode === "fet" ? isFETRunning : cv.isRunning}
+          disabled={
+            mode === "eis" ? isEISRunning :
+            mode === "fet" ? isFETRunning :
+            (dataSource === "simulated" ? cv.isRunning : isLiveCVRunning)
+          }
         />
       </div>
 
@@ -911,14 +948,38 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={() => {
-                  if (dataSource === "simulated") cv.start(cvParams);
-                  else { ws.clearCV(); ws.sendCommand("start_cv", { ...cvParams }); }
+                  if (dataSource === "simulated") {
+                    cv.start(cvParams);
+                  } else {
+                    ws.clearCV();
+                    setIsLiveCVRunning(true);
+                    ws.sendCommand("start_cv", { ...cvParams });
+                  }
                 }}
-                disabled={cv.isRunning || (dataSource === "live" && ws.status !== "connected")}
+                disabled={
+                  (dataSource === "simulated" ? cv.isRunning : isLiveCVRunning) ||
+                  (dataSource === "live" && ws.status !== "connected")
+                }
                 className="font-mono text-xs"
               >▶ Start CV</Button>
-              <Button size="sm" variant="destructive" onClick={() => { cv.stop(); if (dataSource === "live") ws.sendCommand("stop"); }} disabled={!cv.isRunning} className="font-mono text-xs">■ Stop</Button>
-              <Button size="sm" variant="secondary" onClick={() => { cv.reset(); ws.clearCV(); }} className="font-mono text-xs">↺ Reset</Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  if (dataSource === "simulated") cv.stop();
+                  else { setIsLiveCVRunning(false); ws.sendCommand("stop"); }
+                }}
+                disabled={dataSource === "simulated" ? !cv.isRunning : !isLiveCVRunning}
+                className="font-mono text-xs"
+              >■ Stop</Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  cv.reset(); ws.clearCV(); setIsLiveCVRunning(false);
+                }}
+                className="font-mono text-xs"
+              >↺ Reset</Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -1201,19 +1262,84 @@ const Index = () => {
           cMM: cvParams.cMM,
           areaCm2: cvParams.areaCm2,
         });
+        const isCVRunning = dataSource === "simulated" ? cv.isRunning : isLiveCVRunning;
+        const canAddCalibration = !!cvMetrics && cvDataLive.length > 0 && !isCVRunning;
         return (
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-mono text-muted-foreground">Cyclic Voltammogram — I vs E</h2>
-                <StatusIndicator
-                  isRunning={cv.isRunning && cvDataLive.length > 0}
-                  label={cv.isRunning ? "Sweeping..." : "Idle"}
-                  dataPoints={cvDataLive.length}
-                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant={cvOverlayMode ? "default" : "outline"}
+                    onClick={() => setCvOverlayMode((v) => !v)}
+                    className="font-mono text-xs"
+                  >
+                    Overlay {cvOverlayMode ? "ON" : "OFF"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (cvDataLive.length === 0) return;
+                      const label =
+                        cvParams.cMM > 0 ? `${cvParams.cMM} mM` : `Blank ${cvOverlays.length + 1}`;
+                      const color = OVERLAY_COLORS[cvOverlays.length % OVERLAY_COLORS.length];
+                      setCvOverlays((prev) => {
+                        const next = [...prev, { id: newId(), label, color, data: cvDataLive.slice() }];
+                        return next.length > 8 ? next.slice(next.length - 8) : next;
+                      });
+                    }}
+                    disabled={cvDataLive.length === 0}
+                    className="font-mono text-xs"
+                  >＋ Capture</Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setCvOverlays([])}
+                    disabled={cvOverlays.length === 0}
+                    className="font-mono text-xs"
+                  >Clear ({cvOverlays.length})</Button>
+                  <Button
+                    size="sm"
+                    variant={cvPlotMode === "corrected" ? "default" : "outline"}
+                    onClick={() => setCvPlotMode((m) => m === "raw" ? "corrected" : "raw")}
+                    className="font-mono text-xs"
+                    title="Toggle between raw current and baseline-corrected current"
+                  >
+                    {cvPlotMode === "corrected" ? "Corrected" : "Raw"}
+                  </Button>
+                  <StatusIndicator
+                    isRunning={isCVRunning && cvDataLive.length > 0}
+                    label={isCVRunning ? "Sweeping..." : "Idle"}
+                    dataPoints={cvDataLive.length}
+                  />
+                </div>
               </div>
+              {cvOverlays.length > 0 && (
+                <div className="flex flex-wrap gap-2 text-[10px] font-mono">
+                  {cvOverlays.map((ov) => (
+                    <span key={ov.id} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5">
+                      <span style={{ background: ov.color, width: 8, height: 8, borderRadius: 999 }} />
+                      {ov.label}
+                      <button
+                        className="ml-1 text-muted-foreground hover:text-foreground"
+                        onClick={() => setCvOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
+                        title="Remove overlay"
+                      >×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="rounded-lg border border-border bg-card p-3 h-[440px] md:h-[540px]">
-                <CVPlot data={cvDataLive} metrics={cvMetrics} e0Prime={CV_E0_PRIME} />
+                <CVPlot
+                  data={cvDataLive}
+                  metrics={cvMetrics}
+                  e0Prime={CV_E0_PRIME}
+                  plotMode={cvPlotMode}
+                  overlays={cvOverlays}
+                />
               </div>
               {cvMetrics && (
                 <>
@@ -1235,7 +1361,15 @@ const Index = () => {
                       { label: "E°'", value: Number.isFinite(cvMetrics.E0prime) ? `${cvMetrics.E0prime.toFixed(3)} V` : "—" },
                       { label: "|Ipa/Ipc|", value: Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—" },
                       { label: "n est.", value: cvMetrics.n_est_valid ? cvMetrics.n_electrons.toFixed(2) : "—", t: "Valid only for reversible diffusion-controlled systems at 25 °C." },
-                      { label: "D apparent", value: cvMetrics.D_valid ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s` : "—", t: "Randles-Ševčík — valid only for at-least-quasi-reversible systems." },
+                      {
+                        label: `D apparent (${cvMetrics.D_status})`,
+                        value: Number.isFinite(cvMetrics.D_apparent)
+                          ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s`
+                          : "—",
+                        t: "valid → reversible only · apparent → quasi-reversible informational · invalid → not applicable",
+                      },
+                      { label: "SNR (min)", value: `${Math.min(cvMetrics.SNR_anodic, cvMetrics.SNR_cathodic).toFixed(1)}`, t: "min(SNR_anodic, SNR_cathodic) — corrected peak ÷ noise (1.4826·MAD)" },
+                      { label: "Noise", value: `${cvMetrics.noise_uA.toFixed(3)} µA`, t: "Robust noise estimate (1.4826·MAD of baseline residuals)" },
                       { label: "Reversibility", value: cvMetrics.reversibility },
                       { label: "Baseline", value: cvMetrics.baselineMethod },
                     ].map((it) => (
@@ -1282,10 +1416,9 @@ const Index = () => {
                     cvMetrics,
                     cvParams.cvModel,
                   );
-                  setCvCalibration((prev) => [
-                    ...prev.filter((p) => p.concentration_mM !== cvParams.cMM),
-                    pt,
-                  ]);
+                  // Always append — replicates (including blank replicates) are
+                  // required for LOD estimation.
+                  setCvCalibration((prev) => [...prev, pt]);
                   logActivity(
                     "calibration",
                     `CV calibration point added — C=${cvParams.cMM} mM, response=${
@@ -1307,7 +1440,7 @@ const Index = () => {
                     scanRate_mVs: cvParams.scanRate,
                   })
                 }
-                canAdd={!!cvMetrics && cvDataLive.length > 0 && !cv.isRunning}
+                canAdd={canAddCalibration}
                 currentMeasuredUA={(() => {
                   if (!cvMetrics) return null;
                   const tmp = buildCVCalibrationPoint(

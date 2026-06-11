@@ -445,13 +445,22 @@ export function exportCVData(
   const id = `cv_${Date.now()}`;
   const ts = fmtTs(Date.now());
   const raw = [sectionHeader("RAW DATA"), toRow(RAW_CV_HEADERS)];
-  for (const p of data) {
+  // Prefer the per-point baseline/Icorr from metrics.correctedData when available.
+  const corrIdx = new Map<number, CVDataPoint>();
+  if (metrics?.correctedData) {
+    metrics.correctedData.forEach((p, i) => corrIdx.set(i, p));
+  }
+  const useCorrected =
+    metrics?.correctedData && metrics.correctedData.length === data.length;
+  for (let i = 0; i < data.length; i++) {
+    const p = data[i];
+    const cp = useCorrected ? metrics!.correctedData![i] : undefined;
     raw.push(toRow([
       id, ts,
       fmtSig(p.t), `${p.cycle}`, fmtStr(p.branch ?? ""),
       fmtSig(p.E), fmtSig(p.I),
-      fmtSig(p.baseline),
-      fmtSig(p.Icorr),
+      fmtSig(cp?.baseline ?? p.baseline),
+      fmtSig(cp?.Icorr ?? p.Icorr),
     ]));
   }
   const procHeaders = [
@@ -461,7 +470,8 @@ export function exportCVData(
     "Epa_V", "Epc_V", "E0prime_V",
     "deltaEp_mV", "abs_Ipa_over_Ipc",
     "n_est", "n_est_valid",
-    "D_apparent_cm2_s", "D_valid",
+    "D_apparent_cm2_s", "D_status",
+    "noise_uA", "SNR_anodic", "SNR_cathodic",
     "reversibility", "baseline_method", "warnings",
   ];
   const proc = [sectionHeader("PROCESSED RESULTS"), toRow(procHeaders)];
@@ -473,7 +483,8 @@ export function exportCVData(
       fmtSig(metrics.Epa), fmtSig(metrics.Epc), fmtSig(metrics.E0prime),
       fmtSig(metrics.deltaEp), fmtSig(metrics.IpaIpcRatio),
       fmtSig(metrics.n_electrons), metrics.n_est_valid ? "Yes" : "No",
-      fmtSig(metrics.D_apparent), metrics.D_valid ? "Yes" : "No",
+      fmtSig(metrics.D_apparent), metrics.D_status,
+      fmtSig(metrics.noise_uA), fmtSig(metrics.SNR_anodic), fmtSig(metrics.SNR_cathodic),
       metrics.reversibility, metrics.baselineMethod,
       metrics.warnings.length ? metrics.warnings.join(" | ") : "N/A",
     ]));
@@ -560,6 +571,7 @@ export function exportCVCalibrationCSV(
       "sigma_blank_uA",
       "LOD_mM",
       "LOQ_mM",
+      "sigma_source",
       "quality",
     ]),
   );
@@ -570,9 +582,10 @@ export function exportCVCalibrationCSV(
       fmtSig(summary.fit?.intercept),
       fmtSig(summary.fit?.r2),
       `${summary.fit?.nPoints ?? 0}`,
-      fmtSig(summary.sigmaBlank),
+      fmtSig(summary.sigma_uA),
       fmtSig(summary.lod_mM),
       fmtSig(summary.loq_mM),
+      summary.sigmaSource,
       summary.quality,
     ]),
   );
