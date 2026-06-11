@@ -323,10 +323,11 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
       return {
         level: "idle" as Level, ready: false,
         reversibilityLevel: "idle" as Level, deltaEpLevel: "idle" as Level,
-        ratioLevel: "idle" as Level, peakLevel: "idle" as Level, dLevel: "idle" as Level,
+        ratioLevel: "idle" as Level, peakLevel: "idle" as Level,
+        dLevel: "idle" as Level, snrLevel: "idle" as Level,
       };
     }
-    const { reversibility, deltaEp, IpaIpcRatio, hasAnodic, hasCathodic, D_valid, n_est_valid } = cvMetrics;
+    const { reversibility, deltaEp, IpaIpcRatio, hasAnodic, hasCathodic, D_status, SNR_anodic, SNR_cathodic } = cvMetrics;
     const reversibilityLevel: Level =
       reversibility === "reversible" ? "green"
       : reversibility === "quasi-reversible" ? "yellow"
@@ -338,8 +339,8 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
     let deltaEpLevel: Level = "red";
     if (Number.isFinite(deltaEp)) {
       const dev = Math.abs(deltaEp - expected);
-      if (dev <= tol) deltaEpLevel = "green";
-      else if (dev <= tol * 3) deltaEpLevel = "yellow";
+      if (dev <= 20) deltaEpLevel = "green";
+      else if (dev <= 60) deltaEpLevel = "yellow";
     }
 
     const ratioLevel: Level =
@@ -348,26 +349,27 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
       : "red";
     const peaksFound = (hasAnodic ? 1 : 0) + (hasCathodic ? 1 : 0);
     const peakLevel: Level = peaksFound === 2 ? "green" : peaksFound === 1 ? "yellow" : "red";
-    // D is informational — no universal green threshold without an expected D.
-    const dLevel: Level = D_valid ? "yellow" : "idle";
+    const snr = Math.min(SNR_anodic, SNR_cathodic);
+    const snrLevel: Level =
+      snr >= 10 ? "green" : snr >= 3 ? "yellow" : "red";
+    // D is informational only — never sets the overall traffic light.
+    const dLevel: Level =
+      D_status === "valid" ? "green"
+      : D_status === "apparent" ? "yellow"
+      : "idle";
 
     let overall: Level = "red";
-    const allGreen =
-      reversibility === "reversible" &&
+    if (
       peakLevel === "green" &&
-      ratioLevel === "green" &&
       deltaEpLevel === "green" &&
-      n_est_valid;
-    if (allGreen) overall = "green";
-    else if (
-      reversibility !== "irreversible" &&
-      peakLevel !== "red" &&
-      (deltaEpLevel === "yellow" || ratioLevel === "yellow" || deltaEpLevel === "green")
+      ratioLevel === "green" &&
+      snrLevel === "green"
     ) {
+      overall = "green";
+    } else if (peakLevel !== "red" && snrLevel !== "red") {
       overall = "yellow";
     }
-    if (peaksFound < 2 || reversibility === "irreversible") overall = "red";
-    return { level: overall, ready: true, reversibilityLevel, deltaEpLevel, ratioLevel, peakLevel, dLevel };
+    return { level: overall, ready: true, reversibilityLevel, deltaEpLevel, ratioLevel, peakLevel, dLevel, snrLevel };
   }, [cvMetrics, cvNElectrons, cvDeltaEpToleranceMv]);
 
   const m = mode === "eis" ? eisMetrics : mode === "fet" ? fetMetrics : cvLevels;
@@ -439,9 +441,17 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
             <MetricRow label="|Ipa/Ipc|" value={cvMetrics && Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—"} level={cvLevels.ratioLevel} />
             <MetricRow label="Peaks Detected" value={cvMetrics ? `${(cvMetrics.hasAnodic ? 1 : 0) + (cvMetrics.hasCathodic ? 1 : 0)} / 2` : pending} level={cvLevels.peakLevel} />
             <MetricRow
+              label="SNR (min)"
+              title="min(SNR_anodic, SNR_cathodic) — corrected peak current ÷ noise estimate"
+              value={cvMetrics ? `${Math.min(cvMetrics.SNR_anodic, cvMetrics.SNR_cathodic).toFixed(1)}` : pending}
+              level={cvLevels.snrLevel}
+            />
+            <MetricRow
               label="D apparent"
-              title="Informational — no reference D configured"
-              value={cvMetrics && cvMetrics.D_valid && Number.isFinite(cvMetrics.D_apparent) ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s` : "—"}
+              title="valid → reversible only · apparent → quasi-reversible (informational) · invalid → not applicable"
+              value={cvMetrics && Number.isFinite(cvMetrics.D_apparent)
+                ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s (${cvMetrics.D_status})`
+                : cvMetrics ? `— (${cvMetrics.D_status})` : "—"}
               level={cvLevels.dLevel}
             />
           </>
