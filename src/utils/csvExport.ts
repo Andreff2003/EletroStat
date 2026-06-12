@@ -438,12 +438,40 @@ function fmtSig(v: unknown): string {
 export function exportCVData(
   data: CVDataPoint[],
   metrics: CVMetrics | null,
-  scanRate_mVs: number,
+  cvParams: {
+    scanRate: number;
+    eStart: number;
+    eVertex1: number;
+    eVertex2: number;
+    nCycles: number;
+    n: number;
+    cMM: number;
+    areaCm2: number;
+    cvModel: string;
+  },
   source: ExportSource = "simulated",
-  cvModel: string = "reversible",
+  plotMode: "raw" | "corrected" = "raw",
 ) {
   const id = `cv_${Date.now()}`;
   const ts = fmtTs(Date.now());
+  const meta = [
+    sectionHeader("METADATA"),
+    toRow(["technique", "CV"]),
+    toRow(["timestamp", ts]),
+    toRow(["source", source]),
+    toRow(["cv_model", cvParams.cvModel]),
+    toRow(["scan_rate_mVs", fmtSig(cvParams.scanRate)]),
+    toRow(["E_start_V", fmtSig(cvParams.eStart)]),
+    toRow(["E_vertex1_V", fmtSig(cvParams.eVertex1)]),
+    toRow(["E_vertex2_V", fmtSig(cvParams.eVertex2)]),
+    toRow(["n_cycles", `${cvParams.nCycles}`]),
+    toRow(["concentration_mM", fmtSig(cvParams.cMM)]),
+    toRow(["area_cm2", fmtSig(cvParams.areaCm2)]),
+    toRow(["n_electrons", `${cvParams.n}`]),
+    toRow(["temperature_K", "298.15"]),
+    toRow(["baseline_method", metrics?.baselineMethod ?? "n/a"]),
+    toRow(["exported_current_mode", plotMode]),
+  ].join("\n");
   const raw = [sectionHeader("RAW DATA"), toRow(RAW_CV_HEADERS)];
   // Prefer the per-point baseline/Icorr from metrics.correctedData when available.
   const corrIdx = new Map<number, CVDataPoint>();
@@ -477,7 +505,7 @@ export function exportCVData(
   const proc = [sectionHeader("PROCESSED RESULTS"), toRow(procHeaders)];
   if (metrics) {
     proc.push(toRow([
-      id, ts, fmtSig(scanRate_mVs), fmtStr(cvModel),
+      id, ts, fmtSig(cvParams.scanRate), fmtStr(cvParams.cvModel),
       fmtSig(metrics.IpaRaw), fmtSig(metrics.IpcRaw),
       fmtSig(metrics.IpaCorrected), fmtSig(metrics.IpcCorrected),
       fmtSig(metrics.Epa), fmtSig(metrics.Epc), fmtSig(metrics.E0prime),
@@ -491,7 +519,7 @@ export function exportCVData(
   } else {
     proc.push(toRow(procHeaders.map(() => "N/A")));
   }
-  const out = [metaRow(1, source), raw.join("\n"), proc.join("\n")].join(BLANK);
+  const out = [metaRow(1, source), meta, raw.join("\n"), proc.join("\n")].join(BLANK);
   downloadTSV(`cv_data_${Date.now()}.tsv`, out);
 }
 

@@ -43,6 +43,8 @@ interface CVPlotProps {
   plotMode?: "raw" | "corrected";
   /** Optional saved curves drawn underneath the live trace. */
   overlays?: { id: string; label: string; color: string; data: CVDataPoint[] }[];
+  /** Overlay baseline trace (raw mode) or zero reference (corrected mode). */
+  showBaseline?: boolean;
 }
 
 type ChartMouseEvent = {
@@ -59,6 +61,7 @@ const CVPlot = ({
   axisConvention = "positive-right",
   plotMode = "raw",
   overlays = [],
+  showBaseline = false,
 }: CVPlotProps) => {
   // One series per (cycle, branch). Repeated E values across forward / reverse
   // sweeps must NOT be joined; emitting one row per acquisition sample with
@@ -73,6 +76,17 @@ const CVPlot = ({
     return m;
   }, [plotMode, metrics, data]);
 
+  const correctedAvailable =
+    !!metrics?.correctedData &&
+    metrics.correctedData.length === data.length &&
+    metrics.correctedData.some((p) => Number.isFinite(p.Icorr));
+  const effectiveMode: "raw" | "corrected" =
+    plotMode === "corrected" && !correctedAvailable ? "raw" : plotMode;
+  const baselineAvailable =
+    !!metrics?.correctedData &&
+    metrics.correctedData.length === data.length &&
+    metrics.correctedData.some((p) => Number.isFinite(p.baseline));
+
   const { rows, seriesKeys } = useMemo(() => {
     const keys: string[] = [];
     const seen = new Set<string>();
@@ -85,18 +99,39 @@ const CVPlot = ({
         rowsLocal.push({ E: p.E, [key]: p.I });
       }
     }
+    // Optional baseline series (one shared key, fine line). In corrected mode
+    // we draw a zero reference instead.
+    const wantBaselineLine =
+      showBaseline &&
+      effectiveMode === "raw" &&
+      baselineAvailable &&
+      metrics?.correctedData;
+    const baselineKey = "__baseline";
+    if (wantBaselineLine) {
+      keys.push(baselineKey);
+      seen.add(baselineKey);
+    }
     for (let i = 0; i < data.length; i++) {
       const p = data[i];
       const branch = p.branch ?? "forward";
       const key = `c${p.cycle}_${branch}`;
       if (!seen.has(key)) { seen.add(key); keys.push(key); }
-      const y = corrIndex.has(i) ? corrIndex.get(i)! : p.I;
-      rowsLocal.push({ E: p.E, [key]: y });
+      const y =
+        effectiveMode === "corrected" && corrIndex.has(i)
+          ? corrIndex.get(i)!
+          : p.I;
+      const row: SeriesRow = { E: p.E, [key]: y };
+      if (wantBaselineLine) {
+        const bl = metrics!.correctedData![i]?.baseline;
+        if (typeof bl === "number" && Number.isFinite(bl)) row[baselineKey] = bl;
+      }
+      rowsLocal.push(row);
     }
     return { rows: rowsLocal, seriesKeys: keys };
-  }, [data, overlays, corrIndex]);
+  }, [data, overlays, corrIndex, showBaseline, effectiveMode, baselineAvailable, metrics]);
 
   const colorOf = (key: string): string => {
+    if (key === "__baseline") return "hsl(220 10% 60%)";
     if (key.startsWith("ov_")) {
       const ov = overlays.find((o) => `ov_${o.id}` === key);
       return ov?.color ?? "hsl(220 10% 50%)";
@@ -162,6 +197,25 @@ const CVPlot = ({
 
   return (
     <div className="w-full h-full flex flex-col" style={{ position: "relative" }}>
+      {plotMode === "corrected" && !correctedAvailable && (
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            zIndex: 10,
+            fontSize: 10,
+            padding: "3px 8px",
+            borderRadius: 4,
+            background: "hsl(40 80% 20%)",
+            border: "1px solid hsl(40 80% 40%)",
+            color: "hsl(40 90% 80%)",
+            fontFamily: "monospace",
+          }}
+        >
+          Corrected view unavailable — baseline not fitted (showing raw)
+        </div>
+      )}
       {zoomDomain && (
         <button
           onClick={() => setZoomDomain(null)}
@@ -257,17 +311,35 @@ const CVPlot = ({
                 type="linear"
                 dataKey={k}
                 stroke={colorOf(k)}
-                strokeWidth={2}
+                strokeWidth={k === "__baseline" ? 1 : 2}
+                strokeDasharray={k === "__baseline" ? "3 3" : undefined}
                 dot={false}
                 isAnimationActive={false}
-                name={k.replace(/^c(\d+)_/, "Cycle $1 · ")}
+                name={
+                  k === "__baseline"
+                    ? "Baseline"
+                    : k.replace(/^c(\d+)_/, "Cycle $1 · ")
+                }
                 connectNulls={false}
               />
             ))}
+            {effectiveMode === "corrected" && showBaseline && (
+              <ReferenceLine
+                y={0}
+                stroke="hsl(220 10% 60%)"
+                strokeDasharray="3 3"
+                label={{
+                  value: "0 (baseline-subtracted)",
+                  position: "right",
+                  fill: "hsl(215 15% 50%)",
+                  fontSize: 10,
+                }}
+              />
+            )}
             {metrics?.hasAnodic && (
               <ReferenceDot
                 x={metrics.Epa}
-                y={plotMode === "corrected" ? metrics.IpaCorrected : metrics.IpaRaw}
+                y={effectiveMode === "corrected" ? metrics.IpaCorrected : metrics.IpaRaw}
                 r={5}
                 fill="hsl(160 70% 55%)"
                 stroke="hsl(160 70% 55%)"
@@ -282,7 +354,7 @@ const CVPlot = ({
             {metrics?.hasCathodic && (
               <ReferenceDot
                 x={metrics.Epc}
-                y={plotMode === "corrected" ? metrics.IpcCorrected : metrics.IpcRaw}
+                y={effectiveMode === "corrected" ? metrics.IpcCorrected : metrics.IpcRaw}
                 r={5}
                 fill="hsl(340 80% 60%)"
                 stroke="hsl(340 80% 60%)"
