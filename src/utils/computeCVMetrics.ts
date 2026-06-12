@@ -356,10 +356,11 @@ export function computeCVMetrics(
   // Build corrected data series (baseline + Icorr per point) for CSV/UI.
   let correctedData: CVDataPoint[] | undefined;
   if (baselineMethod !== "none") {
-    correctedData = sample.map((p) => {
+    const fwdSet = new Set(fwd);
+    correctedData = sample.map((p, i) => {
       const isFwd = hasBranches
         ? p.branch === "forward"
-        : sample.indexOf(p) <= (fwd.length - 1);
+        : (fwdSet.has(p) || i <= fwd.length - 1);
       const base = isFwd ? fwdBase : revBase;
       if (!base) return { ...p };
       const bl = base(p.E);
