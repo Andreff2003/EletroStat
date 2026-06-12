@@ -152,6 +152,10 @@ const Index = () => {
   const [cvOverlayMode, setCvOverlayMode] = useState(false);
   const [cvOverlays, setCvOverlays] = useState<CVOverlayCurve[]>([]);
   const [cvPlotMode, setCvPlotMode] = useState<"raw" | "corrected">("raw");
+  const [cvBaselineMethod, setCvBaselineMethod] = useState<
+    "auto" | "none" | "linear-first-15" | "linear-edges"
+  >("auto");
+  const [cvShowBaseline, setCvShowBaseline] = useState(false);
 
   // Live CV state — separate from the simulated hook so the live ESP32 path
   // does not depend on cv.isRunning (which is tied to the simulator).
@@ -985,8 +989,14 @@ const Index = () => {
                 variant="outline"
                 onClick={() => {
                   const data = dataSource === "simulated" ? cv.data : ws.cvData;
-                  const metrics = computeCVMetrics(data, { scanRate_mVs: cvParams.scanRate, n: cvParams.n, cMM: cvParams.cMM, areaCm2: cvParams.areaCm2 });
-                  exportCVData(data, metrics, cvParams.scanRate, dataSource, cvParams.cvModel);
+                  const metrics = computeCVMetrics(data, {
+                    scanRate_mVs: cvParams.scanRate,
+                    n: cvParams.n,
+                    cMM: cvParams.cMM,
+                    areaCm2: cvParams.areaCm2,
+                    baselineMethodInput: cvBaselineMethod,
+                  });
+                  exportCVData(data, metrics, cvParams, dataSource, cvPlotMode);
                 }}
                 disabled={(dataSource === "simulated" ? cv.data.length : ws.cvData.length) === 0}
                 className="font-mono text-xs"
@@ -1261,9 +1271,17 @@ const Index = () => {
           n: cvParams.n,
           cMM: cvParams.cMM,
           areaCm2: cvParams.areaCm2,
+          baselineMethodInput: cvBaselineMethod,
         });
         const isCVRunning = dataSource === "simulated" ? cv.isRunning : isLiveCVRunning;
         const canAddCalibration = !!cvMetrics && cvDataLive.length > 0 && !isCVRunning;
+        const correctedAvailable =
+          !!cvMetrics?.correctedData &&
+          cvMetrics.correctedData.length === cvDataLive.length &&
+          cvMetrics.correctedData.some((p) => Number.isFinite(p.Icorr));
+        const baselineAvailable =
+          !!cvMetrics?.correctedData &&
+          cvMetrics.correctedData.some((p) => Number.isFinite(p.baseline));
         return (
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
             <div className="space-y-4">
