@@ -126,7 +126,7 @@ export function randlesSevcikIpUA(opts: {
   scanRate_mVs: number;
   D_cm2s?: number;
 }): number | null {
-  const D = opts.D_cm2s ?? 7.26e-6;
+  const D = opts.D_cm2s ?? CV_DEFAULT_D_CM2_S;
   if (!(opts.n > 0) || !(opts.areaCm2 > 0) || !(opts.cMM >= 0) || !(opts.scanRate_mVs > 0)) return null;
   const cBulk = opts.cMM * 1e-6;            // mol/cm³
   const vVs = opts.scanRate_mVs / 1000;     // V/s
