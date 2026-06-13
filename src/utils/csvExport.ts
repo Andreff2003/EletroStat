@@ -470,6 +470,17 @@ export function exportCVData(
     toRow(["n_electrons", `${cvParams.n}`]),
     toRow(["temperature_K", "298.15"]),
     toRow(["baseline_method", metrics?.baselineMethod ?? "n/a"]),
+    toRow(["baseline_method_input", metrics?.baselineMethodInput ?? "n/a"]),
+    toRow(["baseline_resolved_method", metrics?.baselineResolvedMethod ?? "n/a"]),
+    toRow(["metrics_cycle", metrics ? `${metrics.metricsCycle}` : "n/a"]),
+    toRow([
+      "corrected_data_available",
+      metrics?.correctedDataAvailable ? "Yes" : "No",
+    ]),
+    toRow([
+      "corrected_data_covers_all_cycles",
+      metrics?.correctedDataCoversAllCycles ? "Yes" : "No",
+    ]),
     toRow(["exported_current_mode", plotMode]),
   ].join("\n");
   const raw = [sectionHeader("RAW DATA"), toRow(RAW_CV_HEADERS)];
