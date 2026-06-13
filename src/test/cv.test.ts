@@ -110,3 +110,49 @@ describe("randlesSevcikIpUA", () => {
     expect(ip!).toBeLessThan(150);
   });
 });
+
+describe("computeCVMetrics — SNR fallback for clean curves", () => {
+  it("reports non-zero SNR when MAD-derived noise is zero", () => {
+    const data = makeReversibleCurve({ cMM: 5, ipUA: 80, noise: 0 });
+    const m = computeCVMetrics(data, {
+      scanRate_mVs: 100, n: 1, cMM: 5, areaCm2: 0.0707,
+    });
+    expect(m).not.toBeNull();
+    expect(m!.SNR_anodic).toBeGreaterThan(10);
+    expect(m!.SNR_cathodic).toBeGreaterThan(10);
+  });
+});
+
+describe("computeCVMetrics — multi-cycle corrected data", () => {
+  it("correctedData covers every point across cycles", () => {
+    const c1 = makeReversibleCurve({ cMM: 5, ipUA: 80 }).map((p) => ({ ...p, cycle: 1 }));
+    const c2 = makeReversibleCurve({ cMM: 5, ipUA: 80 }).map((p) => ({ ...p, cycle: 2 }));
+    const data = [...c1, ...c2];
+    const m = computeCVMetrics(data, {
+      scanRate_mVs: 100, n: 1, cMM: 5, areaCm2: 0.0707,
+    });
+    expect(m).not.toBeNull();
+    expect(m!.correctedData).toBeDefined();
+    expect(m!.correctedData!.length).toBe(data.length);
+    expect(m!.correctedDataCoversAllCycles).toBe(true);
+    expect(m!.metricsCycle).toBe(1);
+    const cyclesSeen = new Set(m!.correctedData!.map((p) => p.cycle));
+    expect(cyclesSeen.has(1)).toBe(true);
+    expect(cyclesSeen.has(2)).toBe(true);
+  });
+});
+
+describe("computeCVMetrics — auto baseline picker", () => {
+  it("auto resolves to a concrete method (not just first-15)", () => {
+    const data = makeReversibleCurve({ cMM: 5, ipUA: 80 });
+    const m = computeCVMetrics(data, {
+      scanRate_mVs: 100, n: 1, cMM: 5, areaCm2: 0.0707,
+      baselineMethodInput: "auto",
+    });
+    expect(m).not.toBeNull();
+    expect(m!.baselineMethodInput).toBe("auto");
+    expect(["linear-first-15", "linear-edges", "mixed"]).toContain(
+      m!.baselineResolvedMethod,
+    );
+  });
+});
