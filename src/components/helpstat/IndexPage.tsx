@@ -1429,7 +1429,21 @@ const Index = () => {
                       { label: "SNR (min)", value: `${Math.min(cvMetrics.SNR_anodic, cvMetrics.SNR_cathodic).toFixed(1)}`, t: "min(SNR_anodic, SNR_cathodic) — corrected peak ÷ noise (1.4826·MAD)" },
                       { label: "Noise", value: `${cvMetrics.noise_uA.toFixed(3)} µA`, t: "Robust noise estimate (1.4826·MAD of baseline residuals)" },
                       { label: "Reversibility", value: cvMetrics.reversibility },
-                      { label: "Baseline", value: cvMetrics.baselineMethod },
+                      {
+                        label: "Baseline",
+                        value:
+                          cvMetrics.baselineMethodInput === "auto"
+                            ? `Auto → ${cvMetrics.baselineResolvedMethod}`
+                            : cvMetrics.baselineResolvedMethod,
+                        t: `Input: ${cvMetrics.baselineMethodInput} · Method: ${cvMetrics.baselineMethod}`,
+                      },
+                      {
+                        label: "Metrics cycle",
+                        value: `${cvMetrics.metricsCycle}${
+                          cvParams.nCycles > 1 ? ` / ${cvParams.nCycles}` : ""
+                        }`,
+                        t: "Main metrics are calculated from this cycle. Corrected view spans all cycles when available.",
+                      },
                     ].map((it) => (
                       <div key={it.label} className="bg-secondary rounded-md p-2" title={it.t}>
                         <div className="text-[10px] text-muted-foreground font-mono uppercase">

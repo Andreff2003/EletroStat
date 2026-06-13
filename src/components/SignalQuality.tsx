@@ -339,8 +339,8 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
     let deltaEpLevel: Level = "red";
     if (Number.isFinite(deltaEp)) {
       const dev = Math.abs(deltaEp - expected);
-      if (dev <= 20) deltaEpLevel = "green";
-      else if (dev <= 60) deltaEpLevel = "yellow";
+      if (dev <= tol) deltaEpLevel = "green";
+      else if (dev <= 3 * tol) deltaEpLevel = "yellow";
     }
 
     const ratioLevel: Level =
