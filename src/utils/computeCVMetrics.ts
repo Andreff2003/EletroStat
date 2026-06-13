@@ -18,6 +18,11 @@ export type BaselineMethodInput =
   | "none"
   | "linear-first-15"
   | "linear-edges";
+export type BaselineResolvedMethod =
+  | "linear-first-15"
+  | "linear-edges"
+  | "mixed"
+  | "none";
 export type DStatus = "valid" | "apparent" | "invalid";
 
 export interface CVMetrics {
@@ -45,6 +50,11 @@ export interface CVMetrics {
   D_status: DStatus;
   reversibility: CVReversibility;
   baselineMethod: BaselineMethod;
+  baselineMethodInput: BaselineMethodInput;
+  baselineResolvedMethod: BaselineResolvedMethod;
+  metricsCycle: number;
+  correctedDataAvailable: boolean;
+  correctedDataCoversAllCycles: boolean;
   noise_uA: number;         // estimated noise (1.4826·MAD)
   SNR_anodic: number;       // |Ipa_corr| / noise
   SNR_cathodic: number;     // |Ipc_corr| / noise
@@ -122,6 +132,67 @@ function fitBranchBaseline(
   // auto + linear-first-15
   const nFit = Math.max(3, Math.floor(branch.length * 0.15));
   return linearFit(branch.slice(0, nFit));
+}
+
+/**
+ * Robust residual sigma (1.4826·MAD) of `seg` under fit `f`.
+ * Returns NaN when the segment is too small or sigma cannot be computed.
+ */
+function fitRegionSigma(
+  seg: CVDataPoint[],
+  f: (E: number) => number,
+): number {
+  if (seg.length < 3) return NaN;
+  const res = seg.map((p) => p.I - f(p.E));
+  const sorted = [...res].sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)];
+  const abs = res.map((r) => Math.abs(r - med)).sort((a, b) => a - b);
+  const mad = abs[Math.floor(abs.length / 2)];
+  return 1.4826 * mad;
+}
+
+/**
+ * Auto baseline picker — actually evaluates both candidates and picks the one
+ * with lower residual sigma on its own fit region. Falls back gracefully.
+ */
+function autoPickBranchBaseline(branch: CVDataPoint[]): {
+  fit: ((E: number) => number) | null;
+  method: "linear-first-15" | "linear-edges" | "none";
+} {
+  if (branch.length < 4) return { fit: null, method: "none" };
+  const n15 = Math.max(3, Math.floor(branch.length * 0.15));
+  const seg15 = branch.slice(0, n15);
+  const nEdge = Math.max(2, Math.floor(branch.length * 0.1));
+  const segE = [...branch.slice(0, nEdge), ...branch.slice(branch.length - nEdge)];
+  const f15 = linearFit(seg15);
+  const fE = linearFit(segE);
+  const s15 = f15 ? fitRegionSigma(seg15, f15) : NaN;
+  const sE = fE ? fitRegionSigma(segE, fE) : NaN;
+  const ok15 = !!f15 && Number.isFinite(s15);
+  const okE = !!fE && Number.isFinite(sE);
+  if (!ok15 && !okE) return { fit: null, method: "none" };
+  if (ok15 && !okE) return { fit: f15!, method: "linear-first-15" };
+  if (!ok15 && okE) return { fit: fE!, method: "linear-edges" };
+  // Both valid — prefer linear-edges when its residual sigma is comparable
+  // or smaller (edges captures sloping baselines that span the window).
+  if (sE <= s15 * 1.10) return { fit: fE!, method: "linear-edges" };
+  return { fit: f15!, method: "linear-first-15" };
+}
+
+/** Resolve a baseline fit for a single branch given the user-selected mode. */
+function resolveBranchBaseline(
+  branch: CVDataPoint[],
+  input: BaselineMethodInput,
+): {
+  fit: ((E: number) => number) | null;
+  method: "linear-first-15" | "linear-edges" | "none";
+} {
+  if (input === "none" || branch.length < 4) return { fit: null, method: "none" };
+  if (input === "auto") return autoPickBranchBaseline(branch);
+  const fit = fitBranchBaseline(branch, input);
+  return fit
+    ? { fit, method: input === "linear-edges" ? "linear-edges" : "linear-first-15" }
+    : { fit: null, method: "none" };
 }
 
 /** 3-point boxcar smoothing — used only to locate the index of the peak. */
