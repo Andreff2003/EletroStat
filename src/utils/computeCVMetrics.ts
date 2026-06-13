@@ -257,6 +257,7 @@ export function computeCVMetrics(
   const cyc1 = data.filter((d) => d.cycle === 1);
   const sample = cyc1.length >= 10 ? cyc1 : data;
   if (sample.length < 10) return null;
+  const metricsCycle = cyc1.length >= 10 ? 1 : (sample[0]?.cycle ?? 1);
 
   const warnings: string[] = [];
   const baselineInput: BaselineMethodInput = input.baselineMethodInput ?? "auto";
@@ -286,23 +287,55 @@ export function computeCVMetrics(
     goesPositive = fb.goesPositive;
   }
 
-  // Per-branch baseline — method tracked exactly as applied.
-  const fwdBase = fitBranchBaseline(fwd, baselineInput);
-  const revBase = fitBranchBaseline(rev, baselineInput);
+  // Per-branch baseline — actually evaluate candidates when "auto".
+  const fwdResolved = resolveBranchBaseline(fwd, baselineInput);
+  const revResolved = resolveBranchBaseline(rev, baselineInput);
+  const fwdBase = fwdResolved.fit;
+  const revBase = revResolved.fit;
   let baselineMethod: BaselineMethod;
   if (baselineInput === "none") {
     baselineMethod = "none";
     warnings.push("Baseline disabled");
-  } else if (baselineInput === "linear-edges") {
-    baselineMethod = fwdBase && revBase ? "linear-edges" : "none";
   } else if (fwdBase && revBase) {
-    baselineMethod = "per-branch-linear";
+    baselineMethod =
+      fwdResolved.method === "linear-edges" && revResolved.method === "linear-edges"
+        ? "linear-edges"
+        : "per-branch-linear";
   } else if (fwdBase || revBase) {
     baselineMethod = "partial-per-branch-linear";
     warnings.push("Baseline fallback used — only one branch fitted");
   } else {
     baselineMethod = "none";
     warnings.push("Baseline fit failed; using raw currents");
+  }
+
+  // Resolved auto method label (or echo of explicit input).
+  let baselineResolvedMethod: BaselineResolvedMethod;
+  if (baselineInput === "none" || (!fwdBase && !revBase)) {
+    baselineResolvedMethod = "none";
+  } else if (baselineInput === "linear-first-15") {
+    baselineResolvedMethod = "linear-first-15";
+  } else if (baselineInput === "linear-edges") {
+    baselineResolvedMethod = "linear-edges";
+  } else {
+    // auto
+    const a = fwdResolved.method;
+    const b = revResolved.method;
+    if (a === b && a !== "none") {
+      baselineResolvedMethod = a;
+      warnings.push(
+        a === "linear-edges"
+          ? "Auto baseline selected edge regions."
+          : "Auto baseline selected first-15 region.",
+      );
+    } else if (a !== "none" && b !== "none") {
+      baselineResolvedMethod = "mixed";
+      warnings.push(
+        `Auto baseline picked ${a} (forward) and ${b} (reverse).`,
+      );
+    } else {
+      baselineResolvedMethod = (a !== "none" ? a : b) as BaselineResolvedMethod;
+    }
   }
 
   // If the scan goes positive first, the anodic peak lives on the forward
@@ -319,16 +352,26 @@ export function computeCVMetrics(
   const noiseAn = noiseFromBranch(anodicBranch, anodicBase ?? null);
   const noiseCa = noiseFromBranch(cathodicBranch, cathodicBase ?? null);
   const noise_uA = Math.max(noiseAn, noiseCa);
-  if (noise_uA <= 0) {
-    warnings.push("Noise could not be estimated; using 0.05 µA fallback threshold");
+  // SNR must remain finite for clean simulated curves where MAD≈0. Use a
+  // fixed fallback noise floor so peak detection and SNR stay coherent.
+  const FIXED_PEAK_THRESHOLD_UA = 0.05;
+  const effectiveNoise_uA =
+    Number.isFinite(noise_uA) && noise_uA > 0
+      ? noise_uA
+      : FIXED_PEAK_THRESHOLD_UA / 3;
+  if (!(Number.isFinite(noise_uA) && noise_uA > 0)) {
+    warnings.push(
+      "Noise estimate unavailable or zero; SNR uses fixed fallback noise.",
+    );
   }
-  const SNR_MIN_uA = 0.05;
-  const anodicThreshold = Math.max(SNR_MIN_uA, 3 * noise_uA);
-  const cathodicThreshold = -anodicThreshold;
-  const hasAnodic = anodic != null && anodic.Icorr > anodicThreshold;
-  const hasCathodic = cathodic != null && cathodic.Icorr < cathodicThreshold;
-  const SNR_anodic = anodic && noise_uA > 0 ? Math.abs(anodic.Icorr) / noise_uA : 0;
-  const SNR_cathodic = cathodic && noise_uA > 0 ? Math.abs(cathodic.Icorr) / noise_uA : 0;
+  const peakThreshold_uA = Math.max(
+    FIXED_PEAK_THRESHOLD_UA,
+    3 * effectiveNoise_uA,
+  );
+  const hasAnodic = anodic != null && anodic.Icorr > peakThreshold_uA;
+  const hasCathodic = cathodic != null && cathodic.Icorr < -peakThreshold_uA;
+  const SNR_anodic = anodic ? Math.abs(anodic.Icorr) / effectiveNoise_uA : 0;
+  const SNR_cathodic = cathodic ? Math.abs(cathodic.Icorr) / effectiveNoise_uA : 0;
 
   if (!hasAnodic) warnings.push("no clear anodic peak detected");
   if (!hasCathodic) warnings.push("no clear cathodic peak detected");
@@ -424,20 +467,64 @@ export function computeCVMetrics(
     n_est_valid = true;
   }
 
-  // Build corrected data series (baseline + Icorr per point) for CSV/UI.
+  // Build corrected data covering ALL cycles (same length & order as `data`).
+  // Uses the same baseline input for every cycle so the UI/CSV stays
+  // consistent across multi-cycle sweeps.
   let correctedData: CVDataPoint[] | undefined;
-  if (baselineMethod !== "none") {
-    const fwdSet = new Set(fwd);
-    correctedData = sample.map((p, i) => {
-      const isFwd = hasBranches
-        ? p.branch === "forward"
-        : (fwdSet.has(p) || i <= fwd.length - 1);
-      const base = isFwd ? fwdBase : revBase;
-      if (!base) return { ...p };
-      const bl = base(p.E);
-      return { ...p, baseline: bl, Icorr: p.I - bl };
+  let correctedDataCoversAllCycles = false;
+  if (baselineInput !== "none") {
+    correctedData = new Array<CVDataPoint>(data.length);
+    const cycles = new Map<number, number[]>();
+    data.forEach((p, i) => {
+      const arr = cycles.get(p.cycle) ?? [];
+      arr.push(i);
+      cycles.set(p.cycle, arr);
     });
+    let anyMissing = false;
+    for (const [, idxs] of cycles) {
+      const pts = idxs.map((i) => data[i]);
+      const hasBr = pts.some(
+        (p) => p.branch === "forward" || p.branch === "reverse",
+      );
+      let fwdC: CVDataPoint[];
+      let revC: CVDataPoint[];
+      if (hasBr) {
+        fwdC = pts.filter((p) => p.branch === "forward");
+        revC = pts.filter((p) => p.branch === "reverse");
+        if (fwdC.length < 2 || revC.length < 2) {
+          const fb = findSwitchIdx(pts);
+          fwdC = pts.slice(0, fb.switchIdx + 1);
+          revC = pts.slice(fb.switchIdx);
+        }
+      } else {
+        const fb = findSwitchIdx(pts);
+        fwdC = pts.slice(0, fb.switchIdx + 1);
+        revC = pts.slice(fb.switchIdx);
+      }
+      const fwdR = resolveBranchBaseline(fwdC, baselineInput);
+      const revR = resolveBranchBaseline(revC, baselineInput);
+      const fwdSet = new Set(fwdC);
+      for (let k = 0; k < idxs.length; k++) {
+        const i = idxs[k];
+        const p = data[i];
+        const isFwd = hasBr ? p.branch === "forward" : fwdSet.has(p);
+        const base = isFwd ? fwdR.fit : revR.fit;
+        if (!base) {
+          correctedData[i] = { ...p };
+          anyMissing = true;
+        } else {
+          const bl = base(p.E);
+          correctedData[i] = { ...p, baseline: bl, Icorr: p.I - bl };
+        }
+      }
+    }
+    correctedDataCoversAllCycles = !anyMissing;
+    if (anyMissing) {
+      warnings.push("Baseline unavailable for one or more cycles.");
+    }
   }
+  const correctedDataAvailable =
+    !!correctedData && correctedData.some((p) => Number.isFinite(p.Icorr));
 
   return {
     IpaRaw,
@@ -458,6 +545,11 @@ export function computeCVMetrics(
     D_status,
     reversibility,
     baselineMethod,
+    baselineMethodInput: baselineInput,
+    baselineResolvedMethod,
+    metricsCycle,
+    correctedDataAvailable,
+    correctedDataCoversAllCycles,
     noise_uA,
     SNR_anodic,
     SNR_cathodic,
