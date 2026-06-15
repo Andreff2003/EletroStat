@@ -274,12 +274,19 @@ describe("computeCVMetrics — baseline modes", () => {
     );
   });
 
-  it("'auto' prefers linear-edges when the first-15 region is contaminated", () => {
+  it("'auto' prefers linear-edges when the first-15 region is noisy", () => {
     const baseline = (E: number) => 5 * E + 2;
     const data = makeReversibleCurve({ cMM: 5, ipUA: 80, baseline });
     const nFwd = data.findIndex((p) => p.branch === "reverse");
     const n15 = Math.max(3, Math.floor(nFwd * 0.15));
-    for (let i = 0; i < n15; i++) data[i] = { ...data[i], I: data[i].I + 30 };
+    // Inject high random scatter on the first 15% of the forward branch so
+    // the linear-first-15 residual sigma is much worse than edges.
+    let seed = 42;
+    const rand = () => {
+      seed = (seed * 9301 + 49297) % 233280;
+      return seed / 233280 - 0.5;
+    };
+    for (let i = 0; i < n15; i++) data[i] = { ...data[i], I: data[i].I + rand() * 60 };
     const m = computeCVMetrics(data, {
       scanRate_mVs: 100, n: 1, cMM: 5, areaCm2: 0.0707,
       baselineMethodInput: "auto",

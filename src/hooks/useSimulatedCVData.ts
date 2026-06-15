@@ -280,6 +280,7 @@ export function parseCVWebSocketMessage(msg: unknown): CVDataPoint | null {
   if (!msg || typeof msg !== "object") return null;
   const m = msg as Record<string, unknown>;
   if (m.type !== "cv_data") return null;
+  if (m.E == null || m.I == null) return null;
   const E = Number(m.E);
   const I = Number(m.I);
   if (!Number.isFinite(E) || !Number.isFinite(I)) return null;
