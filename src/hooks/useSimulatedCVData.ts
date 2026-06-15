@@ -267,6 +267,35 @@ function buildCVPoints(params: CVSimParams): CVDataPoint[] {
     : buildReversibleCV(params);
 }
 
+/** Exported for tests — pure, deterministic apart from gaussianNoise. */
+export function buildCVPointsForTest(params: CVSimParams): CVDataPoint[] {
+  return buildCVPoints(params);
+}
+
+/**
+ * Parse a CV WebSocket frame into a CVDataPoint. Pure helper exposed for
+ * unit testing — guarantees no NaN / Infinity leaks into the dataset.
+ */
+export function parseCVWebSocketMessage(msg: unknown): CVDataPoint | null {
+  if (!msg || typeof msg !== "object") return null;
+  const m = msg as Record<string, unknown>;
+  if (m.type !== "cv_data") return null;
+  const E = Number(m.E);
+  const I = Number(m.I);
+  if (!Number.isFinite(E) || !Number.isFinite(I)) return null;
+  const cycleRaw = m.cycle != null ? Number(m.cycle) : 1;
+  const cycle =
+    Number.isFinite(cycleRaw) && cycleRaw >= 1 ? Math.floor(cycleRaw) : 1;
+  const tRaw =
+    m.t != null ? Number(m.t) : m.timestamp != null ? Number(m.timestamp) : 0;
+  const t = Number.isFinite(tRaw) ? tRaw : 0;
+  const branch =
+    m.branch === "forward" || m.branch === "reverse" || m.branch === "return"
+      ? (m.branch as "forward" | "reverse" | "return")
+      : undefined;
+  return { E, I, cycle, t, branch };
+}
+
 export function useSimulatedCVData(speed: number = 40) {
   const [data, setData] = useState<CVDataPoint[]>([]);
   const allRef = useRef<CVDataPoint[]>([]);
