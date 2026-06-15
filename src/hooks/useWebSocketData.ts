@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { EISDataPoint, FETTransferPoint, FETTimePoint } from "./useSimulatedData";
 import type { CVDataPoint } from "./useSimulatedCVData";
+import { parseCVWebSocketMessage } from "./useSimulatedCVData";
 
 /**
  * ============================================================
@@ -142,22 +143,12 @@ export function useWebSocketData(): UseWebSocketDataReturn {
               break;
 
             case "cv_data": {
-              const E = Number(msg.E);
-              const I = Number(msg.I);
-              if (!Number.isFinite(E) || !Number.isFinite(I)) {
-                console.warn("[ws] cv_data ignored — invalid E/I", msg);
+              const pt = parseCVWebSocketMessage(msg);
+              if (!pt) {
+                console.warn("[ws] cv_data ignored — invalid frame", msg);
                 break;
               }
-              const cycleRaw = msg.cycle != null ? Number(msg.cycle) : 1;
-              const cycle = Number.isFinite(cycleRaw) && cycleRaw >= 1
-                ? Math.floor(cycleRaw)
-                : 1;
-              const tRaw = msg.timestamp != null ? Number(msg.timestamp)
-                : msg.t != null ? Number(msg.t) : 0;
-              const t = Number.isFinite(tRaw) ? tRaw : 0;
-              const branch = msg.branch === "forward" || msg.branch === "reverse" || msg.branch === "return"
-                ? msg.branch : undefined;
-              setCvData((prev) => [...prev, { E, I, cycle, t, branch }]);
+              setCvData((prev) => [...prev, pt]);
               break;
             }
 
