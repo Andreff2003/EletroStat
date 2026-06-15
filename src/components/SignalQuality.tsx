@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { EISDataPoint, FETTransferPoint } from "@/hooks/useSimulatedData";
 import type { CVMetrics } from "@/utils/computeCVMetrics";
+import { computeCVSignalQuality } from "@/utils/cvSignalQuality";
 
 /**
  * ============================================================
@@ -318,59 +319,14 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
       ? "—"
       : `${deltaVtMv >= 0 ? "+" : ""}${deltaVtMv.toFixed(0)} mV`;
 
-  const cvLevels = useMemo(() => {
-    if (!cvMetrics) {
-      return {
-        level: "idle" as Level, ready: false,
-        reversibilityLevel: "idle" as Level, deltaEpLevel: "idle" as Level,
-        ratioLevel: "idle" as Level, peakLevel: "idle" as Level,
-        dLevel: "idle" as Level, snrLevel: "idle" as Level,
-      };
-    }
-    const { reversibility, deltaEp, IpaIpcRatio, hasAnodic, hasCathodic, D_status, SNR_anodic, SNR_cathodic } = cvMetrics;
-    const reversibilityLevel: Level =
-      reversibility === "reversible" ? "green"
-      : reversibility === "quasi-reversible" ? "yellow"
-      : "red";
-
-    // ΔEp gated by the EXPECTED ΔEp for the configured n (59.16/n at 25 °C).
-    const expected = 59.16 / Math.max(1, cvNElectrons);
-    const tol = Math.max(5, cvDeltaEpToleranceMv);
-    let deltaEpLevel: Level = "red";
-    if (Number.isFinite(deltaEp)) {
-      const dev = Math.abs(deltaEp - expected);
-      if (dev <= tol) deltaEpLevel = "green";
-      else if (dev <= 3 * tol) deltaEpLevel = "yellow";
-    }
-
-    const ratioLevel: Level =
-      Number.isFinite(IpaIpcRatio) && IpaIpcRatio >= 0.9 && IpaIpcRatio <= 1.1 ? "green"
-      : Number.isFinite(IpaIpcRatio) && IpaIpcRatio >= 0.7 && IpaIpcRatio <= 1.3 ? "yellow"
-      : "red";
-    const peaksFound = (hasAnodic ? 1 : 0) + (hasCathodic ? 1 : 0);
-    const peakLevel: Level = peaksFound === 2 ? "green" : peaksFound === 1 ? "yellow" : "red";
-    const snr = Math.min(SNR_anodic, SNR_cathodic);
-    const snrLevel: Level =
-      snr >= 10 ? "green" : snr >= 3 ? "yellow" : "red";
-    // D is informational only — never sets the overall traffic light.
-    const dLevel: Level =
-      D_status === "valid" ? "green"
-      : D_status === "apparent" ? "yellow"
-      : "idle";
-
-    let overall: Level = "red";
-    if (
-      peakLevel === "green" &&
-      deltaEpLevel === "green" &&
-      ratioLevel === "green" &&
-      snrLevel === "green"
-    ) {
-      overall = "green";
-    } else if (peakLevel !== "red" && snrLevel !== "red") {
-      overall = "yellow";
-    }
-    return { level: overall, ready: true, reversibilityLevel, deltaEpLevel, ratioLevel, peakLevel, dLevel, snrLevel };
-  }, [cvMetrics, cvNElectrons, cvDeltaEpToleranceMv]);
+  const cvLevels = useMemo(
+    () => computeCVSignalQuality(cvMetrics ?? null, cvNElectrons, cvDeltaEpToleranceMv) as {
+      level: Level; ready: boolean;
+      reversibilityLevel: Level; deltaEpLevel: Level; ratioLevel: Level;
+      peakLevel: Level; dLevel: Level; snrLevel: Level;
+    },
+    [cvMetrics, cvNElectrons, cvDeltaEpToleranceMv],
+  );
 
   const m = mode === "eis" ? eisMetrics : mode === "fet" ? fetMetrics : cvLevels;
   const level: Level = m.level;

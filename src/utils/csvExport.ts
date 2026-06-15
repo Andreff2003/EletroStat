@@ -435,23 +435,30 @@ function fmtSig(v: unknown): string {
   return n.toPrecision(7);
 }
 
-export function exportCVData(
+export interface CVExportParams {
+  scanRate: number;
+  eStart: number;
+  eVertex1: number;
+  eVertex2: number;
+  nCycles: number;
+  n: number;
+  cMM: number;
+  areaCm2: number;
+  cvModel: string;
+}
+
+/**
+ * Pure builder — assembles the CV CSV/TSV body as a string. Exposed so unit
+ * tests can assert headers, baseline columns and processed metrics without
+ * touching the DOM download path.
+ */
+export function buildCVExportText(
   data: CVDataPoint[],
   metrics: CVMetrics | null,
-  cvParams: {
-    scanRate: number;
-    eStart: number;
-    eVertex1: number;
-    eVertex2: number;
-    nCycles: number;
-    n: number;
-    cMM: number;
-    areaCm2: number;
-    cvModel: string;
-  },
+  cvParams: CVExportParams,
   source: ExportSource = "simulated",
   plotMode: "raw" | "corrected" = "raw",
-) {
+): string {
   const id = `cv_${Date.now()}`;
   const ts = fmtTs(Date.now());
   const meta = [
@@ -530,7 +537,17 @@ export function exportCVData(
   } else {
     proc.push(toRow(procHeaders.map(() => "N/A")));
   }
-  const out = [metaRow(1, source), meta, raw.join("\n"), proc.join("\n")].join(BLANK);
+  return [metaRow(1, source), meta, raw.join("\n"), proc.join("\n")].join(BLANK);
+}
+
+export function exportCVData(
+  data: CVDataPoint[],
+  metrics: CVMetrics | null,
+  cvParams: CVExportParams,
+  source: ExportSource = "simulated",
+  plotMode: "raw" | "corrected" = "raw",
+) {
+  const out = buildCVExportText(data, metrics, cvParams, source, plotMode);
   downloadTSV(`cv_data_${Date.now()}.tsv`, out);
 }
 
