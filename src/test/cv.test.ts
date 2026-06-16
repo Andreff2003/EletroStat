@@ -551,7 +551,7 @@ describe("simulateReversibleDiffusionCV — physical solver", () => {
   it("Ipeak scales linearly with concentration", () => {
     const p1 = peakStats(simulateReversibleDiffusionCV({ ...SOLVER_DEFAULTS, cMM: 1 }));
     const p2 = peakStats(simulateReversibleDiffusionCV({ ...SOLVER_DEFAULTS, cMM: 2 }));
-    const r = Math.abs(p2.Ipa / p1.Ipa);
+    const r = Math.abs(p2.Ipc / p1.Ipc);
     expect(r).toBeGreaterThan(1.7);
     expect(r).toBeLessThan(2.3);
   });
