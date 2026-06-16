@@ -144,50 +144,23 @@ function buildPotentialProgram(params: CVSimParams): { segs: Seg[]; dt: number; 
 }
 
 /**
- * Reversible parametric model — two Gaussian peaks (cathodic on the
- * decreasing-E branch, anodic on the increasing-E branch) plus a tiny
- * capacitive baseline. Designed to satisfy ΔEp≈59/n mV and |Ipa/Ipc|≈1.
+ * Reversible model — delegates to the physical 1-D semi-infinite
+ * diffusion solver with a Nernstian surface boundary condition.
+ * No Gaussian shaping, no capacitive baseline: this is a real PDE
+ * solve (backward Euler + Thomas tridiagonal), so ΔEp ≈ 59/n mV,
+ * |Ipa/Ipc| ≈ 1 and ip ∝ C·√v emerge from the physics.
  */
 function buildReversibleCV(params: CVSimParams): CVDataPoint[] {
-  const { segs, dt } = buildPotentialProgram(params);
-  const { n, cMM, areaCm2, scanRate } = params;
-
-  const cBulk = cMM * 1e-6; // mol/cm³
-  const vVs = scanRate / 1000;
-
-  // Randles–Ševčík peak current (A)
-  const ipA =
-    0.4463 *
-    n *
-    F *
-    areaCm2 *
-    cBulk *
-    Math.sqrt((n * F * D * vVs) / (R * T));
-  const ipUA = ipA * 1e6;
-
-  const Epc = E0_PRIME - 0.05916 / (2 * n);
-  const Epa = E0_PRIME + 0.05916 / (2 * n);
-  const sigmaE = Math.max(0.035 / Math.sqrt(n), 0.015);
-  const peakRatio = 1.0;
-
-  // Capacitive baseline — Cdl·v. Tiny for typical defaults.
-  const Cdl = CDL_PER_AREA * areaCm2;          // F
-  const Icap_uA = Cdl * vVs * 1e6;             // µA per direction unit
-
-  const noiseAmp = Math.sqrt(scanRate) * 0.005;
-
-  const out: CVDataPoint[] = [];
-  for (let i = 0; i < segs.length; i++) {
-    const { E, branch, cycle, dir } = segs[i];
-    // Cathodic peak on decreasing-E branch (dir=-1), anodic on increasing.
-    const cath = -ipUA * Math.exp(-0.5 * ((E - Epc) / sigmaE) ** 2);
-    const an   = peakRatio * ipUA * Math.exp(-0.5 * ((E - Epa) / sigmaE) ** 2);
-    const faradaic = dir < 0 ? cath : an;
-    const capacitive = dir * Icap_uA;
-    const I = faradaic + capacitive + gaussianNoise(noiseAmp);
-    out.push({ E, I, cycle, t: i * dt, branch });
-  }
-  return out;
+  return simulateReversibleDiffusionCV({
+    eStart: params.eStart,
+    eVertex1: params.eVertex1,
+    eVertex2: params.eVertex2,
+    scanRate_mVs: params.scanRate,
+    nCycles: params.nCycles,
+    n: params.n,
+    areaCm2: params.areaCm2,
+    cMM: params.cMM,
+  });
 }
 
 /**
