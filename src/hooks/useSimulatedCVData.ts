@@ -6,6 +6,7 @@ import {
   CV_DEFAULT_D_CM2_S as D,
   CV_E0_PRIME_DEFAULT_V as E0_PRIME,
 } from "@/utils/cvConstants";
+import { simulateReversibleDiffusionCV } from "@/utils/cvDiffusionSolver";
 
 /**
  * ============================================================
@@ -13,16 +14,14 @@ import {
  * ------------------------------------------------------------
  * Two CV models are exposed:
  *
- *  A) "reversible" — analytical / parametric reversible model.
- *     Produces two smooth Gaussian-like peaks placed at
- *       Epc = E0' - 59.16 mV / (2n)
- *       Epa = E0' + 59.16 mV / (2n)
- *     with peak current from Randles–Ševčík:
- *       ip = 0.4463 · n · F · A · C · sqrt(n·F·D·v / (R·T))
- *     plus a small capacitive baseline (Cdl · v).  This is the
- *     DEFAULT model and is meant to behave well: ΔEp ≈ 59/n mV,
- *     |Ipa/Ipc| ≈ 1, ip ∝ C·sqrt(v).  It is NOT a Nicholson–Shain
- *     digital simulation — it is an educational parametric shape.
+ *  A) "reversible" — physical solver: 1-D semi-infinite diffusion
+ *     with a Nernstian boundary condition at the electrode and
+ *     bulk concentrations at the far node. Time integration is
+ *     backward Euler with a Thomas tridiagonal solve. Faradaic
+ *     current is computed from the diffusive flux of O at the
+ *     surface; no Gaussian fitting is involved. Implementation:
+ *     `simulateReversibleDiffusionCV` in
+ *     `src/utils/cvDiffusionSolver.ts`. This is the DEFAULT model.
  *
  *  B) "quasi-reversible" — Butler–Volmer kinetics + semi-infinite
  *     diffusion (product-integration of the Cottrell kernel),
