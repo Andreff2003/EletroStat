@@ -19,12 +19,7 @@ import {
 import { buildCVExportText } from "@/utils/csvExport";
 import { computeCVSignalQuality } from "@/utils/cvSignalQuality";
 import { simulateReversibleDiffusionCV } from "@/utils/cvDiffusionSolver";
-import {
-  CV_F,
-  CV_R,
-  CV_T_DEFAULT_K,
-  CV_DEFAULT_D_CM2_S,
-} from "@/utils/cvConstants";
+import { CV_F, CV_R, CV_T_DEFAULT_K } from "@/utils/cvConstants";
 
 /**
  * Synthetic Nernstian-shape voltammogram with two Gaussian peaks.
