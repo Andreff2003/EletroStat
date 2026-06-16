@@ -297,13 +297,14 @@ const ParametersPanel = ({
                 }
                 className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
               >
-                <option value="reversible">Reversible (Randles–Ševčík)</option>
+                <option value="reversible">Reversible (diffusion + Nernst)</option>
                 <option value="quasi-reversible">
                   Quasi-reversible (Butler–Volmer)
                 </option>
               </select>
               <span className="text-[10px] text-muted-foreground font-mono">
-                Default: reversible. Quasi-reversible is an educational
+                Default: reversible diffusion solver (semi-infinite diffusion
+                with Nernst boundary). Quasi-reversible is an educational
                 approximation; D apparent may be biased.
               </span>
             </div>
