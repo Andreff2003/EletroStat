@@ -6,6 +6,7 @@ import {
   CV_DEFAULT_D_CM2_S as D,
   CV_E0_PRIME_DEFAULT_V as E0_PRIME,
 } from "@/utils/cvConstants";
+import { simulateReversibleDiffusionCV } from "@/utils/cvDiffusionSolver";
 
 /**
  * ============================================================
@@ -13,16 +14,14 @@ import {
  * ------------------------------------------------------------
  * Two CV models are exposed:
  *
- *  A) "reversible" — analytical / parametric reversible model.
- *     Produces two smooth Gaussian-like peaks placed at
- *       Epc = E0' - 59.16 mV / (2n)
- *       Epa = E0' + 59.16 mV / (2n)
- *     with peak current from Randles–Ševčík:
- *       ip = 0.4463 · n · F · A · C · sqrt(n·F·D·v / (R·T))
- *     plus a small capacitive baseline (Cdl · v).  This is the
- *     DEFAULT model and is meant to behave well: ΔEp ≈ 59/n mV,
- *     |Ipa/Ipc| ≈ 1, ip ∝ C·sqrt(v).  It is NOT a Nicholson–Shain
- *     digital simulation — it is an educational parametric shape.
+ *  A) "reversible" — physical solver: 1-D semi-infinite diffusion
+ *     with a Nernstian boundary condition at the electrode and
+ *     bulk concentrations at the far node. Time integration is
+ *     backward Euler with a Thomas tridiagonal solve. Faradaic
+ *     current is computed from the diffusive flux of O at the
+ *     surface; no Gaussian fitting is involved. Implementation:
+ *     `simulateReversibleDiffusionCV` in
+ *     `src/utils/cvDiffusionSolver.ts`. This is the DEFAULT model.
  *
  *  B) "quasi-reversible" — Butler–Volmer kinetics + semi-infinite
  *     diffusion (product-integration of the Cottrell kernel),
@@ -80,7 +79,8 @@ export const DEFAULT_CV_PARAMS: CVSimParams = {
 const K0 = 0.01;       // cm/s
 const ALPHA = 0.5;
 const K_MAX = 10;      // cm/s — numerical safety ceiling (educational)
-const CDL_PER_AREA = 20e-6; // F/cm² — typical aqueous double-layer capacitance
+// (Capacitive baseline constant removed — reversible model now uses the
+// physical diffusion solver and does not synthesise a Cdl·v offset.)
 
 export const CV_E0_PRIME = E0_PRIME;
 
@@ -145,50 +145,23 @@ function buildPotentialProgram(params: CVSimParams): { segs: Seg[]; dt: number; 
 }
 
 /**
- * Reversible parametric model — two Gaussian peaks (cathodic on the
- * decreasing-E branch, anodic on the increasing-E branch) plus a tiny
- * capacitive baseline. Designed to satisfy ΔEp≈59/n mV and |Ipa/Ipc|≈1.
+ * Reversible model — delegates to the physical 1-D semi-infinite
+ * diffusion solver with a Nernstian surface boundary condition.
+ * No Gaussian shaping, no capacitive baseline: this is a real PDE
+ * solve (backward Euler + Thomas tridiagonal), so ΔEp ≈ 59/n mV,
+ * |Ipa/Ipc| ≈ 1 and ip ∝ C·√v emerge from the physics.
  */
 function buildReversibleCV(params: CVSimParams): CVDataPoint[] {
-  const { segs, dt } = buildPotentialProgram(params);
-  const { n, cMM, areaCm2, scanRate } = params;
-
-  const cBulk = cMM * 1e-6; // mol/cm³
-  const vVs = scanRate / 1000;
-
-  // Randles–Ševčík peak current (A)
-  const ipA =
-    0.4463 *
-    n *
-    F *
-    areaCm2 *
-    cBulk *
-    Math.sqrt((n * F * D * vVs) / (R * T));
-  const ipUA = ipA * 1e6;
-
-  const Epc = E0_PRIME - 0.05916 / (2 * n);
-  const Epa = E0_PRIME + 0.05916 / (2 * n);
-  const sigmaE = Math.max(0.035 / Math.sqrt(n), 0.015);
-  const peakRatio = 1.0;
-
-  // Capacitive baseline — Cdl·v. Tiny for typical defaults.
-  const Cdl = CDL_PER_AREA * areaCm2;          // F
-  const Icap_uA = Cdl * vVs * 1e6;             // µA per direction unit
-
-  const noiseAmp = Math.sqrt(scanRate) * 0.005;
-
-  const out: CVDataPoint[] = [];
-  for (let i = 0; i < segs.length; i++) {
-    const { E, branch, cycle, dir } = segs[i];
-    // Cathodic peak on decreasing-E branch (dir=-1), anodic on increasing.
-    const cath = -ipUA * Math.exp(-0.5 * ((E - Epc) / sigmaE) ** 2);
-    const an   = peakRatio * ipUA * Math.exp(-0.5 * ((E - Epa) / sigmaE) ** 2);
-    const faradaic = dir < 0 ? cath : an;
-    const capacitive = dir * Icap_uA;
-    const I = faradaic + capacitive + gaussianNoise(noiseAmp);
-    out.push({ E, I, cycle, t: i * dt, branch });
-  }
-  return out;
+  return simulateReversibleDiffusionCV({
+    eStart: params.eStart,
+    eVertex1: params.eVertex1,
+    eVertex2: params.eVertex2,
+    scanRate_mVs: params.scanRate,
+    nCycles: params.nCycles,
+    n: params.n,
+    areaCm2: params.areaCm2,
+    cMM: params.cMM,
+  });
 }
 
 /**

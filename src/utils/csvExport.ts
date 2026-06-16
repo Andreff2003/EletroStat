@@ -467,6 +467,12 @@ export function buildCVExportText(
     toRow(["timestamp", ts]),
     toRow(["source", source]),
     toRow(["cv_model", cvParams.cvModel]),
+    toRow([
+      "simulation_model",
+      cvParams.cvModel === "reversible"
+        ? "reversible-diffusion"
+        : "quasi-reversible-bv-cottrell",
+    ]),
     toRow(["scan_rate_mVs", fmtSig(cvParams.scanRate)]),
     toRow(["E_start_V", fmtSig(cvParams.eStart)]),
     toRow(["E_vertex1_V", fmtSig(cvParams.eVertex1)]),
