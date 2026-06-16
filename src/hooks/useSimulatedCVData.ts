@@ -79,7 +79,8 @@ export const DEFAULT_CV_PARAMS: CVSimParams = {
 const K0 = 0.01;       // cm/s
 const ALPHA = 0.5;
 const K_MAX = 10;      // cm/s — numerical safety ceiling (educational)
-const CDL_PER_AREA = 20e-6; // F/cm² — typical aqueous double-layer capacitance
+// (Capacitive baseline constant removed — reversible model now uses the
+// physical diffusion solver and does not synthesise a Cdl·v offset.)
 
 export const CV_E0_PRIME = E0_PRIME;
 
