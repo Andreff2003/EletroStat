@@ -125,3 +125,52 @@ describe("SWV — detectSWVPeak edge case", () => {
     expect(r.peakPolarity).toBe("unknown");
   });
 });
+
+describe("SWV — invariants", () => {
+  it("INet equals IForward - IReverse in the generator", () => {
+    const d = makeGaussianData(1, 0);
+    for (const p of d) {
+      expect(p.INet).toBeCloseTo(p.IForward - p.IReverse, 12);
+    }
+  });
+  it("baseline correction does not mutate raw forward/reverse currents", () => {
+    const d = makeGaussianData(1, 0.002);
+    const snapshot = d.map((p) => ({ f: p.IForward, r: p.IReverse, net: p.INet }));
+    const { corrected } = analyzeSWV(d, "linear_edges");
+    for (let i = 0; i < d.length; i++) {
+      expect(d[i].IForward).toBe(snapshot[i].f);
+      expect(d[i].IReverse).toBe(snapshot[i].r);
+      expect(d[i].INet).toBe(snapshot[i].net);
+      // Corrected block carries baseline & ICorrected without touching the raw fields.
+      expect(corrected[i].IForward).toBe(snapshot[i].f);
+      expect(corrected[i].IReverse).toBe(snapshot[i].r);
+    }
+  });
+  it("SNR remains finite for noise-free data (fallback engaged)", () => {
+    const d = makeGaussianData(1, 0); // zero noise
+    const { metrics } = analyzeSWV(d, "linear_edges");
+    expect(metrics.snr).not.toBeNull();
+    expect(Number.isFinite(metrics.snr as number)).toBe(true);
+    expect(metrics.peakDetected).toBe(true);
+  });
+  it("peakCurrentCorrected differs from raw when baseline is non-zero", () => {
+    const d = makeGaussianData(1, 0.001);
+    const { metrics } = analyzeSWV(d, "linear_edges");
+    expect(metrics.peakCurrentRaw_uA).not.toBeNull();
+    expect(metrics.peakCurrentCorrected_uA).not.toBeNull();
+    expect(
+      Math.abs((metrics.peakCurrentRaw_uA as number) - (metrics.peakCurrentCorrected_uA as number)),
+    ).toBeGreaterThan(1e-6);
+  });
+  it("empty data returns a full SWVMetrics shape (no missing fields)", () => {
+    const { metrics } = analyzeSWV([], "auto");
+    expect(metrics).toMatchObject({
+      peakDetected: false,
+      peakPolarity: "unknown",
+      baselineMethod: "auto",
+      baselineMethodUsed: "auto",
+      snr: null,
+      noiseRms_uA: null,
+    });
+  });
+});

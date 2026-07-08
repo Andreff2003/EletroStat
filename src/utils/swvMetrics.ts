@@ -50,12 +50,9 @@ export function generateSWVProgram(params: SWVParameters): SWVProgramStep[] {
   const step_V = step_mV / 1000;
   const span = Math.abs(endE - startE);
   const nSteps = Math.floor(span / step_V + 1e-9) + 1;
-  const sign =
-    direction === "cathodic"
-      ? endE < startE ? -1 : -1
-      : endE > startE ? 1 : 1;
-  // Actual sign follows startE -> endE regardless of the label, but we still
-  // report `direction` so downstream can honour anodic/cathodic naming.
+  // The actual ramp sign follows startE -> endE regardless of the `direction`
+  // label — we still report `direction` so downstream keeps the anodic /
+  // cathodic naming intact for reporting purposes.
   const rampSign = endE >= startE ? 1 : -1;
   const period_s = 1 / frequency_Hz;
   const out: SWVProgramStep[] = [];
@@ -67,7 +64,6 @@ export function generateSWVProgram(params: SWVParameters): SWVProgramStep[] {
       direction,
     });
   }
-  void sign;
   return out;
 }
 
@@ -241,11 +237,18 @@ export function correctBaseline(
         return a + (y - yh) ** 2;
       }, 0) / yEdge.length,
     );
-    return rmsPoly < rmsLin * 0.6 ? "polynomial" : "linear_edges";
+    // Prefer the polynomial only when we have enough edge points to fit it
+    // meaningfully AND it substantially outperforms a straight line.
+    if (xEdge.length >= 6 && rmsPoly < rmsLin * 0.6) return "polynomial";
+    return "linear_edges";
   };
 
   let effective: SWVBaselineMethod = method;
   if (method === "auto") effective = chooseAuto();
+  if (effective === "polynomial" && xEdge.length < 6) {
+    warnings.push("Not enough edge points for polynomial baseline — falling back to linear.");
+    effective = "linear_edges";
+  }
 
   if (effective === "linear_edges") {
     const { a, b } = linearFit(xEdge, yEdge);
@@ -260,8 +263,12 @@ export function correctBaseline(
 
   // polynomial
   const [c2, c1, c0] = polyFit2(xEdge, yEdge);
-  if (Math.abs(c2) > 0) {
-    warnings.push("Polynomial baseline may overfit — verify with raw plot.");
+  // Warn only when the quadratic term contributes a substantial fraction of
+  // the observed signal amplitude (|c2|·span² comparable to |peak|).
+  const spanE = Math.abs(E[E.length - 1] - E[0]);
+  const peakAmp = Math.max(...iNet.map((v) => Math.abs(v))) || 1;
+  if (Math.abs(c2) * spanE * spanE > 0.5 * peakAmp) {
+    warnings.push("Polynomial baseline curvature is large — verify with raw plot.");
   }
   return {
     methodUsed: "polynomial",
@@ -327,6 +334,12 @@ export function detectSWVPeak(
     Math.abs(maxVal) >= Math.abs(minVal) ? "anodic" : "cathodic";
   const peakIdx = polarity === "anodic" ? maxIdx : minIdx;
   const peakVal = iCorrected[peakIdx];
+  // Ambiguity flag: max and min are of comparable magnitude — polarity call
+  // is not statistically meaningful. Common on flat baselines / no real peak.
+  const denomAmb = Math.max(Math.abs(maxVal), Math.abs(minVal));
+  if (denomAmb > 0 && Math.abs(Math.abs(maxVal) - Math.abs(minVal)) / denomAmb < 0.05) {
+    warnings.push("Peak polarity ambiguous — |max| ≈ |min|.");
+  }
 
   // Noise from points outside a ±10 % neighbourhood of the peak, via MAD.
   const halfWin = Math.max(3, Math.floor(n * 0.1));
@@ -334,8 +347,34 @@ export function detectSWVPeak(
   for (let i = 0; i < n; i++) {
     if (Math.abs(i - peakIdx) > halfWin) outside.push(iCorrected[i]);
   }
-  const noiseRms = 1.4826 * mad(outside.length ? outside : iCorrected);
-  const snr = noiseRms > 0 ? Math.abs(peakVal) / noiseRms : null;
+  // Noise: MAD-based robust estimate scaled to Gaussian σ.
+  // Fallback ladder (mirrors the fix already applied in CV):
+  //   1) 1.4826·MAD of the off-peak neighbourhood.
+  //   2) Standard deviation of the same window (catches noise-free simulated
+  //      data where the median absolute deviation collapses to 0 by chance).
+  //   3) Peak-amplitude floor (max|I|·1e-4) — a strictly positive sentinel
+  //      so SNR stays finite and downstream peak-detection does not silently
+  //      report "no peak" on ideally clean signals.
+  const noiseSample = outside.length ? outside : iCorrected;
+  let noiseRms = 1.4826 * mad(noiseSample);
+  let noiseFallback = false;
+  if (!(noiseRms > 0)) {
+    const mean = noiseSample.reduce((a, v) => a + v, 0) / noiseSample.length;
+    const varS =
+      noiseSample.reduce((a, v) => a + (v - mean) ** 2, 0) /
+      Math.max(1, noiseSample.length - 1);
+    noiseRms = Math.sqrt(varS);
+    noiseFallback = true;
+  }
+  if (!(noiseRms > 0)) {
+    const amp = Math.max(...iCorrected.map((v) => Math.abs(v)));
+    noiseRms = Math.max(amp * 1e-4, Number.EPSILON);
+    noiseFallback = true;
+  }
+  if (noiseFallback) {
+    warnings.push("Noise estimate degenerate — used fallback (SNR is optimistic).");
+  }
+  const snr = Math.abs(peakVal) / noiseRms;
 
   // Half-peak width: interpolate where |I| = 0.5 · |peak| left/right of the peak.
   const half = 0.5 * peakVal;
@@ -363,6 +402,9 @@ export function detectSWVPeak(
   }
   const halfWidth_mV =
     eLeft != null && eRight != null ? Math.abs(eRight - eLeft) * 1000 : null;
+  if (halfWidth_mV == null && Math.abs(peakVal) > 3 * noiseRms) {
+    warnings.push("Half-peak width not resolvable — peak too close to sweep edge.");
+  }
 
   // Peak area (trapezoid) over the ±halfWin band, informational only.
   const lo = Math.max(0, peakIdx - halfWin);
@@ -372,7 +414,7 @@ export function detectSWVPeak(
     area += 0.5 * (iCorrected[i] + iCorrected[i + 1]) * (E[i + 1] - E[i]);
   }
 
-  const peakDetected = Math.abs(peakVal) > 3 * (noiseRms || 0) && snr != null && snr >= 3;
+  const peakDetected = snr >= 3 && Math.abs(peakVal) > 3 * noiseRms;
   if (!peakDetected) warnings.push("No significant SWV peak (SNR < 3).");
 
   return {
@@ -411,6 +453,13 @@ export function analyzeSWV(
         peakPotential_V: null,
         halfPeakWidth_mV: null,
         baselineMethod: method,
+        baselineMethodUsed: method,
+        baselineSlope_uA_V: null,
+        baselineIntercept_uA: null,
+        snr: null,
+        noiseRms_uA: null,
+        peakArea_uA_V: null,
+        lodEstimate_nM: null,
         peakDetected: false,
         peakPolarity: "unknown",
         warnings: ["No SWV data."],

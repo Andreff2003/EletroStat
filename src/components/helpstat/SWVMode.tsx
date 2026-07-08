@@ -29,7 +29,6 @@ import ParametersPanel, {
 import { useSimulatedSWVData, SWV_SIMULATION_MODEL_ID } from "@/hooks/useSimulatedSWVData";
 import {
   analyzeSWV,
-  computeINet,
   validateSWVParameters,
 } from "@/utils/swvMetrics";
 import type {
@@ -290,7 +289,10 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
     }
     const lod = slope !== 0 ? (3 * sigmaBlank) / Math.abs(slope) : null;
     const loq = slope !== 0 ? (10 * sigmaBlank) / Math.abs(slope) : null;
-    return { slope, intercept, sigmaBlank, lod, loq, n, blanks: blanks.length };
+    const slopeWarning = Math.abs(slope) < 1e-9
+      ? "Slope ≈ 0 — calibration not usable for quantitation."
+      : null;
+    return { slope, intercept, sigmaBlank, lod, loq, n, blanks: blanks.length, slopeWarning };
   }, [calibration]);
 
   // Keep latest handlers in a ref so the controller identity is stable and
@@ -509,6 +511,9 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                   <div>Linear: signal = {calibFit.slope.toExponential(3)}·C + {calibFit.intercept.toExponential(3)}</div>
                   <div>σ_blank: {calibFit.sigmaBlank?.toExponential(3)} µA {calibFit.blanks >= 2 ? "(replicate blanks)" : "(fit residuals — no blank replicates)"}</div>
                   <div>LOD: {calibFit.lod != null ? calibFit.lod.toFixed(3) + " nM" : "N/A"} | LOQ: {calibFit.loq != null ? calibFit.loq.toFixed(3) + " nM" : "N/A"}</div>
+                  {calibFit.slopeWarning && (
+                    <div className="text-destructive">⚠ {calibFit.slopeWarning}</div>
+                  )}
                 </div>
               )}
               {calibration.length > 0 && (
@@ -566,5 +571,3 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
 }
 
 
-// Re-export the tiny helper so the tests can hit it via the mode module too.
-export { computeINet };

@@ -220,14 +220,19 @@ export function useWebSocketData(): UseWebSocketDataReturn {
               const idx = Number.isFinite(Number(msg.index))
                 ? Number(msg.index)
                 : swvIndexRef.current;
+              // Do NOT invent a time axis if the firmware omits it — leave
+              // NaN so CSV export renders "N/A" instead of a fabricated stamp.
               const time = Number.isFinite(Number(msg.time ?? msg.t ?? msg.time_s))
                 ? Number(msg.time ?? msg.t ?? msg.time_s)
-                : idx * 0.04;
+                : NaN;
               const direction = msg.direction === "cathodic" ? "cathodic" : "anodic";
               setSwvData((prev) => [...prev, {
                 E,
-                IForward: Number.isFinite(iFwd) ? iFwd : 0,
-                IReverse: Number.isFinite(iRev) ? iRev : 0,
+                // Preserve NaN when F/R are absent — recharts skips NaN points
+                // and CSV renders "N/A". Never fabricate 0 A, that would show
+                // a false flat trace on the Forward/Reverse overlay.
+                IForward: Number.isFinite(iFwd) ? iFwd : NaN,
+                IReverse: Number.isFinite(iRev) ? iRev : NaN,
                 INet: iNet,
                 time,
                 index: idx,

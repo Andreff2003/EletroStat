@@ -370,13 +370,20 @@ function computeSWVMetrics(
       : null;
 
   const peakLevel: Level =
-    peak && (snr ?? 0) >= 10 ? "green" : peak && (snr ?? 0) >= 3 ? "yellow" : "red";
+    peak && (snr ?? 0) >= 10
+      ? "green"
+      : peak
+        ? "yellow" // peak detected but SNR unknown/low — still usable
+        : "red";
   const snrLevel: Level =
-    snr == null ? "red" : snr >= 10 ? "green" : snr >= 3 ? "yellow" : "red";
+    snr == null ? (peak ? "yellow" : "red") : snr >= 10 ? "green" : snr >= 3 ? "yellow" : "red";
   const widthLevel: Level =
     hw == null
       ? "red"
-      : hw >= 30 && hw <= 250
+      : // Nernstian half-peak width ≈ 90.6/n mV for surface-confined couples;
+        // diffusion-controlled peaks broaden with Esw. Green: realistic band;
+        // yellow: relaxed to cover sharp adsorbed and broader kinetic peaks.
+        hw >= 25 && hw <= 250
         ? "green"
         : hw >= 15 && hw <= 350
           ? "yellow"
