@@ -63,8 +63,22 @@ async def _stream_swv_simulated(send, p: Dict[str, Any]) -> None:
     quiet = float(p.get("quietTime_s", 2.0))
     direction = str(p.get("direction", "anodic"))
     conc = float(p.get("concentration", 0))
-    if step_mV <= 0 or freq <= 0 or startE == endE:
-        await send({"type": "swv_error", "message": "Invalid SWV parameters."})
+    # Mirror the frontend validators — never accept a payload that would
+    # produce a NaN-laden stream.
+    if not (step_mV > 0):
+        await send({"type": "swv_error", "message": "step_mV must be > 0."})
+        return
+    if not (freq > 0):
+        await send({"type": "swv_error", "message": "frequency_Hz must be > 0."})
+        return
+    if not (amp_mV > 0):
+        await send({"type": "swv_error", "message": "amplitude_mV must be > 0."})
+        return
+    if quiet < 0:
+        await send({"type": "swv_error", "message": "quietTime_s must be >= 0."})
+        return
+    if startE == endE:
+        await send({"type": "swv_error", "message": "startE must differ from endE."})
         return
     step_V = step_mV / 1000.0
     n = int(math.floor(abs(endE - startE) / step_V + 1e-9)) + 1
@@ -73,27 +87,36 @@ async def _stream_swv_simulated(send, p: Dict[str, Any]) -> None:
     sigma = max(0.02, 0.03 + amp_mV / 4000.0)
     period = 1.0 / freq
     await send({"type": "swv_status", "status": "running"})
-    await asyncio.sleep(min(quiet, 0.5))
-    for i in range(n):
-        E = startE + ramp * i * step_V
-        base = 0.05 + 0.02 * E
-        i_net = ipk * math.exp(-0.5 * ((E - EPEAK_V) / sigma) ** 2) + base \
-            + random.gauss(0, 0.01)
-        cbg = 0.05 + 0.01 * E
-        i_fwd = cbg + 0.5 * (i_net - base) + random.gauss(0, 0.01)
-        i_rev = cbg - 0.5 * (i_net - base) + random.gauss(0, 0.01)
-        await send({
-            "type": "swv_data",
-            "E": round(E, 6),
-            "IForward": round(i_fwd, 6),
-            "IReverse": round(i_rev, 6),
-            "INet": round(i_fwd - i_rev, 6),
-            "time": round(quiet + i * period, 6),
-            "index": i,
-            "direction": direction,
-        })
-        await asyncio.sleep(max(0.005, period))
-    await send({"type": "swv_done", "points": n})
+    try:
+        await asyncio.sleep(min(quiet, 0.5))
+        for i in range(n):
+            E = startE + ramp * i * step_V
+            base = 0.05 + 0.02 * E
+            i_net = ipk * math.exp(-0.5 * ((E - EPEAK_V) / sigma) ** 2) + base \
+                + random.gauss(0, 0.01)
+            cbg = 0.05 + 0.01 * E
+            i_fwd = cbg + 0.5 * (i_net - base) + random.gauss(0, 0.01)
+            i_rev = cbg - 0.5 * (i_net - base) + random.gauss(0, 0.01)
+            # Never emit NaN — every value is finite by construction of the
+            # empirical model, but we still round to 6 decimal places so no
+            # accidental subnormals leak into the JSON payload.
+            await send({
+                "type": "swv_data",
+                "E": round(E, 6),
+                "IForward": round(i_fwd, 6),
+                "IReverse": round(i_rev, 6),
+                "INet": round(i_fwd - i_rev, 6),
+                "time": round(quiet + i * period, 6),
+                "index": i,
+                "direction": direction,
+            })
+            await asyncio.sleep(max(0.005, period))
+        await send({"type": "swv_done", "points": n})
+    except asyncio.CancelledError:
+        # Stop mid-sweep: report an explicit idle transition so the frontend
+        # never gets stuck in "running" waiting for a done frame.
+        await send({"type": "swv_status", "status": "idle"})
+        raise
 
 
 # ────────────────── server ──────────────────
@@ -108,6 +131,7 @@ async def _handle(ws, mode: str) -> None:
         try:
             msg = json.loads(raw)
         except Exception:
+            await send({"type": "swv_error", "message": "Invalid JSON payload."})
             continue
         cmd = msg.get("command")
         if cmd == "start_swv":
@@ -118,10 +142,15 @@ async def _handle(ws, mode: str) -> None:
             else:
                 await send({"type": "swv_error",
                             "message": "SWV over wifi not yet supported in this bridge build."})
-        elif cmd == "stop":
+        elif cmd in ("stop", "stop_swv"):
             if task and not task.done():
                 task.cancel()
-                await send({"type": "swv_status", "status": "idle"})
+                # Cancellation handler inside _stream_swv_simulated also emits
+                # idle — this covers the case where no task is running.
+            await send({"type": "swv_status", "status": "idle"})
+        else:
+            await send({"type": "swv_error",
+                        "message": f"Unknown command: {cmd!r}"})
 
 
 async def main() -> None:
