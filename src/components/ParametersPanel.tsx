@@ -7,6 +7,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import type { SWVBaselineMethod, SWVParameters } from "@/types/swv";
+
 
 /**
  * Measurement parameters for both EIS and BioFET modes.
@@ -65,15 +67,18 @@ export const DEFAULT_CV_PARAMS: CVParams = {
 };
 
 interface ParametersPanelProps {
-  mode: "eis" | "fet" | "cv";
+  mode: "eis" | "fet" | "cv" | "swv";
   eisParams: EISParams;
   fetParams: FETParams;
   cvParams?: CVParams;
+  swvParams?: SWVParameters;
   onChangeEIS: (params: EISParams) => void;
   onChangeFET: (params: FETParams) => void;
   onChangeCV?: (params: CVParams) => void;
+  onChangeSWV?: (params: SWVParameters) => void;
   disabled?: boolean;
 }
+
 
 interface NumFieldProps {
   label: string;
@@ -113,13 +118,17 @@ const ParametersPanel = ({
   eisParams,
   fetParams,
   cvParams,
+  swvParams,
   onChangeEIS,
   onChangeFET,
   onChangeCV,
+  onChangeSWV,
   disabled,
 }: ParametersPanelProps) => {
   const [open, setOpen] = useState(false);
-  const modeLabel = mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : "CV";
+  const modeLabel =
+    mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : mode === "cv" ? "CV" : "SWV";
+
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border border-border bg-card">
@@ -310,6 +319,115 @@ const ParametersPanel = ({
             </div>
           </div>
         )}
+        {mode === "swv" && swvParams && onChangeSWV && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <NumField
+              label="E Start (V)"
+              value={swvParams.startE}
+              min={-2}
+              max={2}
+              onChange={(v) => onChangeSWV({ ...swvParams, startE: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="E End (V)"
+              value={swvParams.endE}
+              min={-2}
+              max={2}
+              onChange={(v) => onChangeSWV({ ...swvParams, endE: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Step (mV)"
+              value={swvParams.step_mV}
+              min={0.1}
+              max={50}
+              onChange={(v) => onChangeSWV({ ...swvParams, step_mV: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Amplitude (mV)"
+              value={swvParams.amplitude_mV}
+              min={1}
+              max={200}
+              onChange={(v) => onChangeSWV({ ...swvParams, amplitude_mV: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Frequency (Hz)"
+              value={swvParams.frequency_Hz}
+              min={1}
+              max={1000}
+              onChange={(v) => onChangeSWV({ ...swvParams, frequency_Hz: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Quiet Time (s)"
+              value={swvParams.quietTime_s}
+              min={0}
+              max={60}
+              onChange={(v) => onChangeSWV({ ...swvParams, quietTime_s: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Concentration (nM)"
+              value={swvParams.concentration_nM ?? 0}
+              min={0}
+              max={1e6}
+              onChange={(v) => onChangeSWV({ ...swvParams, concentration_nM: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Area (cm²)"
+              value={swvParams.area_cm2 ?? 0}
+              min={1e-4}
+              max={10}
+              onChange={(v) => onChangeSWV({ ...swvParams, area_cm2: v })}
+              disabled={disabled}
+            />
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                Direction
+              </Label>
+              <select
+                disabled={disabled}
+                value={swvParams.direction}
+                onChange={(e) =>
+                  onChangeSWV({
+                    ...swvParams,
+                    direction: e.target.value as SWVParameters["direction"],
+                  })
+                }
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="anodic">anodic</option>
+                <option value="cathodic">cathodic</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                Baseline Method
+              </Label>
+              <select
+                disabled={disabled}
+                value={swvParams.baselineMethod ?? "auto"}
+                onChange={(e) =>
+                  onChangeSWV({
+                    ...swvParams,
+                    baselineMethod: e.target.value as SWVBaselineMethod,
+                  })
+                }
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="none">none</option>
+                <option value="linear_edges">linear_edges</option>
+                <option value="polynomial">polynomial</option>
+                <option value="auto">auto</option>
+              </select>
+            </div>
+          </div>
+        )}
+
       </CollapsibleContent>
     </Collapsible>
   );

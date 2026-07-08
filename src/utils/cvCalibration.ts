@@ -16,6 +16,11 @@ export interface CVCalibrationPoint {
   Dapparent: number | null;
   cvModel: "reversible" | "quasi-reversible";
   timestamp: number;
+  // Traceability — optional, for linking back to the source measurement.
+  measurementId?: string;
+  sampleId?: string;
+  electrodeId?: string;
+  notes?: string; // short summary, free-form
 }
 
 export interface LinearFit {
@@ -34,11 +39,21 @@ export function responseFor(p: CVCalibrationPoint, mode: CVResponseMode): number
   return p.responseMean_uA;
 }
 
+export interface BuildCVCalibrationPointMeta {
+  measurementId?: string;
+  sampleId?: string;
+  electrodeId?: string;
+  /** Short single-line summary; long notes should be summarised by the caller. */
+  notes?: string;
+  timestamp?: number;
+}
+
 /** Build a calibration point from CV metrics + concentration. */
 export function buildCVCalibrationPoint(
   concentration_mM: number,
   metrics: CVMetrics | null,
   cvModel: "reversible" | "quasi-reversible",
+  meta?: BuildCVCalibrationPointMeta,
 ): CVCalibrationPoint {
   const Ipa = metrics && Number.isFinite(metrics.IpaCorrected) ? metrics.IpaCorrected : null;
   const IpcAbs =
@@ -58,7 +73,11 @@ export function buildCVCalibrationPoint(
     ratio: metrics && Number.isFinite(metrics.IpaIpcRatio) ? metrics.IpaIpcRatio : null,
     Dapparent: metrics && metrics.D_valid ? metrics.D_apparent : null,
     cvModel,
-    timestamp: Date.now(),
+    timestamp: meta?.timestamp ?? Date.now(),
+    measurementId: meta?.measurementId,
+    sampleId: meta?.sampleId,
+    electrodeId: meta?.electrodeId,
+    notes: meta?.notes,
   };
 }
 

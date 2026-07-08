@@ -180,8 +180,17 @@ const CVPlot = ({
       setZoomArea(null);
       return;
     }
-    const visible = data.filter((d) => d.E >= x1 && d.E <= x2);
-    const ys = visible.map((d) => d.I).filter((v) => Number.isFinite(v));
+    const visibleIdx: number[] = [];
+    for (let i = 0; i < data.length; i++) {
+      if (data[i].E >= x1 && data[i].E <= x2) visibleIdx.push(i);
+    }
+    const ys = visibleIdx
+      .map((i) =>
+        effectiveMode === "corrected" && corrIndex.has(i)
+          ? (corrIndex.get(i) as number)
+          : data[i].I,
+      )
+      .filter((v) => Number.isFinite(v));
     if (ys.length === 0) {
       setZoomArea(null);
       return;

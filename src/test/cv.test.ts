@@ -393,10 +393,10 @@ describe("buildCVExportText — headers, baseline columns and processed metrics"
     ];
     for (const h of required) expect(text).toContain(h);
     const lines = text.split("\n");
-    const rawIdx = lines.findIndex((l) => l.startsWith("measurement_id,timestamp,time_s"));
+    const rawIdx = lines.findIndex((l) => l.startsWith("measurement_id;timestamp;time_s"));
     expect(rawIdx).toBeGreaterThan(0);
     const sampleRow = lines[rawIdx + 5] ?? "";
-    const cols = sampleRow.split(",");
+    const cols = sampleRow.split(";");
     expect(cols.length).toBe(9);
     expect(cols[7]).not.toBe("N/A"); // baseline_uA
     expect(cols[8]).not.toBe("N/A"); // I_corrected_uA

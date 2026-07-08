@@ -48,6 +48,8 @@ export interface CVMetrics {
   D_apparent: number;       // cm²/s
   D_valid: boolean;
   D_status: DStatus;
+  /** Which corrected peak(s) were fed into the Randles-Ševčík expression. */
+  D_peak_source?: "anodic" | "cathodic" | "mean_anodic_cathodic" | "none";
   reversibility: CVReversibility;
   baselineMethod: BaselineMethod;
   baselineMethodInput: BaselineMethodInput;
@@ -393,24 +395,48 @@ export function computeCVMetrics(
   const vVs = input.scanRate_mVs / 1000;
   let D_apparent = NaN;
   let D_valid = false;
+  let D_peak_source: "anodic" | "cathodic" | "mean_anodic_cathodic" | "none" = "none";
   if (
-    hasAnodic &&
-    IpaCorrected > 0 &&
     input.n > 0 &&
     input.areaCm2 > 0 &&
     cBulk > 0 &&
     vVs > 0
   ) {
-    const ipaA = IpaCorrected * 1e-6;
-    const denom =
-      RS_PREFACTOR *
-      Math.pow(input.n, 1.5) *
-      input.areaCm2 *
-      cBulk *
-      Math.sqrt(vVs);
-    if (denom > 0) {
-      D_apparent = Math.pow(ipaA / denom, 2);
-      D_valid = true;
+    // Prefer the mean of |Ipa| and |Ipc| when both anodic and cathodic
+    // peaks exist and the ratio is within a reasonable reversible window
+    // (0.8–1.25). This is more robust against single-peak baseline noise
+    // than picking only the anodic branch.
+    let ipaUseMicroA: number | null = null;
+    if (hasAnodic && hasCathodic) {
+      const ratio = Math.abs(IpaCorrected / IpcCorrected);
+      if (
+        Number.isFinite(ratio) && ratio >= 0.8 && ratio <= 1.25 &&
+        IpaCorrected > 0 && Math.abs(IpcCorrected) > 0
+      ) {
+        ipaUseMicroA = 0.5 * (Math.abs(IpaCorrected) + Math.abs(IpcCorrected));
+        D_peak_source = "mean_anodic_cathodic";
+      }
+    }
+    if (ipaUseMicroA == null && hasAnodic && IpaCorrected > 0) {
+      ipaUseMicroA = IpaCorrected;
+      D_peak_source = "anodic";
+    }
+    if (ipaUseMicroA == null && hasCathodic && Math.abs(IpcCorrected) > 0) {
+      ipaUseMicroA = Math.abs(IpcCorrected);
+      D_peak_source = "cathodic";
+    }
+    if (ipaUseMicroA != null) {
+      const ipaA = ipaUseMicroA * 1e-6;
+      const denom =
+        RS_PREFACTOR *
+        Math.pow(input.n, 1.5) *
+        input.areaCm2 *
+        cBulk *
+        Math.sqrt(vVs);
+      if (denom > 0) {
+        D_apparent = Math.pow(ipaA / denom, 2);
+        D_valid = true;
+      }
     }
   }
 
@@ -446,6 +472,7 @@ export function computeCVMetrics(
     D_status = "invalid";
     D_apparent = NaN;
     D_valid = false;
+    D_peak_source = "none";
     warnings.push("D apparent suppressed — system is irreversible");
   }
   // Backward compat: keep D_valid true only when status is valid.
@@ -543,6 +570,7 @@ export function computeCVMetrics(
     D_apparent,
     D_valid,
     D_status,
+    D_peak_source,
     reversibility,
     baselineMethod,
     baselineMethodInput: baselineInput,

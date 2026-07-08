@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import type { EISDataPoint, FETTransferPoint } from "@/hooks/useSimulatedData";
 import type { CVMetrics } from "@/utils/computeCVMetrics";
 import { computeCVSignalQuality } from "@/utils/cvSignalQuality";
+import type { SWVDataPoint, SWVMetrics } from "@/types/swv";
+
 
 /**
  * ============================================================
@@ -12,18 +14,27 @@ import { computeCVSignalQuality } from "@/utils/cvSignalQuality";
 type Level = "green" | "yellow" | "red" | "idle";
 
 interface SignalQualityProps {
-  mode: "eis" | "fet" | "cv";
+  mode: "eis" | "fet" | "cv" | "swv";
   eisData: EISDataPoint[];
   fetBaseline: FETTransferPoint[];
   fetAnalyte: FETTransferPoint[];
   cnlsChiSquared?: number | null;
   separatorZReal?: number | null;
+  separatorFreq?: number | null;
+  /** Lin-KK RMS residual % — preferred consistency metric. */
+  linKKResidualPct?: number | null;
+  /** Lin-KK passed flag (RMS ≤ 5%). */
+  linKKPassed?: boolean | null;
   fetVtBaseline?: number | null;
   fetVtAnalyte?: number | null;
   cvMetrics?: CVMetrics | null;
   cvNElectrons?: number;
   cvDeltaEpToleranceMv?: number;
+  /** SWV inputs — used when mode === "swv". */
+  swvData?: SWVDataPoint[];
+  swvMetrics?: SWVMetrics | null;
 }
+
 
 // ---- helpers ----
 
@@ -59,14 +70,28 @@ function computeEISMetrics(
   dataAll: EISDataPoint[],
   cnlsChiSquared?: number | null,
   separatorZReal?: number | null,
+  separatorFreq?: number | null,
+  linKKResidualPct?: number | null,
+  linKKPassed?: boolean | null,
 ) {
-  // Restrict the geometric semicircle metric to the semicircle region when a
-  // separator is available (Warburg tail would otherwise corrupt circle fit).
   const data = dataAll;
-  const semiData =
-    separatorZReal != null
-      ? dataAll.filter((d) => d.zReal <= separatorZReal)
-      : dataAll;
+
+  // Resolve the separator on the FREQUENCY axis. The Warburg tail folds
+  // back to lower Z' values, so filtering by zReal alone misclassifies
+  // points. Prefer an explicit separatorFreq; otherwise locate the
+  // frequency of the closest-zReal point and use that.
+  let sepFreq: number | null = null;
+  if (separatorFreq != null && Number.isFinite(separatorFreq)) {
+    sepFreq = separatorFreq;
+  } else if (separatorZReal != null && data.length > 0) {
+    const closest = data.reduce(
+      (best, d) =>
+        Math.abs(d.zReal - separatorZReal) < Math.abs(best.zReal - separatorZReal) ? d : best,
+      data[0],
+    );
+    sepFreq = closest.frequency;
+  }
+  const semiData = sepFreq != null ? data.filter((d) => d.frequency >= sepFreq!) : data;
 
   if (data.length < 10) {
     return {
@@ -76,10 +101,12 @@ function computeEISMetrics(
       pointNoise: 0,
       rsStability: 0,
       totalPoints: data.length,
+      linKKPct: NaN,
       semicircleLevel: "idle" as Level,
       noiseLevel: "idle" as Level,
       rsLevel: "idle" as Level,
       pointsLevel: "idle" as Level,
+      linKKLevel: "idle" as Level,
     };
   }
 
@@ -87,9 +114,8 @@ function computeEISMetrics(
   const maxR = Math.max(...reals);
   const minR = Math.min(...reals);
 
-  // 1. Semicircle Fit (%) — when the manual CNLS fit is available, derive from
-  // its modulus-weighted chi² (sqrt(chi²)*100 ≈ RMSE %). Otherwise fall back to
-  // a purely geometric circle-fit on the semicircle region only.
+  // 1. Semicircle Fit (%) — when CNLS is available, derive from
+  // sqrt(weighted SSR/dof)*100 ≈ modulus-weighted RMSE %.
   let fitPct: number;
   if (Number.isFinite(cnlsChiSquared ?? NaN) && (cnlsChiSquared as number) >= 0) {
     const errPct = Math.sqrt(cnlsChiSquared as number) * 100;
@@ -113,47 +139,94 @@ function computeEISMetrics(
       : 0;
   }
 
-  // 2. Point Noise (Ω) — avg consecutive Euclidean delta (need ≥5 points)
-  let pointNoise = 0;
-  if (data.length >= 5) {
-    let noiseSum = 0;
-    for (let i = 1; i < data.length; i++) {
-      const dx = data[i].zReal - data[i - 1].zReal;
-      const dy = data[i].zImag - data[i - 1].zImag;
-      noiseSum += Math.sqrt(dx * dx + dy * dy);
+  // 2. Residual noise (% of |Z|).
+  // Preferred: when a CNLS fit is available, sqrt(weighted SSR/dof)·100 IS
+  // the modulus-weighted RMS residual — exactly the quantity the user
+  // expects to track the fit error. Fallback when no CNLS exists: use the
+  // SECOND-DIFFERENCE residual against a 3-point LINEAR predictor (mean of
+  // neighbors). The old 3-point median collapsed to zero for any smooth
+  // monotonic curve because mags[i] WAS the median by construction.
+  let noisePct = 0;
+  if (Number.isFinite(cnlsChiSquared ?? NaN) && (cnlsChiSquared as number) >= 0) {
+    noisePct = Math.sqrt(Math.max(cnlsChiSquared as number, 0)) * 100;
+  } else if (data.length >= 5) {
+    const sorted = [...data].sort((a, b) => b.frequency - a.frequency);
+    const mags = sorted.map((d) => Math.sqrt(d.zReal ** 2 + d.zImag ** 2));
+    const rel: number[] = [];
+    for (let i = 1; i < mags.length - 1; i++) {
+      const expected = (mags[i - 1] + mags[i + 1]) / 2;
+      if (mags[i] > 1e-9) rel.push(Math.abs(mags[i] - expected) / mags[i]);
     }
-    pointNoise = noiseSum / (data.length - 1);
+    if (rel.length > 0) {
+      // RMS of normalized residuals is robust and not zero for smooth data
+      // unless the curve is exactly linear in |Z|.
+      const ms = rel.reduce((s, v) => s + v * v, 0) / rel.length;
+      noisePct = 100 * Math.sqrt(ms);
+    }
   }
 
-  // 3. Rs Stability — minimum Z' (typical 50–2000 Ω)
+  // 3. Rs — minimum Z' (typical 50–2000 Ω)
   const rs = minR;
 
-  // Per-metric levels
+  // 4. Lin-KK consistency (% RMS residual).
+  const linKKPct = Number.isFinite(linKKResidualPct ?? NaN)
+    ? (linKKResidualPct as number)
+    : NaN;
+
+  // Per-metric levels — thresholds tuned for real experimental data so that
+  // borderline-but-usable EIS sweeps are flagged yellow (acceptable) instead
+  // of red. A 94.9 % semicircle / 5 % residual noise sweep should NOT be
+  // labelled "Poor Signal".
   const semicircleLevel: Level =
-    fitPct > 90 ? "green" : fitPct > 77 ? "yellow" : "red";
+    fitPct >= 95 ? "green" : fitPct >= 85 ? "yellow" : "red";
+  // Residual noise: ≤3 % green, ≤8 % yellow, else red.
   const noiseLevel: Level =
-    pointNoise < 15 ? "green" : pointNoise < 30 ? "yellow" : "red";
+    noisePct <= 3 ? "green" : noisePct <= 8 ? "yellow" : "red";
+  // Rs: keep wide acceptable band; never harder than yellow inside 0–5000 Ω.
   const rsLevel: Level =
     rs >= 50 && rs <= 2000 ? "green" : rs > 0 && rs < 5000 ? "yellow" : "red";
-  const pointsLevel: Level = data.length >= 20 ? "green" : "yellow";
+  const pointsLevel: Level =
+    data.length >= 30 ? "green" : data.length >= 15 ? "yellow" : "red";
+  // Lin-KK: green if passed AND RMS≤5%; yellow 5–10%; red >10% or explicit fail.
+  let linKKLevel: Level = "idle";
+  if (Number.isFinite(linKKPct)) {
+    if (linKKPct <= 5 && (linKKPassed === true || linKKPassed == null)) linKKLevel = "green";
+    else if (linKKPct <= 10) linKKLevel = "yellow";
+    else linKKLevel = "red";
+  }
 
-  // Overall traffic light
-  let level: Level = "red";
-  if (fitPct > 90 && pointNoise < 15) level = "green";
-  else if (fitPct > 77 || pointNoise < 30) level = "yellow";
+  // Overall: green only if every essential metric is green; red if any is
+  // red; yellow otherwise. Lin-KK is essential when available. The legacy
+  // Approx-KK metric is informational only and never drives overall.
+  const essentials = [semicircleLevel, noiseLevel, rsLevel, pointsLevel];
+  if (linKKLevel !== "idle") essentials.push(linKKLevel);
+  let level: Level;
+  if (essentials.every((l) => l === "green")) level = "green";
+  else if (essentials.some((l) => l === "red")) level = "red";
+  else level = "yellow";
 
   return {
     level,
     ready: true,
     semicircleFit: fitPct,
-    pointNoise,
+    pointNoise: noisePct,
     rsStability: rs,
     totalPoints: data.length,
+    linKKPct,
     semicircleLevel,
     noiseLevel,
     rsLevel,
     pointsLevel,
+    linKKLevel,
   };
+}
+
+/** Median helper. */
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : 0.5 * (s[mid - 1] + s[mid]);
 }
 
 /** Compute BioFET quality metrics from analyte + baseline curves. */
@@ -170,21 +243,24 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
       ssLevel: "idle" as Level,
       ioffLevel: "idle" as Level,
       stabilityLevel: "idle" as Level,
+      negativeCurrentWarning: false,
     };
   }
 
-  const ids = analyte.map((d) => Math.abs(d.id));
-
-  // 1. Ion / Ioff Ratio (clamp Ioff at 0.01 to avoid div-by-zero)
-  const ion = Math.max(...ids);
-  const ioffRaw = Math.min(...ids);
-  const ioffSafe = Math.max(ioffRaw, 0.01);
-  const ionIoff = ion / ioffSafe;
-
-  // 2. Subthreshold Slope (mV/dec)
-  // Fit local log10(id) vs Vg windows in the rising transition region. This
-  // avoids depending on the Ioff floor and ignores noisy deep-cutoff points.
   const sortedByVg = [...analyte].sort((a, b) => a.vg - b.vg);
+  const hasNegative = sortedByVg.some((p) => p.id < 0);
+  const EPS = 1e-3;
+
+  // 1. Robust Ion / Ioff — medians of the first/last 10% of Vg windows.
+  //    Avoids the historic min/max collapse on a single noisy point.
+  const winSize = Math.max(3, Math.floor(sortedByVg.length * 0.1));
+  const offRegion = sortedByVg.slice(0, winSize).map((p) => Math.max(Math.abs(p.id), EPS));
+  const onRegion = sortedByVg.slice(-winSize).map((p) => Math.max(Math.abs(p.id), EPS));
+  const ioff = median(offRegion);
+  const ion = median(onRegion);
+  const ionIoff = ion / Math.max(ioff, EPS);
+
+  // 2. Subthreshold Slope (mV/dec) — moving-window log10 fit in transition.
   const transRegion = sortedByVg.filter((p) => {
     const v = Math.abs(p.id);
     return v > 1e-6 && v < 0.2 * ion;
@@ -203,10 +279,8 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
       const sumX2 = xs.reduce((a, b) => a + b * b, 0);
       const denom = n * sumX2 - sumX * sumX;
       if (Math.abs(denom) <= 1e-12) continue;
-
       const slope = (n * sumXY - sumX * sumY) / denom;
       if (slope <= 0.1) continue;
-
       const intercept = (sumY - slope * sumX) / n;
       const meanY = sumY / n;
       const total = ys.reduce((a, y) => a + (y - meanY) ** 2, 0);
@@ -217,33 +291,37 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
   }
   if (bestSlope > 0) ss = 1000 / bestSlope;
 
-  // 3. Ioff (µA) — minimum id in analyte
-  const ioff = ioffRaw;
-
-  // 4. Baseline Stability (%) — noise floor of deep cutoff relative to Ion
-  let stability = 0;
+  // 4. Baseline stability — std/|mean|% of off-cutoff region of the baseline.
+  //    NoiseFloor avoids division blow-up when meanOff ≈ 0.
+  let stabilityNoisePct = 0;
+  let stabilityLevel: Level = "idle";
   if (baseline.length >= 5) {
     const baseSorted = [...baseline].sort((a, b) => a.vg - b.vg);
     const nDeep = Math.max(3, Math.floor(baseSorted.length * 0.1));
     const deepRegion = baseSorted.slice(0, nDeep);
-    const deepIds = deepRegion.map((p) => Math.abs(p.id));
-    const mean = deepIds.reduce((a, b) => a + b, 0) / deepIds.length;
-    const variance = deepIds.reduce((a, b) => a + (b - mean) ** 2, 0) / deepIds.length;
+    const deepIds = deepRegion.map((p) => p.id);
+    const meanOff = deepIds.reduce((a, b) => a + b, 0) / deepIds.length;
+    const variance = deepIds.reduce((a, b) => a + (b - meanOff) ** 2, 0) / deepIds.length;
     const std = Math.sqrt(variance);
-    const baseIon = Math.max(...baseline.map((d) => Math.abs(d.id)));
-    stability = baseIon > 1e-9
-      ? Math.max(0, Math.min(100, 100 - (std / baseIon) * 100))
-      : 100;
+    const noiseFloor = 0.05; // µA — below this, Id is at the simulated noise floor.
+    stabilityNoisePct = (100 * std) / Math.max(Math.abs(meanOff), noiseFloor);
+    stabilityLevel =
+      stabilityNoisePct < 5 ? "green" : stabilityNoisePct < 15 ? "yellow" : "red";
   }
 
   const ionLevel: Level = ionIoff > 100 ? "green" : ionIoff > 20 ? "yellow" : "red";
-  const ssLevel: Level = ss > 0 && ss < 200 ? "green" : ss < 400 ? "yellow" : "red";
+  const ssLevel: Level = ss > 0 && ss < 200 ? "green" : ss > 0 && ss < 400 ? "yellow" : "red";
   const ioffLevel: Level = ioff < 1 ? "green" : ioff < 5 ? "yellow" : "red";
-  const stabilityLevel: Level = stability > 90 ? "green" : stability > 70 ? "yellow" : "red";
 
-  let level: Level = "red";
-  if (ionIoff > 100 && ioff < 1 && stability > 70) level = "green";
-  else if (ionIoff > 20 || stability > 50) level = "yellow";
+  // Overall = worst-of all per-metric levels (includes SS).
+  const levels: Level[] = [ionLevel, ssLevel, ioffLevel, stabilityLevel].filter(
+    (l) => l !== "idle",
+  ) as Level[];
+  let level: Level;
+  if (levels.length === 0) level = "idle";
+  else if (levels.every((l) => l === "green")) level = "green";
+  else if (levels.some((l) => l === "red")) level = "red";
+  else level = "yellow";
 
   return {
     level,
@@ -251,25 +329,95 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
     ionIoff,
     subthresholdSlope: ss,
     ioff,
-    baselineStability: stability,
+    baselineStability: stabilityNoisePct,
     ionLevel,
     ssLevel,
     ioffLevel,
     stabilityLevel,
+    negativeCurrentWarning: hasNegative,
+  };
+}
+
+/** Compute SWV quality metrics from data + extracted peak metrics. */
+function computeSWVMetrics(
+  data: SWVDataPoint[],
+  metrics: SWVMetrics | null | undefined,
+) {
+  if (!data || data.length < 5 || !metrics) {
+    return {
+      level: "idle" as Level,
+      ready: false,
+      peakDetected: false,
+      snr: null as number | null,
+      halfPeakWidth: null as number | null,
+      totalPoints: data?.length ?? 0,
+      relNoise: null as number | null,
+      peakLevel: "idle" as Level,
+      snrLevel: "idle" as Level,
+      widthLevel: "idle" as Level,
+      pointsLevel: "idle" as Level,
+      baselineLevel: "idle" as Level,
+    };
+  }
+  const peak = metrics.peakDetected;
+  const snr = metrics.snr ?? null;
+  const hw = metrics.halfPeakWidth_mV ?? null;
+  const n = data.length;
+  const noise = metrics.noiseRms_uA ?? null;
+  const relNoise =
+    noise != null && metrics.peakCurrentCorrected_uA
+      ? noise / Math.max(1e-9, Math.abs(metrics.peakCurrentCorrected_uA))
+      : null;
+
+  const peakLevel: Level =
+    peak && (snr ?? 0) >= 10 ? "green" : peak && (snr ?? 0) >= 3 ? "yellow" : "red";
+  const snrLevel: Level =
+    snr == null ? "red" : snr >= 10 ? "green" : snr >= 3 ? "yellow" : "red";
+  const widthLevel: Level =
+    hw == null
+      ? "red"
+      : hw >= 30 && hw <= 250
+        ? "green"
+        : hw >= 15 && hw <= 350
+          ? "yellow"
+          : "red";
+  const pointsLevel: Level = n >= 50 ? "green" : n >= 20 ? "yellow" : "red";
+  const baselineLevel: Level =
+    relNoise == null ? "yellow" : relNoise < 0.1 ? "green" : relNoise < 0.3 ? "yellow" : "red";
+
+  const all = [peakLevel, snrLevel, widthLevel, pointsLevel, baselineLevel];
+  let level: Level;
+  if (all.every((l) => l === "green")) level = "green";
+  else if (all.some((l) => l === "red")) level = "red";
+  else level = "yellow";
+  return {
+    level,
+    ready: true,
+    peakDetected: peak,
+    snr,
+    halfPeakWidth: hw,
+    totalPoints: n,
+    relNoise,
+    peakLevel,
+    snrLevel,
+    widthLevel,
+    pointsLevel,
+    baselineLevel,
   };
 }
 
 const DIAGNOSTICS: Record<Level, string> = {
-  green: "Electrode ready. Clean signal detected.",
-  yellow: "Acceptable signal. Consider cleaning electrode.",
-  red: "Poor signal. Check connections and electrode surface.",
+  green: "Good Signal — electrode ready.",
+  yellow: "Acceptable Signal — usable, but check fit/noise.",
+  red: "Poor Signal — check electrode/connections.",
   idle: "Waiting for measurement data...",
 };
 
+
 const HEADLINES: Record<Level, string> = {
   green: "Good Signal",
-  yellow: "Acceptable",
-  red: "Poor Signal — Check Electrode",
+  yellow: "Acceptable Signal",
+  red: "Poor Signal",
   idle: "Idle",
 };
 
@@ -292,10 +440,10 @@ const MetricRow = ({ label, value, level, title }: MetricRowProps & { title?: st
   </div>
 );
 
-const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared, separatorZReal, fetVtBaseline, fetVtAnalyte, cvMetrics, cvNElectrons = 1, cvDeltaEpToleranceMv = 20 }: SignalQualityProps) => {
+const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared, separatorZReal, separatorFreq, linKKResidualPct, linKKPassed, fetVtBaseline, fetVtAnalyte, cvMetrics, cvNElectrons = 1, cvDeltaEpToleranceMv = 20, swvData, swvMetrics }: SignalQualityProps) => {
   const eisMetrics = useMemo(
-    () => computeEISMetrics(eisData, cnlsChiSquared, separatorZReal),
-    [eisData, cnlsChiSquared, separatorZReal],
+    () => computeEISMetrics(eisData, cnlsChiSquared, separatorZReal, separatorFreq, linKKResidualPct, linKKPassed),
+    [eisData, cnlsChiSquared, separatorZReal, separatorFreq, linKKResidualPct, linKKPassed],
   );
   const fetMetrics = useMemo(
     () => computeFETMetrics(fetAnalyte, fetBaseline),
@@ -328,11 +476,21 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
     [cvMetrics, cvNElectrons, cvDeltaEpToleranceMv],
   );
 
-  const m = mode === "eis" ? eisMetrics : mode === "fet" ? fetMetrics : cvLevels;
+  const swvQuality = useMemo(
+    () => computeSWVMetrics(swvData ?? [], swvMetrics ?? null),
+    [swvData, swvMetrics],
+  );
+
+  const m =
+    mode === "eis" ? eisMetrics
+    : mode === "fet" ? fetMetrics
+    : mode === "cv" ? cvLevels
+    : swvQuality;
   const level: Level = m.level;
   const ready = m.ready;
   const pending = "Calculating...";
-  const modeLabel = mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : "CV";
+  const modeLabel = mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : mode === "cv" ? "CV" : "SWV";
+
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -348,9 +506,10 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
       {/* Traffic light */}
       <div className="flex items-center gap-4 mb-4 p-3 rounded-md bg-secondary/40">
         <div className="flex flex-col gap-2 p-2 rounded-md bg-background/60 border border-border">
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("red", level === "red")}`} />
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("yellow", level === "yellow")}`} />
+          {/* Unified semaphore order across EIS / BioFET / CV: green (top) → yellow → red (bottom). */}
           <div className={`w-6 h-6 rounded-full transition-all ${lightClass("green", level === "green")}`} />
+          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("yellow", level === "yellow")}`} />
+          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("red", level === "red")}`} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-mono font-semibold text-foreground">
@@ -366,7 +525,13 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
         {mode === "eis" && (
           <>
             <MetricRow label="Semicircle Fit" value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending} level={eisMetrics.semicircleLevel} />
-            <MetricRow label="Point Noise" value={ready ? `${eisMetrics.pointNoise.toFixed(1)} Ω` : pending} level={eisMetrics.noiseLevel} />
+            <MetricRow label="Residual Noise" title="From CNLS: sqrt(weighted SSR/dof)·100 ≈ modulus-weighted RMSE %. Fallback (no CNLS): RMS of |Z| vs. 3-point linear predictor (% of |Z|)." value={ready ? `${eisMetrics.pointNoise.toFixed(2)} %` : pending} level={eisMetrics.noiseLevel} />
+            <MetricRow
+              label="Lin-KK (RMS res.)"
+              title="Lin-KK consistency: fit to a sum of M parallel RC elements. RMS residual ≤5% supports linear/causal/stable behavior in the measured range. Does NOT prove a specific equivalent circuit."
+              value={Number.isFinite(eisMetrics.linKKPct) ? `${eisMetrics.linKKPct.toFixed(2)} %` : "—"}
+              level={eisMetrics.linKKLevel}
+            />
             <MetricRow label="Rs (Ω)" value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending} level={eisMetrics.rsLevel} />
             <MetricRow label="Total Points" value={`${eisMetrics.totalPoints}`} level={eisMetrics.pointsLevel} />
           </>
@@ -382,7 +547,12 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
               level={fetMetrics.ssLevel}
             />
             <MetricRow label="Ioff Current" value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending} level={fetMetrics.ioffLevel} />
-            <MetricRow label="Baseline Stability" value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending} level={fetMetrics.stabilityLevel} />
+            <MetricRow label="Baseline Noise" title="100·std/|mean| over the deep-off (low Vg) region of the baseline. <5% green, <15% yellow, else red." value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending} level={fetMetrics.stabilityLevel} />
+            {fetMetrics.negativeCurrentWarning && (
+              <div className="text-[10px] font-mono text-yellow-500 mt-1 leading-snug">
+                ⚠ Ion/Ioff use |Id| — some Id values are negative.
+              </div>
+            )}
           </>
         )}
         {mode === "cv" && (
@@ -412,6 +582,39 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
             />
           </>
         )}
+        {mode === "swv" && (
+          <>
+            <MetricRow
+              label="Peak detected"
+              value={ready ? (swvQuality.peakDetected ? "Yes" : "No") : pending}
+              level={swvQuality.peakLevel}
+            />
+            <MetricRow
+              label="SNR"
+              title="Peak current (corrected) ÷ RMS noise from non-peak region."
+              value={swvQuality.snr != null ? swvQuality.snr.toFixed(2) : ready ? "—" : pending}
+              level={swvQuality.snrLevel}
+            />
+            <MetricRow
+              label="Half-peak width"
+              title="Expected SWV peak width depends on amplitude, electron number and kinetics."
+              value={swvQuality.halfPeakWidth != null ? `${swvQuality.halfPeakWidth.toFixed(0)} mV` : ready ? "—" : pending}
+              level={swvQuality.widthLevel}
+            />
+            <MetricRow
+              label="Points"
+              value={`${swvQuality.totalPoints}`}
+              level={swvQuality.pointsLevel}
+            />
+            <MetricRow
+              label="Baseline stability"
+              title="RMS noise as % of |peak corrected current|. <10% green, <30% yellow."
+              value={swvQuality.relNoise != null ? `${(swvQuality.relNoise * 100).toFixed(1)} % of peak` : ready ? "—" : pending}
+              level={swvQuality.baselineLevel}
+            />
+          </>
+        )}
+
       </div>
     </div>
   );

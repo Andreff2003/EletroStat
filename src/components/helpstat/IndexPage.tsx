@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
+import SWVMode, { type SWVController } from "@/components/helpstat/SWVMode";
+import type { SWVParameters } from "@/types/swv";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +36,7 @@ import {
   exportEISData,
   exportFETTransferData,
   exportFETTimeData,
+  exportFETData,
   exportSessionCSV,
   exportCalibrationCSV as exportCalibrationTSV,
   exportCVData,
@@ -53,7 +56,15 @@ import CalibrationPanel, {
   computeEISParams,
   computeFETVt,
 } from "@/components/CalibrationPanel";
+import { computeFETVtDetailed } from "@/utils/fetVt";
+import {
+  computeFETTransferMetrics,
+  inferFETResponseSign,
+  applyFETResponseMode,
+  type FETResponseMode,
+} from "@/utils/fetMetrics";
 import CVCalibrationPanel from "@/components/CVCalibrationPanel";
+import MeasurementNotesPanel from "@/components/MeasurementNotesPanel";
 import {
   buildCVCalibrationPoint,
   randlesSevcikIpUA,
@@ -61,6 +72,14 @@ import {
   type CVCalibrationPoint,
   type CVResponseMode,
 } from "@/utils/cvCalibration";
+import {
+  createMeasurementId,
+  sanitizeMeasurementNotes,
+  shortNotesSummary,
+  hasAnyNotes,
+  type MeasurementNotes,
+} from "@/utils/measurementNotes";
+import { EXPECTED_FET_TIME_POINTS } from "@/utils/fetConstants";
 
 import CNLSFitResults from "@/components/CNLSFitResults";
 import {
@@ -73,6 +92,7 @@ import {
   type WarburgResult,
   type KKResult,
 } from "@/utils/randlesFit";
+import { linKKTest, type LinKKResult } from "@/utils/linKK";
 import { fitEIS, type CircuitModel, type EISFitResult } from "@/utils/eisFit";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -85,6 +105,7 @@ import {
   type StoredMeasurement,
   type StoredEISMeasurement,
   type StoredFETMeasurement,
+  type StoredCVMeasurement,
 } from "@/utils/sessionStore";
 import { logActivity, clearActivityLog } from "@/utils/activityLog";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
@@ -115,12 +136,27 @@ interface CVOverlayCurve {
   data: CVDataPoint[];
 }
 
+interface FETOverlayCurve {
+  id: string;
+  label: string;
+  color: string;
+  baseline: import("@/hooks/useSimulatedData").FETTransferPoint[];
+  withAnalyte: import("@/hooks/useSimulatedData").FETTransferPoint[];
+}
+
 const Index = () => {
-  const [mode, setMode] = useState<"eis" | "fet" | "cv">("eis");
+  const [mode, setMode] = useState<"eis" | "fet" | "cv" | "swv">("eis");
   const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
   const [eisParams, setEisParams] = useState<EISParams>(DEFAULT_EIS_PARAMS);
   const [fetParams, setFetParams] = useState<FETParams>(DEFAULT_FET_PARAMS);
   const [cvParams, setCvParams] = useState<CVParams>(DEFAULT_CV_PARAMS);
+  const [swvParams, setSwvParams] = useState<SWVParameters>({
+    startE: -0.2, endE: 0.6, step_mV: 2, amplitude_mV: 25, frequency_Hz: 25,
+    quietTime_s: 2, direction: "anodic", concentration_nM: 10, area_cm2: 0.0707,
+    nElectrons: 1, temperature_K: 298.15, baselineMethod: "auto",
+    smoothing: "none", model: "empirical_peak",
+  });
+  const [swvCtrl, setSwvCtrl] = useState<SWVController | null>(null);
 
   // Concentration & Calibration state (per mode)
   const [concentration, setConcentration] = useState<number>(0);
@@ -128,11 +164,13 @@ const Index = () => {
   const [fetCalibration, setFetCalibration] = useState<CalibrationPoint[]>([]);
   const [cvCalibration, setCvCalibration] = useState<CVCalibrationPoint[]>([]);
   const [cvResponseMode, setCvResponseMode] = useState<CVResponseMode>("mean");
+  const [fetResponseMode, setFetResponseMode] = useState<FETResponseMode>("auto");
 
   // Randles equivalent-circuit fit + Warburg slope (computed on sweep complete)
   const [randlesFit, setRandlesFit] = useState<RandlesFitResult | null>(null);
   const [warburg, setWarburg] = useState<WarburgResult | null>(null);
   const [kk, setKk] = useState<KKResult | null>(null);
+  const [linKK, setLinKK] = useState<LinKKResult | null>(null);
   const [geometricFallback, setGeometricFallback] = useState(false);
 
   // Manual semicircle/Warburg separator (set after sweep completes)
@@ -151,6 +189,10 @@ const Index = () => {
   // Overlay mode (CV)
   const [cvOverlayMode, setCvOverlayMode] = useState(false);
   const [cvOverlays, setCvOverlays] = useState<CVOverlayCurve[]>([]);
+
+  // Overlay mode (BioFET)
+  const [fetOverlayMode, setFetOverlayMode] = useState(false);
+  const [fetOverlays, setFetOverlays] = useState<FETOverlayCurve[]>([]);
   const [cvPlotMode, setCvPlotMode] = useState<"raw" | "corrected">("raw");
   const [cvBaselineMethod, setCvBaselineMethod] = useState<
     "auto" | "none" | "linear-first-15" | "linear-edges"
@@ -160,6 +202,38 @@ const Index = () => {
   // Live CV state — separate from the simulated hook so the live ESP32 path
   // does not depend on cv.isRunning (which is tied to the simulator).
   const [isLiveCVRunning, setIsLiveCVRunning] = useState(false);
+
+  // ──────────────────────────────────────────────────────────────
+  // CV Logbook / Notes — pure metadata. Never sent to hardware,
+  // never influences solver / baseline / metrics.
+  // ──────────────────────────────────────────────────────────────
+  const [cvNotes, setCvNotes] = useState<MeasurementNotes>({});
+  const [cvPreviousNotes, setCvPreviousNotes] = useState<MeasurementNotes | null>(null);
+  // IDs/timestamps minted on the client to avoid SSR/CSR hydration mismatches.
+  const [cvMeasurementId, setCvMeasurementId] = useState<string>("");
+  const [cvMeasurementTimestamp, setCvMeasurementTimestamp] = useState<number>(0);
+
+  // EIS Logbook
+  const [eisNotes, setEisNotes] = useState<MeasurementNotes>({});
+  const [eisPreviousNotes, setEisPreviousNotes] = useState<MeasurementNotes | null>(null);
+  const [eisMeasurementId, setEisMeasurementId] = useState<string>("");
+  const [eisMeasurementTimestamp, setEisMeasurementTimestamp] = useState<number>(0);
+
+  // BioFET Logbook
+  const [fetNotes, setFetNotes] = useState<MeasurementNotes>({});
+  const [fetPreviousNotes, setFetPreviousNotes] = useState<MeasurementNotes | null>(null);
+  const [fetMeasurementId, setFetMeasurementId] = useState<string>("");
+  const [fetMeasurementTimestamp, setFetMeasurementTimestamp] = useState<number>(0);
+
+  useEffect(() => {
+    const now = Date.now();
+    setCvMeasurementId((v) => v || createMeasurementId("cv"));
+    setCvMeasurementTimestamp((v) => v || now);
+    setEisMeasurementId((v) => v || createMeasurementId("eis"));
+    setEisMeasurementTimestamp((v) => v || now);
+    setFetMeasurementId((v) => v || createMeasurementId("fet"));
+    setFetMeasurementTimestamp((v) => v || now);
+  }, []);
 
   // BioFET sample-addition markers
   const [fetMarkers, setFetMarkers] = useState<{ time: number; label: string }[]>([]);
@@ -266,7 +340,7 @@ const Index = () => {
     () => Math.max(1, Math.round((fetParams.vgMax - fetParams.vgMin) / (fetParams.vgStep / 1000)) + 1),
     [fetParams.vgMin, fetParams.vgMax, fetParams.vgStep]
   );
-  const expectedFetTimePoints = 60;
+  const expectedFetTimePoints = EXPECTED_FET_TIME_POINTS;
   const expectedFetTotal =
     expectedFetTransferPoints * 2 + expectedFetTimePoints;
   const fetReceivedTotal =
@@ -338,16 +412,24 @@ const Index = () => {
     );
     // KK on semicircle region only — Warburg tail causes false KK failures.
     const autoKk  = kramersKronigTest(autoSemiCircle);
+    // Lin-KK runs on the FULL spectrum — it is KK-compliant by construction
+    // and provides a rigorous data-consistency check independent of the
+    // chosen equivalent circuit.
+    const autoLinKK = linKKTest(finalData);
     setRandlesFit(autoFit);
     setWarburg(autoWb);
     setKk(autoKk);
+    setLinKK(autoLinKK);
     setCnlsFit(null);
     setGeometricFallback(autoFit == null || autoFit.fitErrorPct === -1);
+    if (autoFit?.separatorUncertain) {
+      toast.warning(autoFit.separatorWarning ?? "Automatic separator uncertain — adjust manually.");
+    }
 
     const params = computeEISParams(finalData);
     logActivity(
       "measurement",
-      `EIS completed — concentration=${concentration} nM, points=${finalData.length} (awaiting manual fit)`,
+      `EIS completed — concentration=${concentration} nM, points=${finalData.length} · auto-fit saved; manual re-fit available`,
     );
 
     const rctForCalib = params?.rct ?? 0;
@@ -369,11 +451,21 @@ const Index = () => {
           return next.length > 8 ? next.slice(next.length - 8) : next;
         });
       }
+      const cleanEisNotes = sanitizeMeasurementNotes(eisNotes);
+      const autoConverged = autoFit != null && autoFit.fitErrorPct !== -1;
+      const autoFitErrorPct = autoConverged
+        ? autoFit!.chiSquared != null
+          ? Math.sqrt(Math.max(autoFit!.chiSquared, 0)) * 100
+          : autoFit!.fitErrorPct
+        : undefined;
       const stored: StoredEISMeasurement = {
         id: newId(),
         mode: "eis",
         timestamp: Date.now(),
         concentration,
+        measurementId: eisMeasurementId,
+        measurementTimestamp: eisMeasurementTimestamp,
+        notes: cleanEisNotes,
         params: {
           freqMin: eisParams.freqMin,
           freqMax: eisParams.freqMax,
@@ -381,13 +473,60 @@ const Index = () => {
           amplitude: eisParams.amplitude,
         },
         data: finalData.slice(),
-        extracted: {
-          Rs: rsForCalib,
-          Rct: rctForCalib,
-          fitConverged: false,
-          geometricFallback: true,
-        },
+        extracted: autoConverged
+          ? {
+              Rs: autoFit!.Rs,
+              Rct: autoFit!.Rct,
+              Cdl: autoFit!.Cdl,
+              Aw: autoWb?.Aw ?? autoFit!.Aw,
+              warburgAw: autoWb?.Aw,
+              warburgSlope: autoWb?.slope,
+              warburgR2: autoWb?.r2Imag,
+              warburgIntercept: autoWb?.interceptImag,
+              warburgMethod: autoWb?.method ?? "regression_1_sqrt_omega_with_intercept",
+              fitErrorPct: autoFitErrorPct,
+              f0: autoFit!.f0,
+              kkResidualPct: autoKk?.residualPct,
+              kkPassed: autoKk?.passed,
+              kkMethod: autoKk?.method ?? "approximate_residual",
+              fitConverged: true,
+              geometricFallback: false,
+              warnFlags: [
+                ...(autoFit!.warnFlags ?? []),
+                ...(autoWb?.warnings ?? (autoWb?.warburgWarning ? [autoWb.warburgWarning] : [])),
+              ],
+              fitModel: "randles",
+              fitSource: "auto_cnls_randles",
+              weightedSsrPerDof: autoFit!.chiSquared,
+              rmseWeightedPercent: autoFitErrorPct,
+              fitRangeMinHz: autoFit!.fitFreqRange?.min,
+              fitRangeMaxHz: autoFit!.fitFreqRange?.max,
+              covarianceMethod: "log_space",
+              linKKPassed: autoLinKK?.passed,
+              linKKRmsResidualPct: autoLinKK?.residualRmsPct,
+              linKKMaxResidualPct: autoLinKK?.maxResidualPct,
+              linKKTauCount: autoLinKK?.tauCount,
+              linKKNegativeRkCount: autoLinKK?.negativeRkCount,
+              linKKNegativeRkPct: autoLinKK?.negativeRkPct,
+              approxKkInformationalOnly: true,
+            }
+          : {
+              Rs: rsForCalib,
+              Rct: rctForCalib,
+              fitConverged: false,
+              geometricFallback: true,
+              fitSource: "geometric_fallback",
+              linKKPassed: autoLinKK?.passed,
+              linKKRmsResidualPct: autoLinKK?.residualRmsPct,
+              linKKMaxResidualPct: autoLinKK?.maxResidualPct,
+              linKKTauCount: autoLinKK?.tauCount,
+              linKKNegativeRkCount: autoLinKK?.negativeRkCount,
+              linKKNegativeRkPct: autoLinKK?.negativeRkPct,
+              approxKkInformationalOnly: true,
+            },
       };
+
+      if (hasAnyNotes(cleanEisNotes)) setEisPreviousNotes(cleanEisNotes!);
       setSessionMeasurements((prev) => [...prev, stored]);
     } catch (err) {
       console.warn("Session store failed", err);
@@ -419,10 +558,12 @@ const Index = () => {
     // KK test on semicircle region only — the Warburg tail causes false failures
     // because the discrete Hilbert transform is unreliable at low frequencies.
     const kkRes = kramersKronigTest(semi.length >= 5 ? semi : finalData);
+    const linKKRes = linKKTest(finalData);
     const cnls = fitEIS(semi, circuitModel, finalData);
     setRandlesFit(fit);
     setWarburg(wb);
     setKk(kkRes);
+    setLinKK(linKKRes);
     setCnlsFit(cnls);
     const fitConverged = fit != null && fit.fitErrorPct !== -1;
     setGeometricFallback(!fitConverged);
@@ -433,17 +574,112 @@ const Index = () => {
       const baseline = eisCalibration.find((p) => p.concentration === 0);
       const deltaRct =
         concentration === 0 ? 0 : rctForCalib - (baseline?.raw ?? rctForCalib);
+      // Replicates allowed — never replace points at the same concentration.
+      // Multiple measurements at the same concentration (including blanks)
+      // are required for LOD/LOQ statistics and repeatability assessment.
       setEisCalibration((prev) => [
-        ...prev.filter((p) => p.concentration !== concentration),
-        { concentration, signal: deltaRct, raw: rctForCalib, timestamp: Date.now() },
+        ...prev,
+        {
+          concentration,
+          signal: deltaRct,
+          raw: rctForCalib,
+          timestamp: Date.now(),
+          measurementId: eisMeasurementId,
+          sampleId: eisNotes.sampleId,
+          electrodeId: eisNotes.electrodeId,
+          notesShort: shortNotesSummary(eisNotes)?.slice(0, 80),
+        },
       ]);
     }
-    const chiStr = cnls ? cnls.chiSquared.toExponential(2) : "n/a";
+    const wssrStr = cnls ? cnls.chiSquared.toExponential(2) : "n/a";
     logActivity(
       "measurement",
-      `CNLS fit (${circuitModel}) — Rct=${rctForCalib.toFixed(1)} Ω, χ²=${chiStr}, semi=${semi.length} pts`,
+      `CNLS fit (${circuitModel}) — Rct=${rctForCalib.toFixed(1)} Ω, wSSR/dof=${wssrStr}, semi=${semi.length} pts`,
     );
-    toast.success(`Fit complete — Rct = ${rctForCalib.toFixed(1)} Ω · χ² = ${chiStr}`);
+
+    // ── Update the existing session measurement (same measurementId) so the
+    // session export reflects the FINAL fit instead of the initial geometric
+    // estimate. Never create a duplicate.
+    setSessionMeasurements((prev) => {
+      const idx = prev.findIndex(
+        (m) => m.mode === "eis" && (m as StoredEISMeasurement).measurementId === eisMeasurementId,
+      );
+      if (idx < 0) return prev;
+      const target = prev[idx] as StoredEISMeasurement;
+      const fitErrorPct = cnls ? Math.sqrt(Math.max(cnls.chiSquared, 0)) * 100 : fit?.fitErrorPct;
+      // f0 model-aware: Randles vs Randles-CPE.
+      let f0: number | undefined = fit?.f0;
+      if (cnls) {
+        const Rct = cnls.params.Rct;
+        if (circuitModel === "randles-cpe") {
+          const Q = cnls.params.Q;
+          const nCpe = cnls.params.n;
+          if (Rct && Q && nCpe && nCpe > 0) f0 = Math.pow(Rct * Q, -1 / nCpe) / (2 * Math.PI);
+        } else {
+          const Cdl = cnls.params.Cdl;
+          if (Rct && Cdl) f0 = 1 / (2 * Math.PI * Rct * Cdl);
+        }
+      }
+      const fitSource: NonNullable<StoredEISMeasurement["extracted"]["fitSource"]> =
+        cnls
+          ? circuitModel === "randles-cpe"
+            ? "manual_cnls_randles_cpe"
+            : "manual_cnls_randles"
+          : fit
+            ? "manual_randles"
+            : "geometric";
+      const updated: StoredEISMeasurement = {
+        ...target,
+        extracted: {
+          ...target.extracted,
+          Rs: cnls?.params.Rs ?? fit?.Rs ?? target.extracted.Rs,
+          Rct: cnls?.params.Rct ?? fit?.Rct ?? target.extracted.Rct,
+          Cdl: cnls?.params.Cdl ?? fit?.Cdl ?? target.extracted.Cdl,
+          Q: cnls?.params.Q,
+          n: cnls?.params.n,
+          Aw: wb?.Aw ?? fit?.Aw ?? target.extracted.Aw,
+          warburgAw: wb?.Aw,
+          warburgSlope: wb?.slope,
+          warburgR2: wb?.r2Imag,
+          warburgIntercept: wb?.interceptImag,
+          warburgMethod: wb?.method ?? "regression_1_sqrt_omega_with_intercept",
+          fitErrorPct,
+          f0,
+          kkResidualPct: kkRes?.residualPct,
+          kkPassed: kkRes?.passed,
+          kkMethod: kkRes?.method ?? "approximate_residual",
+          fitConverged: cnls ? cnls.converged : (fit ? fit.fitErrorPct !== -1 : false),
+          geometricFallback: !cnls && !(fit && fit.fitErrorPct !== -1),
+          warnFlags: [
+            ...(cnls?.warnings ?? []),
+            ...(fit?.warnFlags ?? []),
+            ...(wb?.warnings ?? (wb?.warburgWarning ? [wb.warburgWarning] : [])),
+          ],
+          fitModel: cnls ? circuitModel : undefined,
+          fitSource,
+          weightedSsrPerDof: cnls?.chiSquared,
+          rmseWeightedPercent: cnls ? Math.sqrt(Math.max(cnls.chiSquared, 0)) * 100 : undefined,
+          fitRangeMinHz: cnls?.fitFreqRange?.min,
+          fitRangeMaxHz: cnls?.fitFreqRange?.max,
+          covarianceWarning: cnls?.covarianceWarning,
+          covarianceMethod: cnls?.covarianceMethod ?? "log_space",
+          extrapolationPresent: cnls?.extrapolationPresent,
+          linKKPassed: linKKRes?.passed,
+          linKKRmsResidualPct: linKKRes?.residualRmsPct,
+          linKKMaxResidualPct: linKKRes?.maxResidualPct,
+          linKKTauCount: linKKRes?.tauCount,
+          linKKNegativeRkCount: linKKRes?.negativeRkCount,
+          linKKNegativeRkPct: linKKRes?.negativeRkPct,
+          approxKkInformationalOnly: true,
+        },
+      };
+
+      const next = prev.slice();
+      next[idx] = updated;
+      return next;
+    });
+
+    toast.success(`Fit complete — Rct = ${rctForCalib.toFixed(1)} Ω · wSSR/dof = ${wssrStr}`);
   };
 
   // Shared FET completion logic
@@ -466,27 +702,65 @@ const Index = () => {
     setFetStatus("complete");
     const total = finalBaseline.length + finalAnalyte.length + finalTime.length;
     toast.success(`Sweep complete — ${total} points collected`);
-    const vt = computeFETVt(finalAnalyte);
+    // Vt + ΔVt + Ion/Ioff + SS + stability from THIS measurement, via the
+    // centralised helper so UI/session/CSV/calibration all agree.
+    const priorSigned = fetCalibration
+      .filter((p) => p.concentration > 0 && typeof p.deltaVt_mV_signed === "number")
+      .map((p) => p.deltaVt_mV_signed as number);
+    const inferredSign = inferFETResponseSign(priorSigned);
+    const metrics = computeFETTransferMetrics(finalBaseline, finalAnalyte, {
+      responseMode: fetResponseMode,
+      responseSign: inferredSign,
+    });
+    const vt = metrics.vtAnalyte;
+    const vtBaseline = metrics.vtBaseline;
+    const deltaVt_mV = metrics.deltaVt_mV;
+    const deltaVt_mV_signed = metrics.deltaVt_mV_signed;
+    const calibrationSignal_mV_used = metrics.calibrationSignal_mV_used;
     logActivity(
       "measurement",
       `BioFET completed — concentration=${concentration} nM, Vt=${
         vt != null ? vt.toFixed(3) : "n/a"
-      } V`,
+      } V, ΔVt=${deltaVt_mV != null ? deltaVt_mV.toFixed(1) + " mV" : "n/a"} (${metrics.vtMethod}; mode=${fetResponseMode})`,
     );
-    if (vt != null) {
-      const baseline = fetCalibration.find((p) => p.concentration === 0);
-      const deltaVt =
-        concentration === 0 ? 0 : (vt - (baseline?.raw ?? vt)) * 1000;
+    if (vt != null && vtBaseline != null && deltaVt_mV != null) {
       setFetCalibration((prev) => [
-        ...prev.filter((p) => p.concentration !== concentration),
-        { concentration, signal: deltaVt, raw: vt, timestamp: Date.now() },
+        ...prev,
+        {
+          concentration,
+          // For Langmuir fit consumption: use calibrationSignal_mV_used when
+          // present (sign already aligned), else fall back to signed ΔVt.
+          signal: calibrationSignal_mV_used ?? deltaVt_mV,
+          raw: vt,
+          timestamp: Date.now(),
+          measurementId: fetMeasurementId,
+          sampleId: fetNotes.sampleId,
+          electrodeId: fetNotes.electrodeId,
+          notesShort: shortNotesSummary(fetNotes)?.slice(0, 80),
+          deltaVt_mV_signed: deltaVt_mV_signed ?? undefined,
+          calibrationSignal_mV_used: calibrationSignal_mV_used ?? undefined,
+          responseMode: fetResponseMode,
+          responseSign: metrics.responseSign,
+          vtBaseline: vtBaseline ?? undefined,
+          vtAnalyte: vt ?? undefined,
+          vtMethod: metrics.vtMethod,
+          vtFitR2: metrics.vtFitR2 ?? null,
+          vtRegionPoints: metrics.vtRegionPoints,
+          vtWarning: metrics.vtWarning,
+        },
       ]);
+    } else {
+      toast.warning("ΔVt unavailable — baseline/analyte Vt extraction failed");
     }
+    const cleanFetNotes = sanitizeMeasurementNotes(fetNotes);
     const storedFet: StoredFETMeasurement = {
       id: newId(),
       mode: "fet",
       timestamp: Date.now(),
       concentration,
+      measurementId: fetMeasurementId,
+      measurementTimestamp: fetMeasurementTimestamp,
+      notes: cleanFetNotes,
       params: {
         vgMin: fetParams.vgMin,
         vgMax: fetParams.vgMax,
@@ -497,8 +771,38 @@ const Index = () => {
       analyte: finalAnalyte.slice(),
       timeData: finalTime.slice(),
       markers: fetMarkers.slice(),
-      extracted: { Vt: vt ?? undefined },
+      extracted: {
+        Vt: vt ?? undefined,
+        vtBaseline: vtBaseline ?? undefined,
+        vtAnalyte: vt ?? undefined,
+        deltaVt_mV: deltaVt_mV ?? undefined,
+        deltaVt_mV_signed: deltaVt_mV_signed ?? undefined,
+        calibrationSignal_mV_used: calibrationSignal_mV_used ?? undefined,
+        vtMethod: metrics.vtMethod,
+        vtFitR2: metrics.vtFitR2 ?? undefined,
+        vtRegionPoints: metrics.vtRegionPoints,
+        vtIoffUsed: metrics.vtIoffUsed,
+        vtWarning: metrics.vtWarning,
+        vtBaselineMethod: metrics.vtBaselineMethod,
+        vtBaselineFitR2: metrics.vtBaselineFitR2 ?? undefined,
+        vtBaselineRegionPoints: metrics.vtBaselineRegionPoints,
+        vtBaselineIoffUsed: metrics.vtBaselineIoffUsed,
+        vtBaselineWarning: metrics.vtBaselineWarning,
+        vtAnalyteMethod: metrics.vtAnalyteMethod,
+        vtAnalyteFitR2: metrics.vtAnalyteFitR2 ?? undefined,
+        vtAnalyteRegionPoints: metrics.vtAnalyteRegionPoints,
+        vtAnalyteIoffUsed: metrics.vtAnalyteIoffUsed,
+        vtAnalyteWarning: metrics.vtAnalyteWarning,
+        ion_uA: metrics.ion_uA,
+        ioff_uA: metrics.ioff_uA,
+        ionIoffRatio: metrics.ionIoffRatio,
+        subthresholdSlope_mV_dec: metrics.subthresholdSlope_mV_dec,
+        baselineStabilityNoisePct: metrics.baselineStabilityNoisePct,
+        responseMode: fetResponseMode,
+        responseSign: metrics.responseSign,
+      },
     };
+    if (hasAnyNotes(cleanFetNotes)) setFetPreviousNotes(cleanFetNotes!);
     setSessionMeasurements((prev) => [...prev, storedFet]);
   };
 
@@ -513,6 +817,8 @@ const Index = () => {
     setSeparatorZReal(null);
     setEisFitted(false);
     setEisStatus("running");
+    setEisMeasurementId(createMeasurementId("eis"));
+    setEisMeasurementTimestamp(Date.now());
     logActivity(
       "measurement",
       `EIS measurement started — concentration=${concentration} nM, source=${dataSource}, points=${eisParams.points}`,
@@ -557,6 +863,8 @@ const Index = () => {
     setFrozenFetAnalyte(null);
     setFetMarkers([]);
     setFetStatus("running");
+    setFetMeasurementId(createMeasurementId("fet"));
+    setFetMeasurementTimestamp(Date.now());
     logActivity(
       "measurement",
       `BioFET measurement started — concentration=${concentration} nM, source=${dataSource}`,
@@ -715,6 +1023,52 @@ const Index = () => {
     if (ws.cvStatus === "running") setIsLiveCVRunning(true);
   }, [ws.cvStatus, ws.cvError, dataSource]);
 
+  // ─── CV auto-save: persist the completed sweep as a StoredCVMeasurement
+  // exactly once per measurementId. Mirrors EIS/FET completion flow.
+  const cvSavedIdRef = useRef<string | null>(null);
+  const cvWasRunningRef = useRef(false);
+  useEffect(() => {
+    const isCVRunning = dataSource === "simulated" ? cv.isRunning : isLiveCVRunning;
+    const cvDataLive = dataSource === "simulated" ? cv.data : ws.cvData;
+    // Detect transition true → false with sufficient data.
+    const justFinished = cvWasRunningRef.current && !isCVRunning;
+    cvWasRunningRef.current = isCVRunning;
+    if (!justFinished) return;
+    if (!cvMeasurementId) return;
+    if (cvSavedIdRef.current === cvMeasurementId) return;
+    if (cvDataLive.length < 3) return;
+    const metrics = computeCVMetrics(cvDataLive, {
+      scanRate_mVs: cvParams.scanRate,
+      n: cvParams.n,
+      cMM: cvParams.cMM,
+      areaCm2: cvParams.areaCm2,
+      baselineMethodInput: cvBaselineMethod,
+    });
+    const cleanNotes = sanitizeMeasurementNotes(cvNotes);
+    const storedCv: StoredCVMeasurement = {
+      id: newId(),
+      mode: "cv",
+      timestamp: Date.now(),
+      concentration: cvParams.cMM,
+      measurementId: cvMeasurementId,
+      measurementTimestamp: cvMeasurementTimestamp,
+      notes: cleanNotes,
+      params: { ...cvParams },
+      data: cvDataLive.slice(),
+      metrics: metrics ?? null,
+    };
+    cvSavedIdRef.current = cvMeasurementId;
+    if (hasAnyNotes(cleanNotes)) setCvPreviousNotes(cleanNotes!);
+    setSessionMeasurements((prev) => [...prev, storedCv]);
+    logActivity(
+      "measurement",
+      `CV measurement saved — id=${cvMeasurementId}, pts=${cvDataLive.length}, C=${cvParams.cMM} mM`,
+    );
+  }, [
+    dataSource, cv.isRunning, cv.data, isLiveCVRunning, ws.cvData,
+    cvMeasurementId, cvMeasurementTimestamp, cvParams, cvBaselineMethod, cvNotes,
+  ]);
+
   // "Running" now means status === running, not just connected/animating
   const isEISRunning = eisStatus === "running";
   const isFETRunning = fetStatus === "running";
@@ -755,7 +1109,7 @@ const Index = () => {
 
   // Export calibration table as TSV
   const exportCalibrationCSV = () => {
-    if (mode === "cv") return;
+    if (mode === "cv" || mode === "swv") return;
     const list = mode === "eis" ? eisCalibration : fetCalibration;
     if (list.length === 0) return;
     exportCalibrationTSV(mode, list, dataSource);
@@ -880,12 +1234,15 @@ const Index = () => {
           eisParams={eisParams}
           fetParams={fetParams}
           cvParams={cvParams}
+          swvParams={swvParams}
           onChangeEIS={setEisParams}
           onChangeFET={setFetParams}
           onChangeCV={setCvParams}
+          onChangeSWV={setSwvParams}
           disabled={
             mode === "eis" ? isEISRunning :
             mode === "fet" ? isFETRunning :
+            mode === "swv" ? (swvCtrl?.isRunning ?? false) :
             (dataSource === "simulated" ? cv.isRunning : isLiveCVRunning)
           }
         />
@@ -918,6 +1275,14 @@ const Index = () => {
           >
             CV Mode
           </Button>
+          <Button
+            variant={mode === "swv" ? "default" : "secondary"}
+            size="sm"
+            onClick={() => setMode("swv")}
+            className="font-mono text-xs"
+          >
+            SWV Mode
+          </Button>
         </div>
 
         {/* Controls */}
@@ -927,7 +1292,18 @@ const Index = () => {
               <Button size="sm" onClick={handleStartEIS} disabled={isEISRunning || (dataSource === "live" && ws.status !== "connected")} className="font-mono text-xs">▶ Start EIS</Button>
               <Button size="sm" variant="destructive" onClick={handleStopEIS} disabled={!isEISRunning} className="font-mono text-xs">■ Stop</Button>
               <Button size="sm" variant="secondary" onClick={handleResetEIS} className="font-mono text-xs">↺ Reset</Button>
-              <Button size="sm" variant="outline" onClick={() => exportEISData(eisData, dataSource)} disabled={eisData.length === 0} className="font-mono text-xs">⬇ Export CSV</Button>
+              <Button size="sm" variant="outline" onClick={() => exportEISData(eisData, dataSource, {
+                notes: sanitizeMeasurementNotes(eisNotes),
+                measurementId: eisMeasurementId,
+                measurementTimestamp: eisMeasurementTimestamp,
+                cnlsFit,
+                randlesFit,
+                linKK,
+                warburg,
+                fitRangeMinHz: cnlsFit?.fitFreqRange?.min ?? randlesFit?.fitFreqRange?.min,
+                fitRangeMaxHz: cnlsFit?.fitFreqRange?.max ?? randlesFit?.fitFreqRange?.max,
+                fitSource: cnlsFit ? (circuitModel === "randles-cpe" ? "manual_cnls_randles_cpe" : "manual_cnls_randles") : randlesFit?.auto ? "auto_cnls_randles" : randlesFit ? "manual_randles" : "geometric",
+              })} disabled={eisData.length === 0} className="font-mono text-xs">⬇ Export CSV</Button>
             </>
           )}
           {mode === "fet" && (
@@ -939,8 +1315,33 @@ const Index = () => {
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  exportFETTransferData(fetBaselineData, fetAnalyteData, dataSource);
-                  if (fetTimeDataArr.length > 0) exportFETTimeData(fetTimeDataArr, dataSource);
+                  const meta = { notes: sanitizeMeasurementNotes(fetNotes), measurementId: fetMeasurementId, measurementTimestamp: fetMeasurementTimestamp };
+                  const priorSigned = fetCalibration
+                    .filter((p) => p.concentration > 0 && typeof p.deltaVt_mV_signed === "number")
+                    .map((p) => p.deltaVt_mV_signed as number);
+                  const sign = inferFETResponseSign(priorSigned);
+                  const m = computeFETTransferMetrics(fetBaselineData, fetAnalyteData, {
+                    responseMode: fetResponseMode,
+                    responseSign: sign,
+                  });
+                  exportFETData({
+                    baseline: fetBaselineData,
+                    analyte: fetAnalyteData,
+                    timeData: fetTimeDataArr,
+                    markers: fetMarkers,
+                    source: dataSource,
+                    meta,
+                    concentration,
+                    params: {
+                      vgMin: fetParams.vgMin,
+                      vgMax: fetParams.vgMax,
+                      vgStep: fetParams.vgStep,
+                      intervalMs: fetParams.intervalMs,
+                    },
+                    metrics: m,
+                    responseMode: fetResponseMode,
+                    responseSign: m.responseSign,
+                  });
                 }}
                 disabled={fetBaselineData.length === 0 && fetTimeDataArr.length === 0}
                 className="font-mono text-xs"
@@ -952,6 +1353,10 @@ const Index = () => {
               <Button
                 size="sm"
                 onClick={() => {
+                  // Mint a fresh measurement id + timestamp for this sweep.
+                  // Notes already on screen ride along with this measurement.
+                  setCvMeasurementId(createMeasurementId("cv"));
+                  setCvMeasurementTimestamp(Date.now());
                   if (dataSource === "simulated") {
                     cv.start(cvParams);
                   } else {
@@ -996,11 +1401,32 @@ const Index = () => {
                     areaCm2: cvParams.areaCm2,
                     baselineMethodInput: cvBaselineMethod,
                   });
-                  exportCVData(data, metrics, cvParams, dataSource, cvPlotMode);
+                  const cleanNotes = sanitizeMeasurementNotes(cvNotes);
+                  exportCVData(
+                    data,
+                    metrics,
+                    {
+                      ...cvParams,
+                      notes: cleanNotes,
+                      measurementId: cvMeasurementId,
+                      measurementTimestamp: cvMeasurementTimestamp,
+                    },
+                    dataSource,
+                    cvPlotMode,
+                  );
                 }}
                 disabled={(dataSource === "simulated" ? cv.data.length : ws.cvData.length) === 0}
                 className="font-mono text-xs"
               >⬇ Export CSV</Button>
+            </>
+          )}
+          {mode === "swv" && (
+            <>
+              <Button size="sm" onClick={() => swvCtrl?.start()} disabled={!swvCtrl || swvCtrl.isRunning || (dataSource === "live" && ws.status !== "connected")} className="font-mono text-xs">▶ Start SWV</Button>
+              <Button size="sm" variant="destructive" onClick={() => swvCtrl?.stop()} disabled={!swvCtrl?.isRunning} className="font-mono text-xs">■ Stop</Button>
+              <Button size="sm" variant="secondary" onClick={() => swvCtrl?.reset()} className="font-mono text-xs">↺ Reset</Button>
+              <Button size="sm" variant="outline" onClick={() => swvCtrl?.exportCsv()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">⬇ Export CSV</Button>
+              <Button size="sm" variant="outline" onClick={() => swvCtrl?.addCalibration()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">+ Calibration Point</Button>
             </>
           )}
         </div>
@@ -1024,6 +1450,25 @@ const Index = () => {
               >
                 Overlay Mode {overlayMode ? "ON" : "OFF"}
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (eisData.length === 0) return;
+                  setEisOverlays((prev) => {
+                    const label =
+                      concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+                    const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+                    const next = [
+                      ...prev,
+                      { id: newId(), label, color, data: eisData.slice() },
+                    ];
+                    return next.length > 8 ? next.slice(next.length - 8) : next;
+                  });
+                }}
+                disabled={eisData.length === 0}
+                className="font-mono text-xs"
+              >＋ Capture</Button>
               <Button
                 size="sm"
                 variant="ghost"
@@ -1136,8 +1581,23 @@ const Index = () => {
           )}
         </Tabs>
         <div className="space-y-4">
-          <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} cnlsChiSquared={cnlsFit?.chiSquared ?? null} separatorZReal={separatorZReal} />
-          <CNLSFitResults fit={cnlsFit} model={circuitModel} randlesFit={randlesFit} warburg={warburg} kk={kk} />
+          <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} cnlsChiSquared={cnlsFit?.chiSquared ?? null} separatorZReal={separatorZReal} separatorFreq={(() => { if (separatorZReal == null || sqEisData.length === 0) return null; const c = sqEisData.reduce((b, d) => Math.abs(d.zReal - separatorZReal) < Math.abs(b.zReal - separatorZReal) ? d : b, sqEisData[0]); return c.frequency; })()} linKKResidualPct={linKK?.residualRmsPct ?? null} linKKPassed={linKK?.passed ?? null} />
+          <CNLSFitResults fit={cnlsFit} model={circuitModel} randlesFit={randlesFit} warburg={warburg} kk={kk} linKK={linKK} />
+          <MeasurementNotesPanel
+            mode="eis"
+            value={eisNotes}
+            onChange={setEisNotes}
+            onClear={() => {
+              setEisPreviousNotes(hasAnyNotes(eisNotes) ? eisNotes : eisPreviousNotes);
+              setEisNotes({});
+            }}
+            onCopyFromPrevious={
+              eisPreviousNotes ? () => setEisNotes({ ...eisPreviousNotes }) : undefined
+            }
+            hasPrevious={!!eisPreviousNotes}
+            measurementId={eisMeasurementId}
+            measurementTimestamp={eisMeasurementTimestamp}
+          />
           <CalibrationPanel
             mode="eis"
             concentration={concentration}
@@ -1158,18 +1618,83 @@ const Index = () => {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <div className="space-y-4">
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Transfer Curve — Id vs Vg</h2>
-              <StatusIndicator
-                isRunning={isFETRunning && fetBaselineData.length > 0}
-                label={isFETRunning && fetBaselineData.length > 0 ? "Sweeping Vg..." : "Idle"}
-                dataPoints={fetBaselineData.length}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={fetOverlayMode ? "default" : "outline"}
+                  onClick={() => setFetOverlayMode((v) => !v)}
+                  className="font-mono text-xs"
+                >
+                  Overlay {fetOverlayMode ? "ON" : "OFF"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (fetBaselineData.length === 0) return;
+                    setFetOverlays((prev) => {
+                      const label =
+                        concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+                      const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+                      const next = [
+                        ...prev,
+                        {
+                          id: newId(),
+                          label,
+                          color,
+                          baseline: fetBaselineData.slice(),
+                          withAnalyte: fetAnalyteData.slice(),
+                        },
+                      ];
+                      return next.length > 8 ? next.slice(next.length - 8) : next;
+                    });
+                  }}
+                  disabled={fetBaselineData.length === 0}
+                  className="font-mono text-xs"
+                >＋ Capture</Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setFetOverlays([])}
+                  disabled={fetOverlays.length === 0}
+                  className="font-mono text-xs"
+                >Clear ({fetOverlays.length})</Button>
+                <StatusIndicator
+                  isRunning={isFETRunning && fetBaselineData.length > 0}
+                  label={isFETRunning && fetBaselineData.length > 0 ? "Sweeping Vg..." : "Idle"}
+                  dataPoints={fetBaselineData.length}
+                />
+              </div>
+            </div>
+            {fetOverlayMode && fetOverlays.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2 text-[10px] font-mono">
+                {fetOverlays.map((ov) => (
+                  <span
+                    key={ov.id}
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5"
+                  >
+                    <span style={{ background: ov.color, width: 8, height: 8, borderRadius: 999 }} />
+                    {ov.label}
+                    <button
+                      className="ml-1 text-muted-foreground hover:text-foreground"
+                      onClick={() => setFetOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
+                      title="Remove overlay"
+                    >×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
+              <FETTransferPlot
+                baseline={fetBaselineData}
+                withAnalyte={fetAnalyteData}
+                overlays={fetOverlayMode ? fetOverlays : []}
               />
             </div>
-            <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTransferPlot baseline={fetBaselineData} withAnalyte={fetAnalyteData} />
-            </div>
           </div>
+
 
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -1250,6 +1775,21 @@ const Index = () => {
         </div>
         <div className="space-y-4">
           <SignalQuality mode="fet" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} fetVtBaseline={liveFetVtBaseline} fetVtAnalyte={liveFetVt} />
+          <MeasurementNotesPanel
+            mode="fet"
+            value={fetNotes}
+            onChange={setFetNotes}
+            onClear={() => {
+              setFetPreviousNotes(hasAnyNotes(fetNotes) ? fetNotes : fetPreviousNotes);
+              setFetNotes({});
+            }}
+            onCopyFromPrevious={
+              fetPreviousNotes ? () => setFetNotes({ ...fetPreviousNotes }) : undefined
+            }
+            hasPrevious={!!fetPreviousNotes}
+            measurementId={fetMeasurementId}
+            measurementTimestamp={fetMeasurementTimestamp}
+          />
           <CalibrationPanel
             mode="fet"
             concentration={concentration}
@@ -1258,6 +1798,20 @@ const Index = () => {
             onClear={() => setFetCalibration([])}
             onExport={exportCalibrationCSV}
             currentVt={liveFetVt ?? undefined}
+            currentVtBaseline={liveFetVtBaseline ?? null}
+            currentVtAnalyte={liveFetVt ?? null}
+            currentDeltaVt_mV={
+              liveFetVt != null && liveFetVtBaseline != null
+                ? (liveFetVt - liveFetVtBaseline) * 1000
+                : null
+            }
+            currentDeltaVtSigned_mV={
+              liveFetVt != null && liveFetVtBaseline != null
+                ? (liveFetVt - liveFetVtBaseline) * 1000
+                : null
+            }
+            responseMode={fetResponseMode}
+            onResponseModeChange={setFetResponseMode}
           />
         </div>
         </div>
@@ -1401,6 +1955,26 @@ const Index = () => {
               </div>
               {cvMetrics && (
                 <>
+                  <div className="text-[11px] font-mono text-muted-foreground border border-border bg-secondary/40 rounded-md p-2">
+                    {cvParams.cvModel === "reversible" ? (
+                      <>
+                        <span className="text-foreground">Reversible diffusion model</span>
+                        {" — "}solves 1D semi-infinite diffusion (finite-domain
+                        approximation, L = 6·√(D·tMax)) with a Nernst surface
+                        boundary. ΔEp, |Ipa/Ipc| and ip ∝ C·√v emerge from the
+                        physics. Reversibility / D_status decisions use the
+                        baseline-corrected peak currents — raw extrema can
+                        deviate because they include baseline/tail contributions.
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-foreground">Quasi-reversible model</span>
+                        {" — "}Butler–Volmer + Cottrell convolution. Educational
+                        approximation; D apparent from Randles–Ševčík may be biased
+                        and n estimate is only valid for reversible systems at 25 °C.
+                      </>
+                    )}
+                  </div>
                   {cvParams.cvModel === "quasi-reversible" && (
                     <div className="text-[11px] font-mono text-yellow-500 border border-yellow-500/40 bg-yellow-500/10 rounded-md p-2">
                       ⚠ Quasi-reversible model — D apparent from
@@ -1470,6 +2044,23 @@ const Index = () => {
                 cvMetrics={cvMetrics}
                 cvNElectrons={cvParams.n}
               />
+              <MeasurementNotesPanel
+                mode="cv"
+                value={cvNotes}
+                onChange={setCvNotes}
+                onClear={() => {
+                  setCvPreviousNotes(hasAnyNotes(cvNotes) ? cvNotes : cvPreviousNotes);
+                  setCvNotes({});
+                }}
+                onCopyFromPrevious={
+                  cvPreviousNotes
+                    ? () => setCvNotes({ ...cvPreviousNotes })
+                    : undefined
+                }
+                hasPrevious={!!cvPreviousNotes}
+                measurementId={cvMeasurementId}
+                measurementTimestamp={cvMeasurementTimestamp}
+              />
               <CVCalibrationPanel
                 points={cvCalibration}
                 concentration_mM={cvParams.cMM}
@@ -1483,14 +2074,24 @@ const Index = () => {
                     toast.error("No CV metrics yet — run a CV sweep first.");
                     return;
                   }
+                  const cleanNotes = sanitizeMeasurementNotes(cvNotes);
                   const pt = buildCVCalibrationPoint(
                     cvParams.cMM,
                     cvMetrics,
                     cvParams.cvModel,
+                    {
+                      measurementId: cvMeasurementId,
+                      sampleId: cleanNotes?.sampleId,
+                      electrodeId: cleanNotes?.electrodeId,
+                      notes: shortNotesSummary(cleanNotes),
+                      timestamp: cvMeasurementTimestamp,
+                    },
                   );
                   // Always append — replicates (including blank replicates) are
                   // required for LOD estimation.
                   setCvCalibration((prev) => [...prev, pt]);
+                  // Remember the notes so the next sweep can copy-from-previous.
+                  if (hasAnyNotes(cleanNotes)) setCvPreviousNotes(cleanNotes!);
                   logActivity(
                     "calibration",
                     `CV calibration point added — C=${cvParams.cMM} mM, response=${
@@ -1537,6 +2138,16 @@ const Index = () => {
           </div>
         );
       })()}
+
+      {mode === "swv" && (
+        <SWVMode
+          dataSource={dataSource}
+          ws={ws}
+          externalParams={swvParams}
+          onChangeParams={setSwvParams}
+          onController={setSwvCtrl}
+        />
+      )}
 
       <footer className="mt-8 text-center text-[10px] text-muted-foreground font-mono">
         HelpStat Biosensor v0.2 — {dataSource === "simulated" ? "Simulated Mode" : "Live Mode"} — ESP32-S3 WebSocket

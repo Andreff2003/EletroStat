@@ -1,0 +1,127 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-ring-offset-background: hsl(var(--background));
+
+  --color-graph-bg: hsl(var(--graph-bg));
+  --color-graph-grid: hsl(var(--graph-grid));
+  --color-graph-eis: hsl(var(--graph-line-eis));
+  --color-graph-fet: hsl(var(--graph-line-fet));
+  --color-graph-alt: hsl(var(--graph-line-alt));
+  --color-graph-dot: hsl(var(--graph-dot));
+
+  --color-sidebar: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+}
+
+:root {
+  --background: 220 20% 7%;
+  --foreground: 210 20% 90%;
+
+  --card: 220 18% 10%;
+  --card-foreground: 210 20% 90%;
+
+  --popover: 220 18% 10%;
+  --popover-foreground: 210 20% 90%;
+
+  --primary: 160 70% 45%;
+  --primary-foreground: 220 20% 7%;
+
+  --secondary: 220 15% 16%;
+  --secondary-foreground: 210 20% 80%;
+
+  --muted: 220 15% 14%;
+  --muted-foreground: 215 15% 50%;
+
+  --accent: 200 80% 55%;
+  --accent-foreground: 220 20% 7%;
+
+  --destructive: 0 65% 50%;
+  --destructive-foreground: 210 40% 98%;
+
+  --border: 220 15% 18%;
+  --input: 220 15% 18%;
+  --ring: 160 70% 45%;
+
+  --radius: 0.5rem;
+
+  --graph-bg: 220 18% 8%;
+  --graph-grid: 220 15% 15%;
+  --graph-line-eis: 160 70% 50%;
+  --graph-line-fet: 200 80% 55%;
+  --graph-line-alt: 35 90% 55%;
+  --graph-dot: 160 70% 60%;
+  --graph-area: 160 70% 45%;
+
+  --sidebar-background: 220 18% 10%;
+  --sidebar-foreground: 210 20% 80%;
+  --sidebar-primary: 160 70% 45%;
+  --sidebar-primary-foreground: 220 20% 7%;
+  --sidebar-accent: 220 15% 16%;
+  --sidebar-accent-foreground: 210 20% 80%;
+  --sidebar-border: 220 15% 18%;
+  --sidebar-ring: 160 70% 45%;
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: "Inter", sans-serif;
+  }
+
+  code,
+  .font-mono {
+    font-family: "JetBrains Mono", monospace;
+  }
+}
+
+.recharts-cartesian-grid line {
+  stroke: hsl(220 15% 15%) !important;
+}
+.recharts-text {
+  fill: hsl(215 15% 50%) !important;
+  font-family: "JetBrains Mono", monospace !important;
+  font-size: 11px !important;
+}
