@@ -1377,9 +1377,15 @@ export function exportSWVData(opts: ExportSWVOptions) {
   meta.push(toRow(["area_cm2", fmtSig(params.area_cm2 ?? null)]));
   meta.push(toRow(["n_electrons", fmtSig(params.nElectrons ?? null)]));
   meta.push(toRow(["temperature_K", fmtSig(params.temperature_K ?? null)]));
-  meta.push(toRow(["baselineMethod", fmtStr(params.baselineMethod ?? "none")]));
+  meta.push(toRow(["baseline_method_input", fmtStr(params.baselineMethod ?? "none")]));
+  meta.push(toRow([
+    "baseline_method_resolved",
+    fmtStr(metrics?.baselineMethodUsed ?? metrics?.baselineMethod ?? params.baselineMethod ?? "none"),
+  ]));
   meta.push(toRow(["smoothing", fmtStr(params.smoothing ?? "none")]));
-  if (simulationModel) meta.push(toRow(["simulation_model", simulationModel]));
+  const effectiveSimModel =
+    simulationModel ?? (source === "simulated" ? (params.model ?? "empirical_peak") : null);
+  if (effectiveSimModel) meta.push(toRow(["simulation_model", effectiveSimModel]));
   if (cleanNotes) {
     meta.push(toRow(["notes_title", fmtStr(cleanNotes.title)]));
     meta.push(toRow(["notes_operator", fmtStr(cleanNotes.operator)]));
