@@ -5,12 +5,21 @@ import {
 } from "recharts";
 import type { FETTransferPoint } from "@/hooks/useSimulatedData";
 
-interface FETTransferPlotProps {
+interface FETOverlay {
+  id: string;
+  label: string;
+  color: string;
   baseline: FETTransferPoint[];
   withAnalyte: FETTransferPoint[];
 }
 
-const FETTransferPlot = ({ baseline, withAnalyte }: FETTransferPlotProps) => {
+interface FETTransferPlotProps {
+  baseline: FETTransferPoint[];
+  withAnalyte: FETTransferPoint[];
+  overlays?: FETOverlay[];
+}
+
+const FETTransferPlot = ({ baseline, withAnalyte, overlays = [] }: FETTransferPlotProps) => {
   const plotData = baseline.map((b, i) => ({
     vg: b.vg,
     baseline: b.id,
@@ -103,8 +112,44 @@ const FETTransferPlot = ({ baseline, withAnalyte }: FETTransferPlotProps) => {
             formatter={(value: number) => [`${value.toFixed(2)} µA`]}
           />
           <Legend wrapperStyle={{ color: "hsl(215 15% 50%)", fontSize: 12 }} />
+          {overlays.map((ov) => {
+            const ovData = ov.baseline.map((b, i) => ({
+              vg: b.vg,
+              [`ov_base_${ov.id}`]: b.id,
+              [`ov_ana_${ov.id}`]: ov.withAnalyte[i]?.id ?? null,
+            }));
+            return (
+              <>
+                <Line
+                  key={`ovb_${ov.id}`}
+                  type="monotone"
+                  data={ovData}
+                  dataKey={`ov_base_${ov.id}`}
+                  name={`${ov.label} · baseline`}
+                  stroke={ov.color}
+                  strokeWidth={1.2}
+                  strokeDasharray="2 2"
+                  dot={false}
+                  isAnimationActive={false}
+                />
+                <Line
+                  key={`ova_${ov.id}`}
+                  type="monotone"
+                  data={ovData}
+                  dataKey={`ov_ana_${ov.id}`}
+                  name={`${ov.label} · analyte`}
+                  stroke={ov.color}
+                  strokeWidth={1.2}
+                  strokeDasharray="6 3"
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </>
+            );
+          })}
           <Line type="monotone" dataKey="baseline" name="Baseline (no analyte)" stroke="hsl(200 80% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
           <Line type="monotone" dataKey="cortisol" name="With Cortisol" stroke="hsl(35 90% 55%)" strokeWidth={2} dot={false} strokeDasharray="6 3" isAnimationActive={false} />
+
           {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
             <ReferenceArea x1={zoomArea.x1} x2={zoomArea.x2} strokeOpacity={0.3} fill="hsl(200 80% 55%)" fillOpacity={0.15} />
           )}

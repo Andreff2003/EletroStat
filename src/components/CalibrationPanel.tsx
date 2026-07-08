@@ -25,12 +25,43 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { EISDataPoint, FETTransferPoint } from "@/hooks/useSimulatedData";
+import { computeFETVt as _computeFETVt } from "@/utils/fetVt";
+import { applyFETResponseMode, type FETResponseMode } from "@/utils/fetMetrics";
+
+/**
+ * Returns the calibration signal (mV) that should be used in fits/plots for a
+ * BioFET point, computed dynamically from the physical signed ΔVt so that
+ * changing responseMode in the UI recalculates old points without touching raw.
+ */
+export function getCalibrationSignal(
+  point: { signal: number; deltaVt_mV_signed?: number },
+  responseMode: FETResponseMode,
+  responseSign: 1 | -1 = 1,
+): number {
+  const physical = point.deltaVt_mV_signed ?? point.signal;
+  return applyFETResponseMode(physical, responseMode, responseSign).calibrationSignal_mV_used;
+}
 
 export interface CalibrationPoint {
   concentration: number; // nM
-  signal: number; // ΔRct (Ω) for EIS, ΔVt (mV) for FET
+  signal: number; // ΔRct (Ω) for EIS, ΔVt (mV) for FET — sign-preserved
   raw: number; // Rct (Ω) or Vt (V)
   timestamp: number;
+  measurementId?: string;
+  sampleId?: string;
+  electrodeId?: string;
+  notesShort?: string;
+  // BioFET-specific traceability (optional)
+  deltaVt_mV_signed?: number;
+  calibrationSignal_mV_used?: number;
+  responseMode?: "auto" | "signed" | "absolute";
+  responseSign?: 1 | -1;
+  vtBaseline?: number;
+  vtAnalyte?: number;
+  vtMethod?: string;
+  vtFitR2?: number | null;
+  vtRegionPoints?: number;
+  vtWarning?: string;
 }
 
 interface CalibrationPanelProps {
@@ -44,6 +75,20 @@ interface CalibrationPanelProps {
   currentRs?: number;
   currentRct?: number;
   currentVt?: number;
+  /** BioFET-only — current measurement values for display, not aggregated from points */
+  currentVtBaseline?: number | null;
+  currentVtAnalyte?: number | null;
+  currentDeltaVt_mV?: number | null;
+  currentDeltaVtSigned_mV?: number | null;
+  currentCalibrationSignal_mV?: number | null;
+  /** BioFET-only Vt diagnostics from computeFETTransferMetrics */
+  currentVtMethod?: string | null;
+  currentVtFitR2?: number | null;
+  currentVtRegionPoints?: number | null;
+  currentVtWarning?: string | null;
+  responseMode?: FETResponseMode;
+  responseSign?: 1 | -1;
+  onResponseModeChange?: (mode: FETResponseMode) => void;
   /** True when randles fit did not converge and geometric estimate is shown */
   geometricFallback?: boolean;
 }
@@ -62,24 +107,9 @@ export function computeEISParams(data: EISDataPoint[]): { rs: number; rct: numbe
   return { rs: minR, rct: maxR - minR };
 }
 
-/** Compute Vt: Vg where Id reaches 10% of Ion (max Id) */
+/** Vt extraction — sqrt(Id) extrapolation. See src/utils/fetVt.ts. */
 export function computeFETVt(curve: FETTransferPoint[]): number | null {
-  if (curve.length < 5) return null;
-  const ids = curve.map((p) => p.id);
-  const ion = Math.max(...ids);
-  const target = ion * 0.1;
-  // Find first point that crosses target (assuming Vg ascending)
-  for (let i = 1; i < curve.length; i++) {
-    if (curve[i].id >= target) {
-      // Linear interp between i-1 and i
-      const a = curve[i - 1];
-      const b = curve[i];
-      if (b.id === a.id) return b.vg;
-      const t = (target - a.id) / (b.id - a.id);
-      return a.vg + t * (b.vg - a.vg);
-    }
-  }
-  return curve[curve.length - 1].vg;
+  return _computeFETVt(curve);
 }
 
 /**
@@ -91,10 +121,13 @@ export function computeFETVt(curve: FETTransferPoint[]): number | null {
 function fitLangmuirNLLS(
   points: { concentration: number; signal: number }[],
 ): { kd: number; sMax: number; r2: number } | null {
-  const data = points.filter((p) => p.concentration > 0 && p.signal > 0);
+  // Signals are already transformed by the caller (responseMode applied).
+  // For "signed" mode with mixed-sign points, Langmuir is fit on magnitude
+  // (documented behaviour); auto/absolute already produce non-negative values.
+  const data = points.filter((p) => p.concentration > 0 && Math.abs(p.signal) > 0);
   if (data.length < 3) return null;
   const Cs = data.map((p) => p.concentration);
-  const Ss = data.map((p) => p.signal);
+  const Ss = data.map((p) => Math.abs(p.signal));
   const sortedC = [...Cs].sort((a, b) => a - b);
   const medianC = sortedC[Math.floor(sortedC.length / 2)];
   let sMax = Math.max(...Ss) * 1.5;
@@ -176,24 +209,37 @@ function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: numb
   return { slope, intercept, r2 };
 }
 
-/** LOD = 3 * sigma_baseline / slope, where slope is from the linear regression of all points */
-function computeLOD(points: CalibrationPoint[]): number | null {
+/**
+ * LOD = 3 σ / |slope|.
+ *
+ * BioFET caveat — units must match.  Calibration points store `signal` in
+ * mV (ΔVt) but `raw` in volts (Vt).  Computing σ over `raw` therefore needs
+ * a ×1000 conversion before dividing by the mV/nM slope, otherwise the LOD
+ * is off by a factor of 1000.
+ */
+function computeLOD(
+  points: CalibrationPoint[],
+  mode: "eis" | "fet" = "eis",
+): { value: number; sigmaSource: "replicates" | "two_percent_baseline" } | null {
   const baseline = findBaseline(points);
   if (!baseline) return null;
-  // Use raw values to estimate baseline noise; if only one baseline, fall back to small fraction
   const baselines = points.filter((p) => p.concentration === 0);
-  let sigma: number;
+  let sigmaRaw: number;
+  let sigmaSource: "replicates" | "two_percent_baseline";
   if (baselines.length >= 2) {
     const vals = baselines.map((p) => p.raw);
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-    sigma = Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / vals.length);
+    sigmaRaw = Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / vals.length);
+    sigmaSource = "replicates";
   } else {
-    sigma = Math.abs(baseline.raw) * 0.02; // 2% assumed noise
+    sigmaRaw = Math.abs(baseline.raw) * 0.02;
+    sigmaSource = "two_percent_baseline";
   }
+  // BioFET: raw is in V, signal/slope are in mV → convert σ to mV.
+  const sigma = mode === "fet" ? sigmaRaw * 1000 : sigmaRaw;
   const linFit = fitLinear(points as CalibrationPoint[]);
-  if (!linFit || linFit.slope <= 0) return null;
-  const slope = linFit.slope;
-  return (3 * sigma) / slope;
+  if (!linFit || Math.abs(linFit.slope) < 1e-12) return null;
+  return { value: (3 * sigma) / Math.abs(linFit.slope), sigmaSource };
 }
 
 const CalibrationPanel = ({
@@ -206,6 +252,18 @@ const CalibrationPanel = ({
   currentRs,
   currentRct,
   currentVt,
+  currentVtBaseline,
+  currentVtAnalyte,
+  currentDeltaVt_mV,
+  currentDeltaVtSigned_mV,
+  currentCalibrationSignal_mV,
+  currentVtMethod,
+  currentVtFitR2,
+  currentVtRegionPoints,
+  currentVtWarning,
+  responseMode = "auto",
+  responseSign = 1,
+  onResponseModeChange,
   geometricFallback,
 }: CalibrationPanelProps) => {
   const baseline = findBaseline(points);
@@ -229,14 +287,27 @@ const CalibrationPanel = ({
   const displayUnit = showNormalised ? "%" : signalUnit;
   const displayKey = showNormalised ? `${signalKey}%` : signalKey;
 
-  // Build the points used for plotting / fitting (apply normalisation if active)
+  // Build the points used for plotting / fitting.
+  // - EIS: optional %-normalisation.
+  // - BioFET: recompute the calibration signal from the ORIGINAL signed ΔVt
+  //   (deltaVt_mV_signed) using the current responseMode/responseSign, so that
+  //   toggling the response mode in the UI updates fit and chart coherently
+  //   without ever mutating raw data.
   const transformedPoints = useMemo(() => {
+    if (mode === "fet") {
+      const sign: 1 | -1 = responseSign ?? 1;
+      return points.map((p) => {
+        const physical = p.deltaVt_mV_signed ?? p.signal;
+        const cal = applyFETResponseMode(physical, responseMode, sign).calibrationSignal_mV_used;
+        return { ...p, signal: cal };
+      });
+    }
     if (!showNormalised || !baselineRctRaw) return points;
     return points.map((p) => ({
       ...p,
       signal: (p.signal / baselineRctRaw) * 100,
     }));
-  }, [points, showNormalised, baselineRctRaw]);
+  }, [points, mode, responseMode, responseSign, showNormalised, baselineRctRaw]);
 
   // Sort points by concentration for plotting
   const sortedPoints = useMemo(
@@ -257,7 +328,8 @@ const CalibrationPanel = ({
     () => (transformedPoints.length >= 4 ? fitLangmuirNLLS(transformedPoints) : null),
     [transformedPoints],
   );
-  const lod = useMemo(() => computeLOD(transformedPoints), [transformedPoints]);
+  const lodResult = useMemo(() => computeLOD(transformedPoints, mode), [transformedPoints, mode]);
+  const lod = lodResult?.value ?? null;
   const linear = useMemo(
     () => (transformedPoints.length >= 3 ? fitLinear(transformedPoints as CalibrationPoint[]) : null),
     [transformedPoints],
@@ -286,21 +358,26 @@ const CalibrationPanel = ({
     return out;
   }, [fit, sortedPoints, useLog]);
 
-  // Combine measured + fit for the chart
-  const chartData = useMemo(() => {
-    type Row = { concentration: number; measured?: number; fitSignal?: number };
-    const map = new Map<number, Row>();
-    for (const p of sortedPoints) {
-      if (p.concentration <= 0) continue;
-      map.set(p.concentration, { concentration: p.concentration, measured: p.signal });
-    }
-    for (const f of fitCurve) {
-      const existing = map.get(f.concentration);
-      if (existing) existing.fitSignal = f.fitSignal;
-      else map.set(f.concentration, { concentration: f.concentration, fitSignal: f.fitSignal });
-    }
-    return Array.from(map.values()).sort((a, b) => a.concentration - b.concentration);
-  }, [sortedPoints, fitCurve]);
+  // Measured rows: one row per measurement — DO NOT aggregate by concentration,
+  // and DO include blanks (0 nM) so replicates and baselines stay visible.
+  const measuredRows = useMemo(
+    () =>
+      sortedPoints.map((p, i) => ({
+        concentration: p.concentration,
+        measured: p.signal,
+        replicateIndex: i,
+        measurementId: p.measurementId,
+      })),
+    [sortedPoints],
+  );
+
+  // Fit rows are a separate series for the Langmuir curve.
+  const fitRows = useMemo(
+    () => fitCurve.map((f) => ({ concentration: f.concentration, fitSignal: f.fitSignal })),
+    [fitCurve],
+  );
+
+  const hasChartData = measuredRows.length > 0 || fitRows.length > 0;
 
   // Currently-displayed parameters
   const sampleRct = currentRct ?? null;
@@ -310,12 +387,17 @@ const CalibrationPanel = ({
       ? sampleRct - baselineRct
       : 0;
 
-  const sampleVt = currentVt ?? null;
-  const baselineVt = points.find((p) => p.concentration === 0)?.raw ?? null;
-  const deltaVt =
-    sampleVt != null && baselineVt != null && concentration > 0
-      ? (sampleVt - baselineVt) * 1000
-      : 0;
+  // BioFET: prefer props from the *current measurement* (same sweep) over the
+  // legacy "diff vs old blank in points[]" computation. ΔVt is the physical,
+  // sign-preserved value computed by computeFETTransferMetrics.
+  const liveVtAnalyte = currentVtAnalyte ?? currentVt ?? null;
+  const liveVtBaseline = currentVtBaseline ?? null;
+  const liveDeltaVt_mV =
+    currentDeltaVt_mV ??
+    currentDeltaVtSigned_mV ??
+    (liveVtAnalyte != null && liveVtBaseline != null
+      ? (liveVtAnalyte - liveVtBaseline) * 1000
+      : null);
 
   return (
     <div className="rounded-lg border border-border bg-card p-3 space-y-3">
@@ -373,17 +455,60 @@ const CalibrationPanel = ({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2">
-          <div className="bg-secondary rounded-md p-2">
-            <div className="text-[10px] text-muted-foreground font-mono uppercase">Vt</div>
-            <div className="text-sm font-mono text-foreground">
-              {currentVt != null ? `${currentVt.toFixed(3)} V` : "—"}
+        <div className="space-y-2">
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-secondary rounded-md p-2">
+              <div className="text-[10px] text-muted-foreground font-mono uppercase">Vt baseline</div>
+              <div className="text-sm font-mono text-foreground">
+                {liveVtBaseline != null ? `${liveVtBaseline.toFixed(3)} V` : "—"}
+              </div>
+            </div>
+            <div className="bg-secondary rounded-md p-2">
+              <div className="text-[10px] text-muted-foreground font-mono uppercase">Vt analyte</div>
+              <div className="text-sm font-mono text-foreground">
+                {liveVtAnalyte != null ? `${liveVtAnalyte.toFixed(3)} V` : "—"}
+              </div>
+            </div>
+            <div className="bg-secondary rounded-md p-2">
+              <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔVt (signed)</div>
+              <div className="text-sm font-mono text-foreground">
+                {liveDeltaVt_mV != null ? `${liveDeltaVt_mV >= 0 ? "+" : ""}${liveDeltaVt_mV.toFixed(1)} mV` : "—"}
+              </div>
             </div>
           </div>
-          <div className="bg-secondary rounded-md p-2">
-            <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔVt</div>
-            <div className="text-sm font-mono text-foreground">{`${deltaVt.toFixed(1)} mV`}</div>
-          </div>
+          {onResponseModeChange && (
+            <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+              <span className="uppercase">Response mode</span>
+              <select
+                className="h-6 rounded border border-border bg-background px-1 text-[10px] font-mono"
+                value={responseMode}
+                onChange={(e) => onResponseModeChange(e.target.value as "auto" | "signed" | "absolute")}
+              >
+                <option value="auto">Auto</option>
+                <option value="signed">Signed</option>
+                <option value="absolute">Absolute</option>
+              </select>
+              {responseSign != null && (
+                <span>sign={responseSign > 0 ? "+1" : "-1"}</span>
+              )}
+              {currentCalibrationSignal_mV != null && (
+                <span>· cal signal={currentCalibrationSignal_mV.toFixed(1)} mV</span>
+              )}
+            </div>
+          )}
+          {(currentVtMethod || currentVtFitR2 != null || currentVtRegionPoints != null || currentVtWarning) && (
+            <div className="rounded-md bg-secondary/60 p-2 text-[10px] font-mono text-muted-foreground space-y-0.5">
+              <div className="uppercase text-[9px] tracking-wide">Vt diagnostics</div>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {currentVtMethod && <span>method=<span className="text-foreground">{currentVtMethod}</span></span>}
+                {currentVtFitR2 != null && <span>R²=<span className="text-foreground">{currentVtFitR2.toFixed(3)}</span></span>}
+                {currentVtRegionPoints != null && <span>N={currentVtRegionPoints}</span>}
+              </div>
+              {currentVtWarning && (
+                <div className="text-yellow-500">⚠ {currentVtWarning}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -413,13 +538,13 @@ const CalibrationPanel = ({
           </div>
         </div>
         <div className="h-[180px] bg-background rounded-md border border-border p-1">
-          {chartData.length === 0 ? (
+          {!hasChartData ? (
             <div className="flex h-full items-center justify-center text-[11px] font-mono text-muted-foreground">
               No measurements yet
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+              <ComposedChart margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis
                   dataKey="concentration"
@@ -470,13 +595,19 @@ const CalibrationPanel = ({
                 )}
                 <Line
                   type="monotone"
+                  data={fitRows}
                   dataKey="fitSignal"
                   stroke="hsl(var(--primary))"
                   strokeWidth={2}
                   dot={false}
                   isAnimationActive={false}
                 />
-                <Scatter dataKey="measured" fill="hsl(var(--primary))" />
+                <Scatter
+                  data={measuredRows}
+                  dataKey="measured"
+                  fill="hsl(var(--primary))"
+                  isAnimationActive={false}
+                />
               </ComposedChart>
             </ResponsiveContainer>
           )}
@@ -508,8 +639,9 @@ const CalibrationPanel = ({
           </div>
           {lod != null && (
             <div>
-              LOD (3σ/slope):{" "}
+              LOD (3σ/|slope|):{" "}
               <span className="text-primary">{lod.toFixed(2)} nM</span>
+              <span className="text-muted-foreground"> · σ from {lodResult?.sigmaSource === "replicates" ? "blank replicates" : "2% baseline"}</span>
             </div>
           )}
         </div>
@@ -555,26 +687,48 @@ const CalibrationPanel = ({
                 <TableHead className="h-8 text-[10px] font-mono uppercase">
                   {signalKey} ({signalUnit})
                 </TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Sample</TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Electrode</TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Meas. ID</TableHead>
                 <TableHead className="h-8 text-[10px] font-mono uppercase">Time</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {points.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={3} className="text-[11px] font-mono text-muted-foreground py-3 text-center">
+                  <TableCell colSpan={6} className="text-[11px] font-mono text-muted-foreground py-3 text-center">
                     No measurements yet
                   </TableCell>
                 </TableRow>
               ) : (
-                sortedPoints.map((p, i) => (
-                  <TableRow key={`${p.timestamp}-${i}`}>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.concentration}</TableCell>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.signal.toFixed(2)}</TableCell>
-                    <TableCell className="py-1.5 text-xs font-mono">
-                      {new Date(p.timestamp).toLocaleTimeString()}
-                    </TableCell>
-                  </TableRow>
-                ))
+                sortedPoints.map((p, i) => {
+                  const midShort = p.measurementId
+                    ? p.measurementId.length > 14
+                      ? `…${p.measurementId.slice(-13)}`
+                      : p.measurementId
+                    : "—";
+                  return (
+                    <TableRow key={`${p.timestamp}-${i}`}>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.concentration}</TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.signal.toFixed(2)}</TableCell>
+                      <TableCell className="py-1.5 text-[11px] font-mono text-muted-foreground">
+                        {p.sampleId ?? "—"}
+                      </TableCell>
+                      <TableCell className="py-1.5 text-[11px] font-mono text-muted-foreground">
+                        {p.electrodeId ?? "—"}
+                      </TableCell>
+                      <TableCell
+                        className="py-1.5 text-[11px] font-mono text-muted-foreground"
+                        title={p.measurementId ?? ""}
+                      >
+                        {midShort}
+                      </TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">
+                        {new Date(p.timestamp).toLocaleTimeString()}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

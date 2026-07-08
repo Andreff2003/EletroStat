@@ -10,27 +10,33 @@ import { simulateReversibleDiffusionCV } from "@/utils/cvDiffusionSolver";
 
 /**
  * ============================================================
- * SIMULATED CV DATA — two educational models
+ * SIMULATED CV DATA — two models
  * ------------------------------------------------------------
  * Two CV models are exposed:
  *
  *  A) "reversible" — physical solver: 1-D semi-infinite diffusion
- *     with a Nernstian boundary condition at the electrode and
- *     bulk concentrations at the far node. Time integration is
- *     backward Euler with a Thomas tridiagonal solve. Faradaic
- *     current is computed from the diffusive flux of O at the
- *     surface; no Gaussian fitting is involved. Implementation:
+ *     on a finite domain (L ≈ 6·√(D·tMax)) with a Nernst surface
+ *     boundary condition. Time integration is backward Euler with
+ *     a Thomas tridiagonal solve. Faradaic current is computed
+ *     from the diffusive flux of O at the surface. Implementation:
  *     `simulateReversibleDiffusionCV` in
  *     `src/utils/cvDiffusionSolver.ts`. This is the DEFAULT model.
+ *     More physical than the older parametric reversible model,
+ *     but still a finite-domain numerical approximation, not a
+ *     full Nicholson–Shain solver.
  *
  *  B) "quasi-reversible" — Butler–Volmer kinetics + semi-infinite
  *     diffusion (product-integration of the Cottrell kernel),
- *     solved semi-implicitly per step.  Equal D for O and R,
+ *     solved semi-implicitly per step. Equal D for O and R,
  *     first-order mass balance CO_surf + CR_surf ≈ cBulk.
  *     Educational approximation only; D_apparent from
- *     Randles–Ševčík may be biased for this regime.
+ *     Randles–Ševčík may be biased for this regime. NOT a full
+ *     finite-difference Butler–Volmer solver yet.
  *
- *  C) Reserved for future "live" / real-hardware data path.
+ *  Diffusion solver is used only for simulated reversible CV.
+ *  Live hardware data (ESP32 cv_data frames) is parsed by
+ *  `parseCVWebSocketMessage` and analysed directly — it never
+ *  touches the solver.
  *
  * Sign convention (kept consistent across the whole project):
  *   anodic current  → positive (oxidation, R → O)

@@ -1,6 +1,7 @@
 import type { CircuitModel, EISFitResult } from "@/utils/eisFit";
 import { formatParamValue, getCircuitLabel } from "@/utils/eisFit";
 import type { RandlesFitResult, WarburgResult, KKResult } from "@/utils/randlesFit";
+import type { LinKKResult } from "@/utils/linKK";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface Props {
@@ -9,14 +10,17 @@ interface Props {
   randlesFit?: RandlesFitResult | null;
   warburg?: WarburgResult | null;
   kk?: KKResult | null;
+  linKK?: LinKKResult | null;
 }
 
 /**
- * Scientific CNLS fit results.
- * Each parameter is shown with its modulus-weighted standard error (%),
- * plus the reduced χ² as the global quality-of-fit indicator.
+ * Scientific CNLS fit results. Each parameter is shown with its approximate
+ * local standard error (%) from the log-space covariance. The global
+ * quality-of-fit indicator is the modulus-weighted SSR per dof (a relative
+ * indicator — not a classical statistical goodness-of-fit value).
  */
-const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk }: Props) => {
+
+const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) => {
   if (!fit) {
     return (
       <div className="rounded-lg border border-border bg-card p-3">
@@ -49,24 +53,33 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk }: Props) => {
   const slope = warburg?.slope;
   const slopeBad = typeof slope === "number" && (slope < 0.5 || slope > 2.0);
 
-  // f₀ characteristic frequency from CNLS params
+  // f₀ characteristic frequency from CNLS params.
+  // Randles:     f0 = 1 / (2π · Rct · Cdl)
+  // Randles-CPE: f0 = (Rct·Q)^(-1/n) / (2π)
   const Rct = fit.params.Rct;
   const Cdl = fit.params.Cdl;
-  const f0 = Rct && Cdl
-    ? 1 / (2 * Math.PI * Rct * Cdl)
-    : randlesFit?.f0;
+  const Q = fit.params.Q;
+  const nCpe = fit.params.n;
+  let f0: number | undefined;
+  if (model === "randles-cpe" && Rct && Q && nCpe && nCpe > 0) {
+    f0 = Math.pow(Rct * Q, -1 / nCpe) / (2 * Math.PI);
+  } else if (Rct && Cdl) {
+    f0 = 1 / (2 * Math.PI * Rct * Cdl);
+  } else {
+    f0 = randlesFit?.f0;
+  }
   const f0Str = Number.isFinite(f0 ?? NaN)
     ? (f0! >= 0.01 && f0! < 1e6 ? f0!.toFixed(2) : f0!.toExponential(2))
     : "—";
 
-  // Fit error % — prefer CNLS chi-squared (modulus-weighted), fall back to randlesFit
-  // Convert chiSquared (dimensionless weighted SSR/dof) to a % for display:
-  //   chiSquared ~ 1e-5 for excellent fit, ~1e-2 for poor fit
-  //   Display as sqrt(chiSquared)*100 so units are comparable to RMSE %
+
+  // Fit error % — prefer CNLS weighted SSR/dof, fall back to randlesFit.
+  // sqrt(weightedSsrPerDof)*100 gives a unit comparable to RMSE %
+  // (~1e-5 for excellent fit, ~1e-2 for poor fit).
   const fitErrorPct = fit?.chiSquared != null
     ? Math.sqrt(fit.chiSquared) * 100
     : randlesFit?.fitErrorPct;
-  // Fit error = sqrt(chi2_red)*100: <2% excellent, <8% good, >=8% poor
+  // Fit error from wSSR/dof: <2% excellent, <8% good, >=8% poor
   const fitErrColor = (v: number) =>
     v < 2 ? "text-graph-primary" : v < 8 ? "text-foreground" : "text-destructive";
 
@@ -122,12 +135,18 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk }: Props) => {
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-xs text-xs font-mono">
             Σ wᵢ [(Z' − Z'ₑ)² + (Z'' − Z''ₑ)²] / (2N − P) with wᵢ = 1/|Zᵢ|².
-            Note: modulus weights are unitless (not 1/σ²), so the classical
-            χ²≈1 criterion does NOT apply. Use this as a relative goodness
-            indicator — lower = better fit.
+            Modulus-weighted SSR per degree of freedom — a relative quality
+            indicator; sqrt(value)·100 ≈ modulus-weighted RMSE %. SE% per
+            parameter is an approximate local uncertainty derived from the
+            covariance matrix — treat as an order-of-magnitude indicator.
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
+      {fit.covarianceWarning && (
+        <div className="text-[10px] font-mono text-yellow-500 leading-snug">
+          ⚠ Covariance matrix ill-conditioned — parameter SE% unreliable.
+        </div>
+      )}
 
       <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground">
         <span>N = {fit.nPoints} points</span>
@@ -172,47 +191,88 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk }: Props) => {
             </div>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-xs text-xs font-mono">
-            = 1 / (2π · Rct · Cdl)
+            {model === "randles-cpe"
+              ? "= (Rct · Q)^(−1/n) / (2π)"
+              : "= 1 / (2π · Rct · Cdl)"}
           </TooltipContent>
+
         </Tooltip>
       </TooltipProvider>
 
-      {/* KK test */}
-      {kk && (
+      {/* Lin-KK validation — primary consistency test */}
+      {linKK && (
         <div className="border-t border-border pt-2 space-y-1">
-          <span
-            className={
-              kk.passed
-                ? "inline-flex items-center rounded-md border border-graph-primary/40 bg-graph-primary/10 px-2 py-0.5 text-[10px] font-mono text-graph-primary"
-                : "inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10px] font-mono text-destructive"
-            }
-          >
-            {kk.passed ? "✓" : "✗"} KK {kk.passed ? "passed" : "failed"} ({kk.residualPct.toFixed(1)}%)
-          </span>
-          {!kk.passed && kk.warning && (
-            <div className="text-[10px] font-mono text-destructive leading-snug">
-              {kk.warning}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+              Lin-KK validation
+            </span>
+            <span
+              className={
+                linKK.passed
+                  ? "inline-flex items-center rounded-md border border-graph-primary/40 bg-graph-primary/10 px-2 py-0.5 text-[10px] font-mono text-graph-primary"
+                  : linKK.residualRmsPct <= 10
+                    ? "inline-flex items-center rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-mono text-yellow-500"
+                    : "inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10px] font-mono text-destructive"
+              }
+              title="Passing supports consistency with linear, causal, stable EIS behavior within the measured frequency range. Does NOT prove the selected equivalent circuit is correct."
+            >
+              {linKK.passed ? "✓ Pass" : linKK.residualRmsPct <= 10 ? "⚠ Warning" : "✗ Fail"}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-[10px] font-mono text-muted-foreground">
+            <div>RMS res.: <span className="text-foreground">{linKK.residualRmsPct.toFixed(2)} %</span></div>
+            <div>Max res.: <span className="text-foreground">{linKK.maxResidualPct.toFixed(2)} %</span></div>
+            <div>RC: <span className="text-foreground">{linKK.tauCount}</span></div>
+          </div>
+          {linKK.warnings.length > 0 && (
+            <div className="text-[10px] font-mono text-yellow-500 leading-snug">
+              {linKK.warnings.join(" · ")}
             </div>
           )}
+          <div className="text-[9px] font-mono text-muted-foreground/70 leading-snug">
+            Passing supports consistency with linear, causal, stable EIS behavior within the measured frequency range.
+          </div>
         </div>
       )}
 
+      {/* Approx KK is no longer rendered in the main UI. It remains in the
+          CSV export marked `approx_kk_informational_only=true` for traceability.
+          Lin-KK (above) is the consistency check shown to the user. */}
+      {false && kk && null}
+
+
       {/* Warburg slope */}
       {hasWarburg && typeof slope === "number" && (
-        <div className="flex items-center justify-between text-xs font-mono">
-          <span className="text-muted-foreground">Warburg slope</span>
-          <span className="flex items-center gap-2">
-            <span className="text-foreground">
-              {slope.toFixed(2)}
-              <span className="text-muted-foreground ml-2">(ideal 1.00)</span>
-            </span>
-            {slopeBad && (
-              <span className="inline-flex items-center rounded-md border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[9px] font-mono text-yellow-500">
-                ⚠
-              </span>
-            )}
-          </span>
-        </div>
+        <TooltipProvider delayDuration={150}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center justify-between text-xs font-mono cursor-help">
+                <span className="text-muted-foreground">Warburg slope</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-foreground">
+                    {slope.toFixed(2)}
+                    <span className="text-muted-foreground ml-2">(ideal 1.00)</span>
+                    {Number.isFinite(warburg?.r2Imag ?? NaN) && (
+                      <span className="text-muted-foreground ml-2">R²={warburg!.r2Imag!.toFixed(3)}</span>
+                    )}
+                  </span>
+                  {slopeBad && (
+                    <span className="inline-flex items-center rounded-md border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[9px] font-mono text-yellow-500">
+                      ⚠
+                    </span>
+                  )}
+                </span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs text-xs font-mono">
+              Warburg slope is estimated from the selected low-frequency tail
+              (method: regression of -Im(Z) vs 1/√ω). Ideal semi-infinite
+              diffusion gives slope ≈ 1 in -Z'' vs Z'. Values far from 1
+              indicate the selected region is not a pure 45° Warburg tail, or
+              the circuit includes mixed kinetic/capacitive effects.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       )}
 
       {/* Existing CNLS warnings */}

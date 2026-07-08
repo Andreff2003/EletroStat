@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { EISDataPoint, FETTransferPoint, FETTimePoint } from "./useSimulatedData";
 import type { CVDataPoint } from "./useSimulatedCVData";
 import { parseCVWebSocketMessage } from "./useSimulatedCVData";
+import type { SWVDataPoint } from "@/types/swv";
 
 /**
  * ============================================================
@@ -12,8 +13,8 @@ import { parseCVWebSocketMessage } from "./useSimulatedCVData";
  *
  * EXPECTED JSON MESSAGES FROM ESP32:
  *
- * For EIS data:
- *   { "type": "eis", "zReal": 150.3, "zImag": 200.1, "frequency": 1000, "zMag": 250.2, "phase": -53.1 }
+ * For EIS data (zImag is true Im(Z) — NEGATIVE for capacitive behaviour):
+ *   { "type": "eis", "zReal": 150.3, "zImag": -200.1, "frequency": 1000, "zMag": 250.2, "phase": -53.1 }
  *
  * For FET transfer curve:
  *   { "type": "fet_transfer", "vg": 0.5, "id": 12.3, "curve": "baseline" }
@@ -55,6 +56,12 @@ interface UseWebSocketDataReturn {
   cvStatus: "idle" | "running" | "done" | "error";
   cvError: string | null;
 
+  // SWV data
+  swvData: SWVDataPoint[];
+  clearSWV: () => void;
+  swvStatus: "idle" | "running" | "done" | "error";
+  swvError: string | null;
+
   // Send commands to ESP32
   sendCommand: (command: string, payload?: Record<string, unknown>) => void;
 }
@@ -71,6 +78,10 @@ export function useWebSocketData(): UseWebSocketDataReturn {
   const [cvData, setCvData] = useState<CVDataPoint[]>([]);
   const [cvStatus, setCvStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [cvError, setCvError] = useState<string | null>(null);
+  const [swvData, setSwvData] = useState<SWVDataPoint[]>([]);
+  const [swvStatus, setSwvStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [swvError, setSwvError] = useState<string | null>(null);
+  const swvIndexRef = useRef(0);
 
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -114,33 +125,52 @@ export function useWebSocketData(): UseWebSocketDataReturn {
           const msg = JSON.parse(event.data);
 
           switch (msg.type) {
-            case "eis":
-              if (msg.filename) {
-                setLastFilename(msg.filename);
+            case "eis": {
+              if (msg.filename) setLastFilename(msg.filename);
+              const zReal = Number(msg.zReal);
+              const zImag = Number(msg.zImag);
+              const frequency = Number(msg.frequency);
+              if (!Number.isFinite(zReal) || !Number.isFinite(zImag) || !Number.isFinite(frequency) || frequency <= 0) {
+                console.warn("[ws] eis ignored — invalid frame", msg);
+                break;
               }
-              setEisData((prev) => [
-                ...prev,
-                {
-                  zReal: msg.zReal,
-                  zImag: msg.zImag,
-                  frequency: msg.frequency,
-                  zMag: msg.zMag ?? Math.sqrt(msg.zReal ** 2 + msg.zImag ** 2),
-                  phase: msg.phase ?? Math.atan2(-msg.zImag, msg.zReal) * (180 / Math.PI),
-                },
-              ]);
+              const zMagRaw = Number(msg.zMag);
+              const zMag = Number.isFinite(zMagRaw) && zMagRaw > 0
+                ? zMagRaw
+                : Math.sqrt(zReal * zReal + zImag * zImag);
+              const phaseRaw = Number(msg.phase);
+              // zImag is true Im(Z) — phase = atan2(Im, Re); negative for capacitive.
+              const phase = Number.isFinite(phaseRaw)
+                ? phaseRaw
+                : Math.atan2(zImag, zReal) * (180 / Math.PI);
+              setEisData((prev) => [...prev, { zReal, zImag, frequency, zMag, phase }]);
               break;
+            }
 
-            case "fet_transfer":
-              if (msg.curve === "analyte") {
-                setFetAnalyte((prev) => [...prev, { vg: msg.vg, id: msg.id }]);
-              } else {
-                setFetBaseline((prev) => [...prev, { vg: msg.vg, id: msg.id }]);
+            case "fet_transfer": {
+              const vg = Number(msg.vg);
+              const id = Number(msg.id);
+              const curve = msg.curve;
+              if (!Number.isFinite(vg) || !Number.isFinite(id) ||
+                  (curve !== "baseline" && curve !== "analyte")) {
+                console.warn("[ws] fet_transfer ignored — invalid frame", msg);
+                break;
               }
+              if (curve === "analyte") setFetAnalyte((prev) => [...prev, { vg, id }]);
+              else setFetBaseline((prev) => [...prev, { vg, id }]);
               break;
+            }
 
-            case "fet_time":
-              setFetTimeData((prev) => [...prev, { time: msg.time, id: msg.id }]);
+            case "fet_time": {
+              const time = Number(msg.time);
+              const id = Number(msg.id);
+              if (!Number.isFinite(time) || time < 0 || !Number.isFinite(id)) {
+                console.warn("[ws] fet_time ignored — invalid frame", msg);
+                break;
+              }
+              setFetTimeData((prev) => [...prev, { time, id }]);
               break;
+            }
 
             case "cv_data": {
               const pt = parseCVWebSocketMessage(msg);
@@ -169,6 +199,61 @@ export function useWebSocketData(): UseWebSocketDataReturn {
               setCvStatus("error");
               setCvError(typeof msg.message === "string" ? msg.message : "Unknown CV error");
               console.warn("[ws] cv_error", msg);
+              break;
+
+            case "swv_data": {
+              // Accept alternate field names commonly seen on ESP32 firmwares.
+              const E = Number(msg.E ?? msg.e ?? msg.potential ?? msg.potential_V);
+              const iFwdRaw = msg.IForward ?? msg.ifwd ?? msg.i_forward;
+              const iRevRaw = msg.IReverse ?? msg.irev ?? msg.i_reverse;
+              const iNetRaw = msg.INet ?? msg.inet ?? msg.current ?? msg.current_uA;
+              const iFwd = iFwdRaw != null ? Number(iFwdRaw) : NaN;
+              const iRev = iRevRaw != null ? Number(iRevRaw) : NaN;
+              let iNet = iNetRaw != null ? Number(iNetRaw) : NaN;
+              if (!Number.isFinite(iNet) && Number.isFinite(iFwd) && Number.isFinite(iRev)) {
+                iNet = iFwd - iRev;
+              }
+              if (!Number.isFinite(E) || !Number.isFinite(iNet)) {
+                console.warn("[ws] swv_data ignored — invalid frame", msg);
+                break;
+              }
+              const idx = Number.isFinite(Number(msg.index))
+                ? Number(msg.index)
+                : swvIndexRef.current;
+              const time = Number.isFinite(Number(msg.time ?? msg.t ?? msg.time_s))
+                ? Number(msg.time ?? msg.t ?? msg.time_s)
+                : idx * 0.04;
+              const direction = msg.direction === "cathodic" ? "cathodic" : "anodic";
+              setSwvData((prev) => [...prev, {
+                E,
+                IForward: Number.isFinite(iFwd) ? iFwd : 0,
+                IReverse: Number.isFinite(iRev) ? iRev : 0,
+                INet: iNet,
+                time,
+                index: idx,
+                direction,
+              }]);
+              swvIndexRef.current = idx + 1;
+              break;
+            }
+
+            case "swv_status": {
+              const s = msg.status;
+              if (s === "idle" || s === "running" || s === "done" || s === "error") {
+                setSwvStatus(s);
+                if (s !== "error") setSwvError(null);
+              }
+              break;
+            }
+
+            case "swv_done":
+              setSwvStatus("done");
+              break;
+
+            case "swv_error":
+              setSwvStatus("error");
+              setSwvError(typeof msg.message === "string" ? msg.message : "Unknown SWV error");
+              console.warn("[ws] swv_error", msg);
               break;
 
             default:
@@ -205,6 +290,12 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     setCvStatus("idle");
     setCvError(null);
   }, []);
+  const clearSWV = useCallback(() => {
+    setSwvData([]);
+    setSwvStatus("idle");
+    setSwvError(null);
+    swvIndexRef.current = 0;
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -229,6 +320,10 @@ export function useWebSocketData(): UseWebSocketDataReturn {
     clearCV,
     cvStatus,
     cvError,
+    swvData,
+    clearSWV,
+    swvStatus,
+    swvError,
     sendCommand,
   };
 }

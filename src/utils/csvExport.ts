@@ -10,18 +10,46 @@ import {
   randlesSevcikIpUA,
   responseFor,
 } from "@/utils/cvCalibration";
+import {
+  CV_DEFAULT_D_CM2_S,
+  CV_E0_PRIME_DEFAULT_V,
+  CV_SOLVER_DEFAULT_SPATIAL_NODES,
+  CV_SOLVER_DEFAULT_STEP_V,
+  CV_SOLVER_DOMAIN_RULE,
+  CV_T_DEFAULT_K,
+} from "@/utils/cvConstants";
+import {
+  type MeasurementNotes,
+  shortNotesSummary,
+  sanitizeNotesForCSV,
+  sanitizeMeasurementNotes,
+} from "@/utils/measurementNotes";
+import type { CVMeasurementNotes } from "@/utils/cvMeasurementNotes";
 import type { StoredMeasurement } from "./sessionStore";
 import { getActivityLog, type ActivityEntry } from "./activityLog";
 
+/** Normalise a possibly-legacy `notes` field (string or object) for compact CSV display. */
+function notesCell(n: MeasurementNotes | string | undefined | null): string {
+  if (n == null) return "N/A";
+  if (typeof n === "string") return sanitizeNotesForCSV(n);
+  const summary = shortNotesSummary(n);
+  return summary ? sanitizeNotesForCSV(summary) : "N/A";
+}
+
 // ───────────────────────── helpers ─────────────────────────
 
-const DELIM = ",";
+const DELIM = ";";
 const BOM = "\uFEFF";
+const EXCEL_SEP_HINT = `sep=${DELIM}\n`;
 const SECTION_PAD = 8; // empty columns after section header
 
-/** Escape a CSV field per RFC 4180: quote if it contains comma, quote, CR or LF. */
+/**
+ * Escape a CSV field. Quote when it contains the delimiter (`;`), a double
+ * quote, or any newline. Numeric decimal point (`.`) is preserved so the file
+ * stays compatible with Python/R/Origin while opening cleanly in Excel (EU).
+ */
 function csvEscape(s: string): string {
-  if (/[",\r\n]/.test(s)) {
+  if (/[";\r\n]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
@@ -66,7 +94,10 @@ function toRow(cells: (string | number)[]): string {
 }
 
 function downloadTSV(filename: string, content: string) {
-  const blob = new Blob([BOM + content], { type: "text/csv;charset=utf-8;" });
+  // Prepend Excel "sep=;" hint so European Excel installs split columns correctly
+  // without depending on the user's regional list separator. Decimals stay as `.`.
+  const body = EXCEL_SEP_HINT + content;
+  const blob = new Blob([BOM + body], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -86,7 +117,7 @@ function metaRow(measurementsCount: number, source: ExportSource): string {
 
 const BLANK = "\n\n";
 
-export type ExportSource = "simulated" | "live";
+export type ExportSource = "simulated" | "live" | "imported" | "unknown";
 
 export interface CalibrationExportPoint {
   concentration: number;
@@ -94,6 +125,21 @@ export interface CalibrationExportPoint {
   raw: number;
   timestamp: number;
   mode?: "eis" | "fet";
+  measurementId?: string;
+  sampleId?: string;
+  electrodeId?: string;
+  notesShort?: string;
+  // BioFET-specific traceability
+  deltaVt_mV_signed?: number;
+  calibrationSignal_mV_used?: number;
+  responseMode?: "auto" | "signed" | "absolute";
+  responseSign?: 1 | -1;
+  vtBaseline?: number;
+  vtAnalyte?: number;
+  vtMethod?: string;
+  vtFitR2?: number | null;
+  vtRegionPoints?: number;
+  vtWarning?: string;
 }
 
 // ───────────────────────── section builders ─────────────────────────
@@ -150,14 +196,49 @@ const PROC_HEADERS = [
   "Vg Step (mV)",
   "Interval (ms)",
   "Notes",
+  // EIS provenance / quality (appended; FET & CV rows pad with N/A).
+  "Fit Model",
+  "Fit Source",
+  "Weighted SSR / dof",
+  "RMSE Weighted (%)",
+  "Fit Range Min (Hz)",
+  "Fit Range Max (Hz)",
+  "KK Method",
+  "Warburg Method",
+  "Warburg R²",
+  "Covariance Warning",
+  "Extrapolation Present",
+  "Covariance Method",
+  "Lin-KK Passed",
+  "Lin-KK RMS Residual (%)",
+  "Lin-KK Max Residual (%)",
+  "Lin-KK Tau Count",
+  "Approx KK Informational Only",
 ];
+const EIS_EXTRA_PAD = 16; // count of EIS-extra columns (keep in sync with PROC_HEADERS).
 
 const CAL_HEADERS = [
-  "Concentration (nM)",
-  "Signal (ΔRct Ω or ΔVt mV)",
-  "Raw Value",
-  "Timestamp",
+  "concentration_nM",
+  "signal",
+  "raw",
+  "timestamp",
+  "mode",
+  "measurement_id",
+  "sample_id",
+  "electrode_id",
+  "notes_short",
+  "deltaVt_mV_signed",
+  "calibration_signal_mV_used",
+  "responseMode",
+  "responseSign",
+  "vt_baseline_V",
+  "vt_analyte_V",
+  "vt_method",
+  "vt_fit_r2",
+  "vt_region_points",
+  "vt_warning",
 ];
+const CAL_PAD = CAL_HEADERS.length;
 
 function sectionHeader(label: string): string {
   // First cell holds the section marker; pad with empty cells so it sits alone in column A.
@@ -210,8 +291,8 @@ function buildRawSection(measurements: StoredMeasurement[]): string {
         lines.push(toRow([m.id, ts, "fet_marker", fmtNum(m.concentration), "N/A", "N/A", fmtNum(mk.time), fmtStr(mk.label)]));
       }
     }
-  } else {
-    // Mixed: use a unified superset schema.
+  } else if (hasEis && hasFet) {
+    // Mixed EIS + FET: use a unified superset schema.
     const headers = [
       "Measurement ID", "Timestamp", "Mode", "Concentration (nM)",
       "Frequency (Hz)", "Z Real (Ω)", "Z Imag (Ω)", "|Z| (Ω)", "Phase (°)",
@@ -228,7 +309,7 @@ function buildRawSection(measurements: StoredMeasurement[]): string {
             "N/A", "N/A", "N/A", "N/A",
           ]));
         }
-      } else {
+      } else if (m.mode === "fet") {
         for (const p of m.baseline) {
           lines.push(toRow([m.id, ts, "fet_baseline", fmtNum(m.concentration), "N/A", "N/A", "N/A", "N/A", "N/A", fmtNum(p.vg), fmtNum(p.id), "N/A", "N/A"]));
         }
@@ -241,6 +322,67 @@ function buildRawSection(measurements: StoredMeasurement[]): string {
         for (const mk of m.markers) {
           lines.push(toRow([m.id, ts, "fet_marker", fmtNum(m.concentration), "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", fmtNum(mk.time), fmtStr(mk.label)]));
         }
+      }
+      // CV raw is emitted in the dedicated CV section below.
+    }
+  }
+  // CV raw data — emitted as its own block so columns are CV-specific.
+  const cvList = measurements.filter((m): m is Extract<StoredMeasurement, { mode: "cv" }> => m.mode === "cv");
+  if (cvList.length > 0) {
+    lines.push("");
+    lines.push(sectionHeader("RAW CV DATA"));
+    lines.push(toRow([
+      "measurement_id", "timestamp", "mode", "concentration_mM",
+      "point_index", "time_s", "cycle", "branch",
+      "E_V", "I_raw_uA", "baseline_uA", "I_corrected_uA",
+    ]));
+    for (const m of cvList) {
+      const ts = fmtTs(m.measurementTimestamp ?? m.timestamp);
+      const mid = m.measurementId ?? m.id;
+      const useCorrected =
+        m.metrics?.correctedData &&
+        m.metrics.correctedData.length === m.data.length;
+      for (let i = 0; i < m.data.length; i++) {
+        const p = m.data[i];
+        const cp = useCorrected ? m.metrics!.correctedData![i] : undefined;
+        lines.push(toRow([
+          mid, ts, "cv", fmtSig(m.concentration ?? null),
+          `${i}`, fmtSig(p.t), `${p.cycle}`, fmtStr(p.branch ?? ""),
+          fmtSig(p.E), fmtSig(p.I),
+          fmtSig(cp?.baseline ?? p.baseline),
+          fmtSig(cp?.Icorr ?? p.Icorr),
+        ]));
+      }
+    }
+  }
+
+  // SWV raw data — own block, SWV-specific columns.
+  const swvList = measurements.filter(
+    (m): m is Extract<StoredMeasurement, { mode: "swv" }> => m.mode === "swv",
+  );
+  if (swvList.length > 0) {
+    lines.push("");
+    lines.push(sectionHeader("RAW SWV DATA"));
+    lines.push(toRow([
+      "measurement_id", "timestamp", "mode", "concentration_nM",
+      "point_index", "time_s", "E_V",
+      "I_forward_uA", "I_reverse_uA", "I_net_raw_uA",
+      "baseline_uA", "I_net_corrected_uA", "direction",
+    ]));
+    for (const m of swvList) {
+      const ts = fmtTs(m.measurementTimestamp ?? m.timestamp);
+      const mid = m.measurementId ?? m.id;
+      const corr = m.correctedData && m.correctedData.length === m.data.length ? m.correctedData : null;
+      for (let i = 0; i < m.data.length; i++) {
+        const p = m.data[i];
+        const cp = corr ? corr[i] : undefined;
+        lines.push(toRow([
+          mid, ts, "swv", fmtSig(m.concentration ?? null),
+          `${i}`, fmtSig(p.time), fmtSig(p.E),
+          fmtSig(p.IForward), fmtSig(p.IReverse), fmtSig(p.INet),
+          fmtSig(cp?.baseline ?? null), fmtSig(cp?.ICorrected ?? null),
+          fmtStr(p.direction),
+        ]));
       }
     }
   }
@@ -278,22 +420,92 @@ function buildProcessedSection(measurements: StoredMeasurement[]): string {
         fmtNum(e.deltaRctNormPct),
         fmtNum(m.params.freqMin), fmtNum(m.params.freqMax),
         fmtNum(m.params.points), fmtNum(m.params.amplitude),
-        e.warnFlags && e.warnFlags.length > 0 ? e.warnFlags.join(" | ") : "N/A",
+        e.warnFlags && e.warnFlags.length > 0 ? sanitizeNotesForCSV(e.warnFlags.join(" | ")) : "N/A",
         "N/A", "N/A", "N/A", "N/A", "N/A",
-        fmtStr(m.notes),
+        notesCell(m.notes),
+        // EIS provenance / quality
+        e.fitModel ?? "N/A",
+        e.fitSource ?? (e.fitConverged ? "manual_randles" : "geometric"),
+        fmtNum(e.weightedSsrPerDof),
+        fmtNum(e.rmseWeightedPercent),
+        fmtNum(e.fitRangeMinHz),
+        fmtNum(e.fitRangeMaxHz),
+        e.kkMethod ?? (e.kkPassed != null ? "approximate_residual" : "none"),
+        e.warburgMethod ?? (e.warburgAw != null ? "regression_1_sqrt_omega_with_intercept" : "N/A"),
+        fmtNum(e.warburgR2),
+        e.covarianceWarning == null ? "N/A" : e.covarianceWarning ? "Yes" : "No",
+        e.extrapolationPresent == null ? "N/A" : e.extrapolationPresent ? "Yes" : "No",
+        e.covarianceMethod ?? "log_space",
+        e.linKKPassed == null ? "N/A" : e.linKKPassed ? "Yes" : "No",
+        fmtNum(e.linKKRmsResidualPct),
+        fmtNum(e.linKKMaxResidualPct),
+        e.linKKTauCount == null ? "N/A" : String(e.linKKTauCount),
+        e.approxKkInformationalOnly == null ? "true" : e.approxKkInformationalOnly ? "true" : "false",
       ]));
-    } else {
+    } else if (m.mode === "fet") {
+      const fe = m.extracted;
       lines.push(toRow([
         m.id, ts, "fet", fmtNum(m.concentration),
-        // Rs, Rct, Cdl, Aw, f0, Warburg Slope, Warburg Aw, KK Residual, KK Passed,
-        // Fit Error, Fit Converged, ΔRct, ΔRct%, freqMin, freqMax, points, amplitude, warnFlags
         "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
         "N/A", "N/A", "N/A", "N/A",
         "N/A", "N/A", "N/A", "N/A", "N/A",
-        fmtNum(m.extracted.Vt),
+        fmtNum(fe.vtAnalyte ?? fe.Vt),
         fmtNum(m.params.vgMin), fmtNum(m.params.vgMax),
         fmtNum(m.params.vgStep), fmtNum(m.params.intervalMs),
-        fmtStr(m.notes),
+        notesCell(m.notes),
+        // FET-specific traceability appended into the EIS-extra columns.
+        // Columns: vt_baseline_V, vt_analyte_V, deltaVt_mV, deltaVt_mV_signed,
+        //   calibration_signal_mV_used, vt_method, vt_fit_r2, vt_region_points,
+        //   vt_warning, ion_uA, ioff_uA, ion_ioff_ratio,
+        //   subthreshold_slope_mV_dec, baseline_stability_noise_pct,
+        //   responseMode, responseSign
+        fmtNum(fe.vtBaseline),
+        fmtNum(fe.vtAnalyte ?? fe.Vt),
+        fmtNum(fe.deltaVt_mV),
+        fmtNum(fe.deltaVt_mV_signed ?? fe.deltaVt_mV),
+        fmtNum(fe.calibrationSignal_mV_used),
+        fe.vtMethod ?? "N/A",
+        fmtNum(fe.vtFitR2),
+        fe.vtRegionPoints == null ? "N/A" : String(fe.vtRegionPoints),
+        fe.vtWarning ?? "N/A",
+        fmtNum(fe.ion_uA),
+        fmtNum(fe.ioff_uA),
+        fmtNum(fe.ionIoffRatio),
+        fmtNum(fe.subthresholdSlope_mV_dec),
+        fmtNum(fe.baselineStabilityNoisePct),
+        fe.responseMode ?? "N/A",
+        fe.responseSign == null ? "N/A" : String(fe.responseSign),
+      ]));
+    } else if (m.mode === "cv") {
+      // CV row — full CV details are exported via exportCVData; this is a session summary.
+      lines.push(toRow([
+        m.id, ts, "cv", fmtNum(m.concentration ?? null),
+        "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+        "N/A", "N/A", "N/A", "N/A",
+        fmtNum(m.params.scanRate), fmtNum(m.params.nCycles),
+        fmtNum(m.params.n), fmtNum(m.params.areaCm2),
+        m.params.cvModel,
+        "N/A", "N/A", "N/A", "N/A", "N/A",
+        notesCell(m.notes),
+        ...Array(EIS_EXTRA_PAD).fill("N/A"),
+      ]));
+    } else if (m.mode === "swv") {
+      // SWV summary row — full detail via exportSWVData.
+      lines.push(toRow([
+        m.id, ts, "swv", fmtNum(m.concentration ?? null),
+        "N/A", "N/A", "N/A", "N/A",
+        fmtNum(m.extracted.peakPotential_V),
+        "N/A", "N/A", "N/A", "N/A",
+        fmtNum(m.extracted.peakCurrentCorrected_uA),
+        m.extracted.peakDetected ? "Yes" : "No",
+        fmtNum(m.extracted.halfPeakWidth_mV),
+        fmtNum(m.extracted.snr),
+        fmtNum(m.params.startE), fmtNum(m.params.endE),
+        fmtNum(m.params.step_mV), fmtNum(m.params.amplitude_mV),
+        m.extracted.baselineMethodUsed ?? m.extracted.baselineMethod ?? "N/A",
+        "N/A", "N/A", "N/A", "N/A", "N/A",
+        notesCell(m.notes),
+        ...Array(EIS_EXTRA_PAD).fill("N/A"),
       ]));
     }
   }
@@ -305,10 +517,30 @@ function buildCalibrationSection(points: CalibrationExportPoint[]): string {
   lines.push(sectionHeader("CALIBRATION"));
   lines.push(toRow(CAL_HEADERS));
   if (points.length === 0) {
-    lines.push(toRow(["N/A", "N/A", "N/A", "N/A"]));
+    lines.push(toRow(Array(CAL_PAD).fill("N/A")));
   } else {
-    for (const p of [...points].sort((a, b) => a.concentration - b.concentration)) {
-      lines.push(toRow([fmtNum(p.concentration), fmtNum(p.signal), fmtNum(p.raw), fmtTs(p.timestamp)]));
+    for (const p of [...points].sort((a, b) => a.concentration - b.concentration || a.timestamp - b.timestamp)) {
+      lines.push(toRow([
+        fmtNum(p.concentration),
+        fmtNum(p.signal),
+        fmtNum(p.raw),
+        fmtTs(p.timestamp),
+        fmtStr(p.mode),
+        fmtStr(p.measurementId),
+        fmtStr(p.sampleId),
+        fmtStr(p.electrodeId),
+        fmtStr(p.notesShort),
+        fmtNum(p.deltaVt_mV_signed),
+        fmtNum(p.calibrationSignal_mV_used),
+        fmtStr(p.responseMode),
+        p.responseSign == null ? "N/A" : String(p.responseSign),
+        fmtNum(p.vtBaseline),
+        fmtNum(p.vtAnalyte),
+        fmtStr(p.vtMethod),
+        fmtNum(p.vtFitR2),
+        p.vtRegionPoints == null ? "N/A" : String(p.vtRegionPoints),
+        fmtStr(p.vtWarning),
+      ]));
     }
   }
   return lines.join("\n");
@@ -329,12 +561,276 @@ function buildActivitySection(): string {
   return lines.join("\n");
 }
 
+/**
+ * Per-CV-measurement metadata + processed metrics block for session export.
+ * One METADATA block + one PROCESSED row per CV measurement. Safe with
+ * missing metrics / notes (emits N/A).
+ */
+function buildSessionCVMetaAndMetrics(
+  measurements: StoredMeasurement[],
+): string {
+  const cvList = measurements.filter(
+    (m): m is Extract<StoredMeasurement, { mode: "cv" }> => m.mode === "cv",
+  );
+  if (cvList.length === 0) return "";
+  const blocks: string[] = [];
+  for (const m of cvList) {
+    const id = m.measurementId ?? m.id;
+    const ts = fmtTs(m.measurementTimestamp ?? m.timestamp);
+    const n = m.notes;
+    const metrics = m.metrics ?? null;
+    blocks.push(
+      [
+        sectionHeader(`CV MEASUREMENT METADATA — ${id}`),
+        toRow(["measurement_id", id]),
+        toRow(["measurement_timestamp", ts]),
+        toRow(["mode", "CV"]),
+        toRow(["concentration_mM", fmtSig(m.concentration ?? null)]),
+        toRow(["cv_model", fmtStr(m.params.cvModel)]),
+        toRow(["scan_rate_mVs", fmtSig(m.params.scanRate)]),
+        toRow(["E_start_V", fmtSig(m.params.eStart)]),
+        toRow(["E_vertex1_V", fmtSig(m.params.eVertex1)]),
+        toRow(["E_vertex2_V", fmtSig(m.params.eVertex2)]),
+        toRow(["n_cycles", `${m.params.nCycles}`]),
+        toRow(["area_cm2", fmtSig(m.params.areaCm2)]),
+        toRow(["n_electrons", `${m.params.n}`]),
+        toRow(["baseline_method_input", metrics?.baselineMethodInput ?? "N/A"]),
+        toRow(["baseline_resolved_method", metrics?.baselineResolvedMethod ?? "N/A"]),
+        toRow(["title", fmtStr(n?.title)]),
+        toRow(["operator", fmtStr(n?.operator)]),
+        toRow(["sample_id", fmtStr(n?.sampleId)]),
+        toRow(["electrode_id", fmtStr(n?.electrodeId)]),
+        toRow(["analyte", fmtStr(n?.analyte)]),
+        toRow(["electrolyte", fmtStr(n?.electrolyte)]),
+        toRow(["reference_electrode", fmtStr(n?.referenceElectrode)]),
+        toRow(["working_electrode", fmtStr(n?.workingElectrode)]),
+        toRow(["counter_electrode", fmtStr(n?.counterElectrode)]),
+        toRow(["temperature_C", fmtSig(n?.temperature_C)]),
+        toRow(["pH", fmtSig(n?.pH)]),
+        toRow(["tags", n?.tags && n.tags.length > 0 ? n.tags.join("|") : "N/A"]),
+        toRow(["notes", sanitizeNotesForCSV(n?.notes)]),
+      ].join("\n"),
+    );
+  }
+  const procHeaders = [
+    "measurement_id", "mode",
+    "Epa_V", "Epc_V", "deltaEp_mV", "E0prime_V",
+    "Ipa_raw_uA", "Ipc_raw_uA",
+    "Ipa_corrected_uA", "Ipc_corrected_uA",
+    "abs_Ipa_over_Ipc",
+    "noise_uA", "SNR_anodic", "SNR_cathodic",
+    "n_est", "n_est_valid",
+    "D_apparent_cm2_s", "D_status", "D_peak_source",
+    "reversibility",
+    "baseline_method", "baseline_resolved_method",
+    "warnings",
+  ];
+  const proc: string[] = [sectionHeader("PROCESSED CV RESULTS"), toRow(procHeaders)];
+  for (const m of cvList) {
+    const id = m.measurementId ?? m.id;
+    const metrics = m.metrics;
+    if (!metrics) {
+      proc.push(toRow([id, "cv", ...procHeaders.slice(2).map(() => "N/A")]));
+      continue;
+    }
+    proc.push(toRow([
+      id, "cv",
+      fmtSig(metrics.Epa), fmtSig(metrics.Epc), fmtSig(metrics.deltaEp), fmtSig(metrics.E0prime),
+      fmtSig(metrics.IpaRaw), fmtSig(metrics.IpcRaw),
+      fmtSig(metrics.IpaCorrected), fmtSig(metrics.IpcCorrected),
+      fmtSig(metrics.IpaIpcRatio),
+      fmtSig(metrics.noise_uA), fmtSig(metrics.SNR_anodic), fmtSig(metrics.SNR_cathodic),
+      fmtSig(metrics.n_electrons), metrics.n_est_valid ? "Yes" : "No",
+      fmtSig(metrics.D_apparent), metrics.D_status, metrics.D_peak_source ?? "none",
+      metrics.reversibility,
+      metrics.baselineMethod, metrics.baselineResolvedMethod,
+      metrics.warnings.length ? metrics.warnings.join(" | ") : "N/A",
+    ]));
+  }
+  blocks.push(proc.join("\n"));
+  return blocks.join(BLANK);
+}
+
 // ───────────────────────── public exports ─────────────────────────
 
-export function exportEISData(data: EISDataPoint[], source: ExportSource = "simulated") {
-  const id = `eis_${Date.now()}`;
-  const ts = fmtTs(Date.now());
-  const rawLines = [sectionHeader("RAW DATA"), toRow(RAW_EIS_HEADERS)];
+export interface ModeExportMetadata {
+  notes?: MeasurementNotes;
+  measurementId?: string;
+  measurementTimestamp?: number;
+}
+
+/**
+ * Build a small "MEASUREMENT METADATA" key/value block for EIS/FET exports.
+ * Always emits the same row set so columns stay stable even when notes are absent.
+ */
+function buildNotesMetaSection(
+  technique: "EIS" | "BioFET-transfer" | "BioFET-time",
+  source: ExportSource,
+  meta: ModeExportMetadata,
+  fallbackId: string,
+  fallbackTs: number,
+): string {
+  const n = meta.notes;
+  const rows = [
+    sectionHeader("MEASUREMENT METADATA"),
+    toRow(["measurement_id", meta.measurementId ?? fallbackId]),
+    toRow(["measurement_timestamp", fmtTs(meta.measurementTimestamp ?? fallbackTs)]),
+    toRow(["technique", technique]),
+    toRow(["source", source]),
+    toRow(["title", fmtStr(n?.title)]),
+    toRow(["operator", fmtStr(n?.operator)]),
+    toRow(["sample_id", fmtStr(n?.sampleId)]),
+    toRow(["electrode_id", fmtStr(n?.electrodeId)]),
+    toRow(["analyte", fmtStr(n?.analyte)]),
+    toRow(["electrolyte", fmtStr(n?.electrolyte)]),
+    toRow(["reference_electrode", fmtStr(n?.referenceElectrode)]),
+    toRow(["working_electrode", fmtStr(n?.workingElectrode)]),
+    toRow(["counter_electrode", fmtStr(n?.counterElectrode)]),
+    toRow(["temperature_C", fmtSig(n?.temperature_C)]),
+    toRow(["pH", fmtSig(n?.pH)]),
+    toRow(["tags", n?.tags && n.tags.length > 0 ? n.tags.join("|") : "N/A"]),
+    toRow(["notes", sanitizeNotesForCSV(n?.notes)]),
+  ];
+  return rows.join("\n");
+}
+
+/**
+ * Optional payload of processed EIS fit results to include in the
+ * single-measurement EIS export. All fields optional — missing values
+ * render as N/A. Designed so the EIS CSV is self-contained for analysis
+ * without requiring the full session export.
+ */
+export interface EISExportFitOptions {
+  cnlsFit?: import("./eisFit").EISFitResult | null;
+  randlesFit?: import("./randlesFit").RandlesFitResult | null;
+  linKK?: import("./linKK").LinKKResult | null;
+  warburg?: import("./randlesFit").WarburgResult | null;
+  signalQuality?: unknown;
+  fitSource?: string;
+  fitRangeMinHz?: number;
+  fitRangeMaxHz?: number;
+}
+
+function buildEISProcessedFitSection(o: EISExportFitOptions): string {
+  const f = o.cnlsFit ?? null;
+  const r = o.randlesFit ?? null;
+  const model = f?.model ?? (r ? "randles" : undefined);
+  const Rs = f?.params.Rs ?? r?.Rs;
+  const Rct = f?.params.Rct ?? r?.Rct;
+  const Cdl = f?.params.Cdl ?? r?.Cdl;
+  const Q = f?.params.Q;
+  const nCpe = f?.params.n;
+  let f0: number | undefined;
+  if (model === "randles-cpe" && Rct && Q && nCpe && nCpe > 0) {
+    f0 = Math.pow(Rct * Q, -1 / nCpe) / (2 * Math.PI);
+  } else if (Rct && Cdl) {
+    f0 = 1 / (2 * Math.PI * Rct * Cdl);
+  } else {
+    f0 = r?.f0;
+  }
+  const wssr = f?.weightedSsrPerDof ?? f?.chiSquared ?? r?.chiSquared;
+  const rmsePct = wssr != null && Number.isFinite(wssr)
+    ? Math.sqrt(Math.max(wssr, 0)) * 100
+    : r?.fitErrorPct;
+  const fitRangeMin = o.fitRangeMinHz ?? f?.fitFreqRange?.min ?? r?.fitFreqRange?.min;
+  const fitRangeMax = o.fitRangeMaxHz ?? f?.fitFreqRange?.max ?? r?.fitFreqRange?.max;
+  const fitSource = o.fitSource
+    ?? (model === "randles-cpe" ? "cnls_randles_cpe" : f ? "cnls_randles" : r?.auto ? "auto_cnls_randles" : r ? "manual_randles" : "geometric");
+
+  const errPct = (name: string): string => {
+    const e = f?.errors?.[name] ?? r?.errors?.[name];
+    return Number.isFinite(e) ? `${(e as number).toFixed(2)}` : "N/A";
+  };
+
+  const rows: [string, string][] = [
+    ["fit_model", model ?? "N/A"],
+    ["fit_source", fitSource ?? "N/A"],
+    ["fit_converged", f ? (f.converged ? "Yes" : "No") : (r ? (r.fitErrorPct !== -1 ? "Yes" : "No") : "N/A")],
+    ["Rs_ohm", fmtSig(Rs)],
+    ["Rs_SE_pct", errPct("Rs")],
+    ["Rct_ohm", fmtSig(Rct)],
+    ["Rct_SE_pct", errPct("Rct")],
+    ["Cdl_F", model === "randles-cpe" ? "N/A" : fmtSig(Cdl)],
+    ["Cdl_uF", model === "randles-cpe" || Cdl == null ? "N/A" : fmtSig(Cdl * 1e6)],
+    ["Cdl_SE_pct", model === "randles-cpe" ? "N/A" : errPct("Cdl")],
+    ["Q_s_alpha_per_ohm", fmtSig(Q)],
+    ["Q_SE_pct", errPct("Q")],
+    ["n_cpe", fmtSig(nCpe)],
+    ["n_cpe_SE_pct", errPct("n")],
+    ["f0_Hz", fmtSig(f0)],
+    ["weighted_ssr_per_dof", fmtSig(wssr)],
+    ["rmse_weighted_percent", fmtSig(rmsePct)],
+    ["residual_noise_percent", fmtSig(rmsePct)],
+    ["fit_range_min_Hz", fmtSig(fitRangeMin)],
+    ["fit_range_max_Hz", fmtSig(fitRangeMax)],
+    ["n_points", fmtSig(f?.nPoints ?? r?.semicirclePoints)],
+    ["n_free_params", fmtSig(f?.nFreeParams)],
+    ["covariance_method", f?.covarianceMethod ?? "N/A"],
+    ["covariance_warning", f?.covarianceWarning == null ? "N/A" : f.covarianceWarning ? "Yes" : "No"],
+    ["extrapolation_present", f?.extrapolationPresent == null ? "N/A" : f.extrapolationPresent ? "Yes" : "No"],
+  ];
+  const lines = [sectionHeader("PROCESSED EIS FIT RESULTS")];
+  for (const [k, v] of rows) lines.push(toRow([k, v]));
+  const warns = [
+    ...(f?.warnings ?? []),
+    ...(r?.warnFlags ?? []),
+  ];
+  lines.push(toRow(["warnings", warns.length > 0 ? sanitizeNotesForCSV(warns.join(" | ")) : "N/A"]));
+  return lines.join("\n");
+}
+
+function buildEISLinKKSection(lk: import("./linKK").LinKKResult | null | undefined): string {
+  const lines = [sectionHeader("LIN-KK RESULTS")];
+  if (!lk) {
+    for (const k of [
+      "lin_kk_method", "lin_kk_passed", "lin_kk_rms_residual_percent",
+      "lin_kk_max_residual_percent", "lin_kk_tau_count",
+      "lin_kk_negative_Rk_count", "lin_kk_negative_Rk_percent", "lin_kk_warnings",
+    ]) lines.push(toRow([k, "N/A"]));
+    return lines.join("\n");
+  }
+  lines.push(toRow(["lin_kk_method", lk.method ?? "N/A"]));
+  lines.push(toRow(["lin_kk_passed", lk.passed ? "Yes" : "No"]));
+  lines.push(toRow(["lin_kk_rms_residual_percent", fmtSig(lk.residualRmsPct)]));
+  lines.push(toRow(["lin_kk_max_residual_percent", fmtSig(lk.maxResidualPct)]));
+  lines.push(toRow(["lin_kk_tau_count", fmtSig(lk.tauCount)]));
+  lines.push(toRow(["lin_kk_negative_Rk_count", fmtSig(lk.negativeRkCount)]));
+  lines.push(toRow(["lin_kk_negative_Rk_percent", fmtSig(lk.negativeRkPct)]));
+  lines.push(toRow(["lin_kk_warnings", lk.warnings && lk.warnings.length > 0
+    ? sanitizeNotesForCSV(lk.warnings.join(" | "))
+    : "N/A"]));
+  return lines.join("\n");
+}
+
+function buildEISWarburgSection(wb: import("./randlesFit").WarburgResult | null | undefined): string {
+  const lines = [sectionHeader("WARBURG RESULTS")];
+  if (!wb) {
+    for (const k of [
+      "warburg_method", "Aw_ohm_s_minus_half", "warburg_intercept_imag_ohm",
+      "warburg_slope_nyquist", "warburg_r2", "n_points", "warburg_warnings",
+    ]) lines.push(toRow([k, "N/A"]));
+    return lines.join("\n");
+  }
+  lines.push(toRow(["warburg_method", wb.method ?? "N/A"]));
+  lines.push(toRow(["Aw_ohm_s_minus_half", fmtSig(wb.Aw)]));
+  lines.push(toRow(["warburg_intercept_imag_ohm", fmtSig(wb.interceptImag)]));
+  lines.push(toRow(["warburg_slope_nyquist", fmtSig(wb.slope ?? wb.slopeNyquist)]));
+  lines.push(toRow(["warburg_r2", fmtSig(wb.r2Imag ?? wb.r2)]));
+  lines.push(toRow(["n_points", fmtSig(wb.nPoints)]));
+  const warns = wb.warnings ?? (wb.warburgWarning ? [wb.warburgWarning] : []);
+  lines.push(toRow(["warburg_warnings", warns.length > 0 ? sanitizeNotesForCSV(warns.join(" | ")) : "N/A"]));
+  return lines.join("\n");
+}
+
+export function exportEISData(
+  data: EISDataPoint[],
+  source: ExportSource = "simulated",
+  meta: ModeExportMetadata & EISExportFitOptions = {},
+) {
+  const now = Date.now();
+  const id = meta.measurementId ?? `eis_${now}`;
+  const ts = fmtTs(meta.measurementTimestamp ?? now);
+  const rawLines = [sectionHeader("RAW EIS DATA"), toRow(RAW_EIS_HEADERS)];
   for (const p of data) {
     rawLines.push(toRow([
       id, ts, "eis", "N/A",
@@ -343,20 +839,25 @@ export function exportEISData(data: EISDataPoint[], source: ExportSource = "simu
   }
   const out = [
     metaRow(1, source),
+    buildNotesMetaSection("EIS", source, meta, id, now),
     rawLines.join("\n"),
-    [sectionHeader("PROCESSED RESULTS"), toRow(PROC_HEADERS)].join("\n"),
-    [sectionHeader("CALIBRATION"), toRow(CAL_HEADERS)].join("\n"),
+    buildEISProcessedFitSection(meta),
+    buildEISLinKKSection(meta.linKK ?? null),
+    buildEISWarburgSection(meta.warburg ?? null),
   ].join(BLANK);
-  downloadTSV(`eis_data_${Date.now()}.tsv`, out);
+  downloadTSV(`eis_data_${now}.tsv`, out);
 }
+
 
 export function exportFETTransferData(
   baseline: FETTransferPoint[],
   analyte: FETTransferPoint[],
   source: ExportSource = "simulated",
+  meta: ModeExportMetadata = {},
 ) {
-  const id = `fet_${Date.now()}`;
-  const ts = fmtTs(Date.now());
+  const now = Date.now();
+  const id = meta.measurementId ?? `fet_${now}`;
+  const ts = fmtTs(meta.measurementTimestamp ?? now);
   const rawLines = [sectionHeader("RAW DATA"), toRow(RAW_FET_HEADERS)];
   for (const p of baseline) {
     rawLines.push(toRow([id, ts, "fet_baseline", "N/A", fmtNum(p.vg), fmtNum(p.id), "N/A", "N/A"]));
@@ -366,27 +867,134 @@ export function exportFETTransferData(
   }
   const out = [
     metaRow(1, source),
+    buildNotesMetaSection("BioFET-transfer", source, meta, id, now),
     rawLines.join("\n"),
     [sectionHeader("PROCESSED RESULTS"), toRow(PROC_HEADERS)].join("\n"),
     [sectionHeader("CALIBRATION"), toRow(CAL_HEADERS)].join("\n"),
   ].join(BLANK);
-  downloadTSV(`fet_transfer_${Date.now()}.tsv`, out);
+  downloadTSV(`fet_transfer_${now}.tsv`, out);
 }
 
-export function exportFETTimeData(data: FETTimePoint[], source: ExportSource = "simulated") {
-  const id = `fet_time_${Date.now()}`;
-  const ts = fmtTs(Date.now());
+export function exportFETTimeData(
+  data: FETTimePoint[],
+  source: ExportSource = "simulated",
+  meta: ModeExportMetadata = {},
+) {
+  const now = Date.now();
+  const id = meta.measurementId ?? `fet_time_${now}`;
+  const ts = fmtTs(meta.measurementTimestamp ?? now);
   const rawLines = [sectionHeader("RAW DATA"), toRow(RAW_FET_HEADERS)];
   for (const p of data) {
     rawLines.push(toRow([id, ts, "fet_time", "N/A", "N/A", fmtNum(p.id), fmtNum(p.time), "N/A"]));
   }
   const out = [
     metaRow(1, source),
+    buildNotesMetaSection("BioFET-time", source, meta, id, now),
     rawLines.join("\n"),
     [sectionHeader("PROCESSED RESULTS"), toRow(PROC_HEADERS)].join("\n"),
     [sectionHeader("CALIBRATION"), toRow(CAL_HEADERS)].join("\n"),
   ].join(BLANK);
-  downloadTSV(`fet_time_${Date.now()}.tsv`, out);
+  downloadTSV(`fet_time_${now}.tsv`, out);
+}
+
+
+/**
+ * Combined BioFET single-measurement export: metadata + raw transfer + raw
+ * time + processed BioFET results in one CSV. The processed block is
+ * BioFET-specific so values are easy to find without scrolling past the
+ * EIS schema.
+ */
+export interface FETExportMetrics {
+  vtBaseline?: number | null;
+  vtAnalyte?: number | null;
+  deltaVt_mV?: number | null;
+  deltaVt_mV_signed?: number | null;
+  calibrationSignal_mV_used?: number | null;
+  vtMethod?: string;
+  vtFitR2?: number | null;
+  vtRegionPoints?: number;
+  vtIoffUsed?: number;
+  vtWarning?: string;
+  ion_uA?: number | null;
+  ioff_uA?: number | null;
+  ionIoffRatio?: number | null;
+  subthresholdSlope_mV_dec?: number | null;
+  baselineStabilityNoisePct?: number | null;
+}
+
+export interface FETDataExportArgs {
+  baseline: FETTransferPoint[];
+  analyte: FETTransferPoint[];
+  timeData: FETTimePoint[];
+  markers?: { time: number; label: string }[];
+  source?: ExportSource;
+  meta?: ModeExportMetadata;
+  concentration?: number | null;
+  params?: { vgMin: number; vgMax: number; vgStep: number; intervalMs: number };
+  metrics?: FETExportMetrics;
+  responseMode?: "auto" | "signed" | "absolute";
+  responseSign?: 1 | -1;
+}
+
+export function exportFETData(args: FETDataExportArgs) {
+  const source = args.source ?? "simulated";
+  const meta = args.meta ?? {};
+  const now = Date.now();
+  const id = meta.measurementId ?? `fet_${now}`;
+  const ts = fmtTs(meta.measurementTimestamp ?? now);
+  const conc = args.concentration ?? null;
+
+  const rawTransfer = [
+    sectionHeader("RAW TRANSFER DATA"),
+    toRow(["measurement_id", "curve", "Vg_V", "Id_uA"]),
+  ];
+  for (const p of args.baseline) rawTransfer.push(toRow([id, "baseline", fmtNum(p.vg), fmtNum(p.id)]));
+  for (const p of args.analyte) rawTransfer.push(toRow([id, "analyte", fmtNum(p.vg), fmtNum(p.id)]));
+
+  const rawTime = [
+    sectionHeader("RAW TIME DATA"),
+    toRow(["measurement_id", "time_s", "Id_uA", "marker"]),
+  ];
+  for (const p of args.timeData) rawTime.push(toRow([id, fmtNum(p.time), fmtNum(p.id), "N/A"]));
+  for (const mk of (args.markers ?? [])) rawTime.push(toRow([id, fmtNum(mk.time), "N/A", fmtStr(mk.label)]));
+
+  const m = args.metrics ?? {};
+  const procRows = [
+    sectionHeader("PROCESSED BIOFET RESULTS"),
+    toRow(["key", "value"]),
+    toRow(["measurement_id", id]),
+    toRow(["concentration_nM", fmtNum(conc)]),
+    toRow(["vt_baseline_V", fmtNum(m.vtBaseline)]),
+    toRow(["vt_analyte_V", fmtNum(m.vtAnalyte)]),
+    toRow(["deltaVt_mV", fmtNum(m.deltaVt_mV)]),
+    toRow(["deltaVt_mV_signed", fmtNum(m.deltaVt_mV_signed ?? m.deltaVt_mV)]),
+    toRow(["calibration_signal_mV_used", fmtNum(m.calibrationSignal_mV_used)]),
+    toRow(["vt_method", fmtStr(m.vtMethod)]),
+    toRow(["vt_fit_r2", fmtNum(m.vtFitR2)]),
+    toRow(["vt_region_points", m.vtRegionPoints == null ? "N/A" : String(m.vtRegionPoints)]),
+    toRow(["vt_ioff_used_uA", fmtNum(m.vtIoffUsed)]),
+    toRow(["vt_warning", fmtStr(m.vtWarning)]),
+    toRow(["ion_uA", fmtNum(m.ion_uA)]),
+    toRow(["ioff_uA", fmtNum(m.ioff_uA)]),
+    toRow(["ion_ioff_ratio", fmtNum(m.ionIoffRatio)]),
+    toRow(["subthreshold_slope_mV_dec", fmtNum(m.subthresholdSlope_mV_dec)]),
+    toRow(["baseline_stability_noise_pct", fmtNum(m.baselineStabilityNoisePct)]),
+    toRow(["responseMode", fmtStr(args.responseMode)]),
+    toRow(["responseSign", args.responseSign == null ? "N/A" : String(args.responseSign)]),
+    toRow(["vgMin_V", fmtNum(args.params?.vgMin)]),
+    toRow(["vgMax_V", fmtNum(args.params?.vgMax)]),
+    toRow(["vgStep_mV", fmtNum(args.params?.vgStep)]),
+    toRow(["intervalMs", fmtNum(args.params?.intervalMs)]),
+  ];
+
+  const out = [
+    metaRow(1, source),
+    buildNotesMetaSection("BioFET-transfer", source, meta, id, now),
+    rawTransfer.join("\n"),
+    rawTime.join("\n"),
+    procRows.join("\n"),
+  ].join(BLANK);
+  downloadTSV(`fet_data_${now}.tsv`, out);
 }
 
 export function exportSessionCSV(
@@ -395,13 +1003,16 @@ export function exportSessionCSV(
 ) {
   const source = options.source ?? "simulated";
   const calibration = options.calibration ?? [];
-  const out = [
+  const cvBlock = buildSessionCVMetaAndMetrics(measurements);
+  const sections = [
     metaRow(measurements.length, source),
     buildRawSection(measurements),
     buildProcessedSection(measurements),
-    buildCalibrationSection(calibration),
-    buildActivitySection(),
-  ].join(BLANK);
+  ];
+  if (cvBlock) sections.push(cvBlock);
+  sections.push(buildCalibrationSection(calibration));
+  sections.push(buildActivitySection());
+  const out = sections.join(BLANK);
   downloadTSV(`helpstat_session_${Date.now()}.tsv`, out);
 }
 
@@ -410,9 +1021,10 @@ export function exportCalibrationCSV(
   points: CalibrationExportPoint[],
   source: ExportSource = "simulated",
 ) {
+  const stamped = points.map((p) => ({ ...p, mode: p.mode ?? mode }));
   const out = [
-    metaRow(points.length, source),
-    buildCalibrationSection(points),
+    metaRow(stamped.length, source),
+    buildCalibrationSection(stamped),
   ].join(BLANK);
   downloadTSV(`calibration_${mode}_${Date.now()}.tsv`, out);
 }
@@ -445,7 +1057,15 @@ export interface CVExportParams {
   cMM: number;
   areaCm2: number;
   cvModel: string;
+  /** Optional logbook / measurement notes — purely metadata. */
+  notes?: CVMeasurementNotes;
+  /** Stable measurement id (cv_YYYYMMDD_HHMMSS_<rand>). */
+  measurementId?: string;
+  /** Unix ms when the measurement started. */
+  measurementTimestamp?: number;
 }
+
+// sanitizeNotesForCSV imported from @/utils/measurementNotes
 
 /**
  * Pure builder — assembles the CV CSV/TSV body as a string. Exposed so unit
@@ -459,20 +1079,44 @@ export function buildCVExportText(
   source: ExportSource = "simulated",
   plotMode: "raw" | "corrected" = "raw",
 ): string {
-  const id = `cv_${Date.now()}`;
-  const ts = fmtTs(Date.now());
+  const id = cvParams.measurementId ?? `cv_${Date.now()}`;
+  const ts = fmtTs(cvParams.measurementTimestamp ?? Date.now());
+  const notes = cvParams.notes;
+  const isReversible = cvParams.cvModel === "reversible";
+  const isSimulated = source === "simulated";
+  // Solver provenance is meaningful only for simulated data. Live/hardware/imported
+  // curves were not produced by the in-app solver — never advertise solver fields.
+  const simulationModel = isSimulated
+    ? isReversible
+      ? "reversible-diffusion"
+      : "quasi-reversible-approx"
+    : source === "live"
+      ? "not_applicable_live_hardware_data"
+      : source === "imported"
+        ? "not_applicable_imported_data"
+        : "unknown";
+  const solverType = isSimulated
+    ? isReversible
+      ? "implicit-diffusion-nernst"
+      : "butler-volmer-cottrell-approx"
+    : "not_applicable";
+  const solverField = (v: string) => (isSimulated ? v : "n/a");
   const meta = [
     sectionHeader("METADATA"),
+    toRow(["measurement_id", id]),
+    toRow(["measurement_timestamp", ts]),
     toRow(["technique", "CV"]),
     toRow(["timestamp", ts]),
     toRow(["source", source]),
     toRow(["cv_model", cvParams.cvModel]),
-    toRow([
-      "simulation_model",
-      cvParams.cvModel === "reversible"
-        ? "reversible-diffusion"
-        : "quasi-reversible-bv-cottrell",
-    ]),
+    toRow(["simulation_model", simulationModel]),
+    toRow(["solver_type", solverType]),
+    toRow(["solver_step_V", solverField(fmtSig(CV_SOLVER_DEFAULT_STEP_V))]),
+    toRow(["solver_spatial_nodes", solverField(`${CV_SOLVER_DEFAULT_SPATIAL_NODES}`)]),
+    toRow(["solver_D_cm2_s", solverField(fmtSig(CV_DEFAULT_D_CM2_S))]),
+    toRow(["solver_temperature_K", solverField(fmtSig(CV_T_DEFAULT_K))]),
+    toRow(["solver_E0prime_V", solverField(fmtSig(CV_E0_PRIME_DEFAULT_V))]),
+    toRow(["solver_domain_rule", solverField(CV_SOLVER_DOMAIN_RULE)]),
     toRow(["scan_rate_mVs", fmtSig(cvParams.scanRate)]),
     toRow(["E_start_V", fmtSig(cvParams.eStart)]),
     toRow(["E_vertex1_V", fmtSig(cvParams.eVertex1)]),
@@ -481,7 +1125,7 @@ export function buildCVExportText(
     toRow(["concentration_mM", fmtSig(cvParams.cMM)]),
     toRow(["area_cm2", fmtSig(cvParams.areaCm2)]),
     toRow(["n_electrons", `${cvParams.n}`]),
-    toRow(["temperature_K", "298.15"]),
+    toRow(["temperature_K", fmtSig(CV_T_DEFAULT_K)]),
     toRow(["baseline_method", metrics?.baselineMethod ?? "n/a"]),
     toRow(["baseline_method_input", metrics?.baselineMethodInput ?? "n/a"]),
     toRow(["baseline_resolved_method", metrics?.baselineResolvedMethod ?? "n/a"]),
@@ -495,6 +1139,23 @@ export function buildCVExportText(
       metrics?.correctedDataCoversAllCycles ? "Yes" : "No",
     ]),
     toRow(["exported_current_mode", plotMode]),
+    // ── Logbook / measurement notes (optional, never sent to hardware)
+    toRow(["title", fmtStr(notes?.title)]),
+    toRow(["operator", fmtStr(notes?.operator)]),
+    toRow(["sample_id", fmtStr(notes?.sampleId)]),
+    toRow(["electrode_id", fmtStr(notes?.electrodeId)]),
+    toRow(["analyte", fmtStr(notes?.analyte)]),
+    toRow(["electrolyte", fmtStr(notes?.electrolyte)]),
+    toRow(["reference_electrode", fmtStr(notes?.referenceElectrode)]),
+    toRow(["working_electrode", fmtStr(notes?.workingElectrode)]),
+    toRow(["counter_electrode", fmtStr(notes?.counterElectrode)]),
+    toRow(["temperature_C", fmtSig(notes?.temperature_C)]),
+    toRow(["pH", fmtSig(notes?.pH)]),
+    toRow([
+      "tags",
+      notes?.tags && notes.tags.length > 0 ? notes.tags.join("|") : "N/A",
+    ]),
+    toRow(["notes", sanitizeNotesForCSV(notes?.notes)]),
   ].join("\n");
   const raw = [sectionHeader("RAW DATA"), toRow(RAW_CV_HEADERS)];
   // Prefer the per-point baseline/Icorr from metrics.correctedData when available.
@@ -522,7 +1183,7 @@ export function buildCVExportText(
     "Epa_V", "Epc_V", "E0prime_V",
     "deltaEp_mV", "abs_Ipa_over_Ipc",
     "n_est", "n_est_valid",
-    "D_apparent_cm2_s", "D_status",
+    "D_apparent_cm2_s", "D_status", "D_peak_source",
     "noise_uA", "SNR_anodic", "SNR_cathodic",
     "reversibility", "baseline_method", "warnings",
   ];
@@ -535,7 +1196,7 @@ export function buildCVExportText(
       fmtSig(metrics.Epa), fmtSig(metrics.Epc), fmtSig(metrics.E0prime),
       fmtSig(metrics.deltaEp), fmtSig(metrics.IpaIpcRatio),
       fmtSig(metrics.n_electrons), metrics.n_est_valid ? "Yes" : "No",
-      fmtSig(metrics.D_apparent), metrics.D_status,
+      fmtSig(metrics.D_apparent), metrics.D_status, metrics.D_peak_source ?? "none",
       fmtSig(metrics.noise_uA), fmtSig(metrics.SNR_anodic), fmtSig(metrics.SNR_cathodic),
       metrics.reversibility, metrics.baselineMethod,
       metrics.warnings.length ? metrics.warnings.join(" | ") : "N/A",
@@ -570,6 +1231,10 @@ const CV_CAL_HEADERS = [
   "abs_Ipa_over_Ipc",
   "D_apparent_cm2_s",
   "cv_model",
+  "measurement_id",
+  "sample_id",
+  "electrode_id",
+  "notes_short",
   "timestamp",
 ];
 
@@ -616,6 +1281,10 @@ export function exportCVCalibrationCSV(
         fmtSig(p.ratio),
         fmtSig(p.Dapparent),
         fmtStr(p.cvModel),
+        fmtStr(p.measurementId),
+        fmtStr(p.sampleId),
+        fmtStr(p.electrodeId),
+        p.notes ? sanitizeNotesForCSV(p.notes) : "N/A",
         fmtTs(p.timestamp),
       ]),
     );
@@ -652,4 +1321,158 @@ export function exportCVCalibrationCSV(
     ]),
   );
   downloadTSV(`cv_calibration_${Date.now()}.tsv`, lines.join("\n"));
+}
+
+// ───────────────────────── SWV ─────────────────────────
+
+import type {
+  SWVCalibrationPoint,
+  SWVDataPoint,
+  SWVMetrics,
+  SWVParameters,
+} from "@/types/swv";
+
+export interface ExportSWVOptions {
+  data: SWVDataPoint[];
+  corrected?: SWVDataPoint[];
+  metrics: SWVMetrics | null;
+  params: SWVParameters;
+  source: ExportSource;
+  measurementId?: string;
+  measurementTimestamp?: number;
+  notes?: MeasurementNotes | null;
+  calibration?: SWVCalibrationPoint[];
+  simulationModel?: string;
+}
+
+/**
+ * Individual SWV measurement export — METADATA, RAW SWV DATA, BASELINE /
+ * CORRECTED DATA, PROCESSED SWV RESULTS and optional CALIBRATION sections.
+ * All currents in µA, potentials in V, concentrations in nM.
+ */
+export function exportSWVData(opts: ExportSWVOptions) {
+  const {
+    data, corrected, metrics, params, source, measurementId, measurementTimestamp,
+    notes, calibration, simulationModel,
+  } = opts;
+  const now = Date.now();
+  const mid = measurementId ?? `swv_${now}`;
+  const ts = fmtTs(measurementTimestamp ?? now);
+  const cleanNotes = sanitizeMeasurementNotes(notes ?? undefined);
+
+  const meta: string[] = [];
+  meta.push(sectionHeader("METADATA"));
+  meta.push(toRow(["measurement_id", mid]));
+  meta.push(toRow(["timestamp", ts]));
+  meta.push(toRow(["source", source]));
+  meta.push(toRow(["mode", "SWV"]));
+  meta.push(toRow(["startE_V", fmtSig(params.startE)]));
+  meta.push(toRow(["endE_V", fmtSig(params.endE)]));
+  meta.push(toRow(["step_mV", fmtSig(params.step_mV)]));
+  meta.push(toRow(["amplitude_mV", fmtSig(params.amplitude_mV)]));
+  meta.push(toRow(["frequency_Hz", fmtSig(params.frequency_Hz)]));
+  meta.push(toRow(["quietTime_s", fmtSig(params.quietTime_s)]));
+  meta.push(toRow(["direction", fmtStr(params.direction)]));
+  meta.push(toRow(["concentration_nM", fmtSig(params.concentration_nM ?? null)]));
+  meta.push(toRow(["area_cm2", fmtSig(params.area_cm2 ?? null)]));
+  meta.push(toRow(["n_electrons", fmtSig(params.nElectrons ?? null)]));
+  meta.push(toRow(["temperature_K", fmtSig(params.temperature_K ?? null)]));
+  meta.push(toRow(["baselineMethod", fmtStr(params.baselineMethod ?? "none")]));
+  meta.push(toRow(["smoothing", fmtStr(params.smoothing ?? "none")]));
+  if (simulationModel) meta.push(toRow(["simulation_model", simulationModel]));
+  if (cleanNotes) {
+    meta.push(toRow(["notes_title", fmtStr(cleanNotes.title)]));
+    meta.push(toRow(["notes_operator", fmtStr(cleanNotes.operator)]));
+    meta.push(toRow(["notes_sample_id", fmtStr(cleanNotes.sampleId)]));
+    meta.push(toRow(["notes_electrode_id", fmtStr(cleanNotes.electrodeId)]));
+    meta.push(toRow(["notes_short", fmtStr(shortNotesSummary(cleanNotes))]));
+    meta.push(toRow(["notes", fmtStr(cleanNotes.notes)]));
+  }
+
+  const raw: string[] = [];
+  raw.push(sectionHeader("RAW SWV DATA"));
+  raw.push(toRow([
+    "index", "time_s", "E_V", "I_forward_uA", "I_reverse_uA", "I_net_raw_uA", "direction",
+  ]));
+  for (let i = 0; i < data.length; i++) {
+    const p = data[i];
+    raw.push(toRow([
+      `${i}`, fmtSig(p.time), fmtSig(p.E),
+      fmtSig(p.IForward), fmtSig(p.IReverse), fmtSig(p.INet),
+      fmtStr(p.direction),
+    ]));
+  }
+
+  const corrLines: string[] = [];
+  corrLines.push(sectionHeader("BASELINE / CORRECTED DATA"));
+  corrLines.push(toRow(["index", "E_V", "baseline_uA", "I_net_corrected_uA"]));
+  const corrSrc = corrected && corrected.length === data.length ? corrected : null;
+  for (let i = 0; i < data.length; i++) {
+    corrLines.push(toRow([
+      `${i}`,
+      fmtSig(data[i].E),
+      fmtSig(corrSrc?.[i]?.baseline ?? null),
+      fmtSig(corrSrc?.[i]?.ICorrected ?? null),
+    ]));
+  }
+
+  const proc: string[] = [];
+  proc.push(sectionHeader("PROCESSED SWV RESULTS"));
+  proc.push(toRow([
+    "peak_detected", "peak_polarity", "peak_potential_V",
+    "peak_current_raw_uA", "peak_current_corrected_uA",
+    "half_peak_width_mV", "SNR", "noise_rms_uA",
+    "baseline_method_used", "baseline_slope_uA_per_V", "baseline_intercept_uA",
+    "peak_area_uA_V", "warnings",
+  ]));
+  proc.push(toRow([
+    metrics?.peakDetected ? "Yes" : "No",
+    fmtStr(metrics?.peakPolarity ?? "unknown"),
+    fmtSig(metrics?.peakPotential_V ?? null),
+    fmtSig(metrics?.peakCurrentRaw_uA ?? null),
+    fmtSig(metrics?.peakCurrentCorrected_uA ?? null),
+    fmtSig(metrics?.halfPeakWidth_mV ?? null),
+    fmtSig(metrics?.snr ?? null),
+    fmtSig(metrics?.noiseRms_uA ?? null),
+    fmtStr(metrics?.baselineMethodUsed ?? metrics?.baselineMethod ?? "none"),
+    fmtSig(metrics?.baselineSlope_uA_V ?? null),
+    fmtSig(metrics?.baselineIntercept_uA ?? null),
+    fmtSig(metrics?.peakArea_uA_V ?? null),
+    metrics?.warnings?.length ? sanitizeNotesForCSV(metrics.warnings.join(" | ")) : "N/A",
+  ]));
+
+  const cal: string[] = [];
+  if (calibration && calibration.length > 0) {
+    cal.push(sectionHeader("CALIBRATION"));
+    cal.push(toRow([
+      "concentration_nM", "signal_uA", "raw_uA", "peak_potential_V",
+      "baseline_method", "SNR", "timestamp",
+      "measurement_id", "sample_id", "electrode_id", "notes_short",
+    ]));
+    for (const p of [...calibration].sort((a, b) => a.concentration_nM - b.concentration_nM || a.timestamp - b.timestamp)) {
+      cal.push(toRow([
+        fmtSig(p.concentration_nM),
+        fmtSig(p.signal_uA),
+        fmtSig(p.raw_uA),
+        fmtSig(p.peakPotential_V ?? null),
+        fmtStr(p.baselineMethod),
+        fmtSig(p.snr ?? null),
+        fmtTs(p.timestamp),
+        fmtStr(p.measurementId),
+        fmtStr(p.sampleId),
+        fmtStr(p.electrodeId),
+        fmtStr(p.notesShort),
+      ]));
+    }
+  }
+
+  const out = [
+    metaRow(1, source),
+    meta.join("\n"),
+    raw.join("\n"),
+    corrLines.join("\n"),
+    proc.join("\n"),
+    ...(cal.length ? [cal.join("\n")] : []),
+  ].join(BLANK);
+  downloadTSV(`swv_data_${now}.tsv`, out);
 }

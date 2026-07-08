@@ -33,6 +33,8 @@ import {
   CV_T_DEFAULT_K,
   CV_DEFAULT_D_CM2_S,
   CV_E0_PRIME_DEFAULT_V,
+  CV_SOLVER_DEFAULT_STEP_V,
+  CV_SOLVER_DEFAULT_SPATIAL_NODES,
 } from "./cvConstants";
 import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
 
@@ -137,8 +139,8 @@ export function simulateReversibleDiffusionCV(
     D_cm2_s = CV_DEFAULT_D_CM2_S,
     E0Prime_V = CV_E0_PRIME_DEFAULT_V,
     temperature_K = CV_T_DEFAULT_K,
-    stepV = 0.002,
-    spatialNodes = 180,
+    stepV = CV_SOLVER_DEFAULT_STEP_V,
+    spatialNodes = CV_SOLVER_DEFAULT_SPATIAL_NODES,
   } = params;
 
   // Strict validation — return [] on any invalid input rather than crashing.

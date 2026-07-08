@@ -91,7 +91,7 @@ const BodePlot = ({ data }: BodePlotProps) => {
           <YAxis
             yAxisId="right"
             orientation="right"
-            domain={[-90, 0]}
+            domain={["auto", "auto"]}
             label={{ value: "Phase (°)", angle: 90, position: "insideRight", offset: -5, fill: "hsl(35 90% 55%)", fontSize: 12 }}
             tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
             stroke="hsl(220 15% 20%)"

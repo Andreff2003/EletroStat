@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { fetDrainCurrent, addCurrentNoise, KT_Q_300K } from "@/utils/fetModel";
+import {
+  FET_TIME_DURATION_S,
+  FET_TIME_DT_S,
+  FET_TIME_VG_READ_V,
+} from "@/utils/fetConstants";
 
 /**
  * ============================================================
@@ -163,26 +169,15 @@ export function useSimulatedFETTransfer(speed: number = 100) {
     const base: FETTransferPoint[] = [];
     const analyte: FETTransferPoint[] = [];
 
-    // Transconductance constant K (∝ μCox·W/L) — same for both curves so the
-    // analyte transfer is a pure horizontal shift of the baseline (parallel
-    // curves with identical Ion at the top of the sweep).
+    // Softplus-smoothed MOSFET model — see src/utils/fetModel.ts. K is chosen
+    // so that strong-inversion Id at Vg = vgMax matches ID_MAX for baseline.
     const K = ID_MAX / ((vgMax - VtBase) ** 2);
-
-    // Subthreshold model parameters (standard MOSFET physics)
-    const VT_THERMAL = 0.02585; // V (kT/q at 300 K)
-    const N_IDEAL = 2.0;        // ideality factor — gives SS ≈ 120 mV/dec
-    const I0 = 0.1;             // µA — small enough that 10%*Ion >> I0 at all concentrations
+    const params = { K, n: 2.0, vt_thermal: KT_Q_300K };
 
     for (let i = 0; i < totalPoints; i++) {
       const vg = vgMin + (i / (totalPoints - 1)) * (vgMax - vgMin);
-
-      const subB = vg < VtBase    ? I0 * Math.exp((vg - VtBase)    / (N_IDEAL * VT_THERMAL)) : I0;
-      const subA = vg < VtAnalyte ? I0 * Math.exp((vg - VtAnalyte) / (N_IDEAL * VT_THERMAL)) : I0;
-
-      const idB = K * Math.max(0, vg - VtBase)    ** 2 + subB + noise(0.2);
-      const idA = K * Math.max(0, vg - VtAnalyte) ** 2 + subA + noise(0.2);
-
-
+      const idB = addCurrentNoise(fetDrainCurrent(vg, VtBase, params));
+      const idA = addCurrentNoise(fetDrainCurrent(vg, VtAnalyte, params));
       base.push({ vg: Math.round(vg * 100) / 100, id: idB });
       analyte.push({ vg: Math.round(vg * 100) / 100, id: idA });
     }
@@ -240,34 +235,40 @@ export function useSimulatedFETTime(speed: number = 200) {
   useEffect(() => {
     if (!isRunning) return;
 
-    const baselineCurrent = 25;
-    const maxDrop = 12;
     const concentration = concRef.current;
-    const signalDrop =
-      concentration > 0 ? maxDrop * concentration / (concentration + KD) : 0;
+    // Equilibrium ΔVt from the same Langmuir binding used in the transfer
+    // curve so the two simulated signals are physically consistent.
+    const deltaVtEq =
+      concentration > 0 ? VT_MAX_SHIFT * concentration / (concentration + KD) : 0;
     const injectionTime = 10;
     const bindingRate = 0.5;
 
-    // Fixed simulated time-step (seconds per tick) — decoupled from `speed`
-    // so playback rate changes do not warp the time axis.
-    const DT = 0.5;
+    // Fixed read-out gate bias and FET parameters — mirrors useSimulatedFETTransfer.
+    const VtBase = VT_BASELINE;
+    const vgMaxRef = 1.5;
+    const K = ID_MAX / ((vgMaxRef - VtBase) ** 2);
+    const fetParams = { K, n: 2.0, vt_thermal: KT_Q_300K };
+
+    const DT = FET_TIME_DT_S;
 
     const interval = setInterval(() => {
       const t = timeRef.current * DT;
-      let id: number;
-      if (t < injectionTime) {
-        id = baselineCurrent + noise(0.5);
-      } else {
+      let vt = VtBase;
+      if (t >= injectionTime) {
         const elapsed = t - injectionTime;
-        const shift = signalDrop * (1 - Math.exp(-bindingRate * elapsed));
-        id = baselineCurrent - shift + noise(0.3);
+        vt = VtBase + deltaVtEq * (1 - Math.exp(-bindingRate * elapsed));
       }
+      const id = addCurrentNoise(
+        fetDrainCurrent(FET_TIME_VG_READ_V, vt, fetParams),
+        0.01,
+        0.05,
+      );
       setData(prev => [...prev, {
         time: Math.round(t * 10) / 10,
         id: Math.round(id * 100) / 100,
       }]);
       timeRef.current++;
-      if (t > 60) setIsRunning(false);
+      if (t >= FET_TIME_DURATION_S) setIsRunning(false);
     }, speed);
 
     return () => clearInterval(interval);

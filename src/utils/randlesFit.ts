@@ -9,11 +9,10 @@ import { fitEIS } from "@/utils/eisFit";
  *
  *  Model: Z(ω) = Rs + 1 / (jωCdl + 1/(Rct + Aw/√ω · (1-j)))
  *
- *  Sign convention: zImag stored as POSITIVE (i.e. -Im(Z))
- *
- *  This module no longer does any automatic region splitting.
- *  The caller decides which points are the semicircle and which
- *  belong to the Warburg tail, then passes each set in separately.
+ *  Sign convention: zImag is true Im(Z) — NEGATIVE for capacitive
+ *  behaviour (canonical Randles arc). Nyquist plots flip the sign at
+ *  display time (y = -Im(Z)). All downstream consumers (WebSocket
+ *  parser, CSV export, KK and Warburg helpers) follow the same rule.
  * ============================================================
  */
 
@@ -33,27 +32,67 @@ export interface RandlesFitResult extends RandlesParams {
   totalPoints?:      number;
   /** Per-parameter standard error in % (from covariance matrix). Auto-fit only. */
   errors?:           Record<string, number>;
-  /** Reduced χ² (modulus-weighted SSR / dof). Auto-fit only. */
+  /** Modulus-weighted SSR / dof (legacy alias; same value as `weightedSsrPerDof`). Auto-fit only. */
   chiSquared?:       number;
   /** Degrees of freedom (2N − P). Auto-fit only. */
   dof?:              number;
   /** zReal of the auto-detected semicircle/Warburg separator. */
   autoSeparatorZReal?: number;
+  /** Frequency interval (Hz) actually used by the fit. Auto-fit only. */
+  fitFreqRange?:     { min: number; max: number };
+  /** True when the auto-separator was geometrically weak (low prominence
+   *  or fallback). Caller should advise manual adjustment. */
+  separatorUncertain?: boolean;
+  separatorWarning?: string;
   /** True when produced by fitRandlesAuto (vs. manual fitRandles). */
   auto?:             boolean;
 }
 
+export type WarburgMethod =
+  | "regression_1_sqrt_omega_with_intercept"
+  | "regression_1_sqrt_omega"
+  | "endpoint";
+
 export interface WarburgResult {
   ok:               boolean;
+  /** Slope of -Im(Z) vs Z' on Nyquist (ideal Warburg ≈ 1). */
   slope?:           number;
+  /** Alias for `slope` — explicit field name used in scientific exports. */
+  slopeNyquist?:    number;
+  /** Warburg coefficient Aw [Ω·s^(-1/2)] = slope of the -Im(Z) vs 1/√ω regression. */
   Aw?:              number;
+  /** Intercept of the -Im(Z) vs 1/√ω regression [Ω] — non-zero when the
+   *  Warburg tail is offset (mixed control, finite-length diffusion, or
+   *  the selected tail still includes part of the semicircle). */
+  interceptImag?:   number;
+  /** R² of the -Im(Z) vs 1/√ω regression. */
+  r2Imag?:          number;
+  /** Alias for `r2Imag` — explicit name used in exports. */
+  r2?:              number;
+  /** R² of the Z' vs 1/√ω regression (after Rs/Rct offset removal). */
+  r2Real?:          number;
+  /**
+   * Provenance of the Warburg fit. The current implementation is
+   * `regression_1_sqrt_omega_with_intercept` — a linear regression of
+   * −Im(Z) on 1/√ω that DOES fit a non-zero intercept (more robust to
+   * mixed kinetic/diffusion control than an intercept-free fit).
+   * `regression_1_sqrt_omega` is the legacy intercept-free label; kept
+   * for backward compatibility when loading older sessions.
+   */
+  method?:          WarburgMethod;
   nPoints?:         number;
+  /** Backwards-compatible single warning string. */
   warburgWarning?:  string;
+  /** All warnings collected during the regression, in order. */
+  warnings?:        string[];
 }
 
 export interface KKResult {
   passed:       boolean;
   residualPct:  number;
+  /** Which check produced this result. "approximate_residual" = finite Hilbert
+   *  approximation (not full Lin-KK). */
+  method?:      "approximate_residual" | "lin_kk";
   warning?:     string;
 }
 
@@ -184,11 +223,13 @@ export function fitRandles(
     Math.sqrt(Math.max(d.zReal * d.zReal + d.zImag * d.zImag, 1e-9))
   );
 
-  const xs = fitData.flatMap((_, i) => [i, i + nFit]);
-  const ys = [
-    ...fitData.map((d, i) => d.zReal / weights[i]),
-    ...fitData.map((d, i) => d.zImag / weights[i]),
-  ];
+  // Vector splitting: xs and ys MUST share the same ordering so that
+  // model(idx) interprets idx<nFit as real and idx>=nFit as imag. The
+  // previous interleaved xs produced misaligned residuals.
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = 0; i < nFit; i++) { xs.push(i);          ys.push(fitData[i].zReal / weights[i]); }
+  for (let i = 0; i < nFit; i++) { xs.push(i + nFit);   ys.push(fitData[i].zImag / weights[i]); }
 
   const modelFn = ([lRs, lRct, lCdl, lAw]: number[]) => (idx: number) => {
     const p: RandlesParams = {
@@ -217,7 +258,7 @@ export function fitRandles(
     if (!result?.parameterValues || result.parameterValues.length < 4) {
       lmConverged = false;
     } else {
-      parameterValues = result.parameterValues.map((v, i) =>
+      parameterValues = result.parameterValues.map((v: number, i: number) =>
         clamp(v, lowerBounds[i], upperBounds[i])
       );
     }
@@ -290,33 +331,61 @@ export function fitRandles(
 
 // ─── Automatic region splitting ───────────────────────────────
 
+export interface SplitRegionsResult {
+  separatorZReal: number | null;
+  separatorFrequency?: number;
+  semicircle: EISDataPoint[];
+  warburg: EISDataPoint[];
+  /** True when the detected separator is geometrically weak (low prominence,
+   *  no clear minimum after the peak, or a fallback was used). The fit and
+   *  split still apply, but the UI should advise manual adjustment. */
+  separatorUncertain?: boolean;
+  separatorWarning?: string;
+}
+
+/** 3-point moving median — cheap noise rejection. Edges fall back to value. */
+function movingMedian3(values: number[]): number[] {
+  const n = values.length;
+  if (n < 3) return values.slice();
+  const out = new Array<number>(n);
+  out[0] = values[0];
+  out[n - 1] = values[n - 1];
+  for (let i = 1; i < n - 1; i++) {
+    const a = values[i - 1], b = values[i], c = values[i + 1];
+    out[i] = a + b + c - Math.min(a, b, c) - Math.max(a, b, c);
+  }
+  return out;
+}
+
 /**
- * Split a full EIS sweep into a semicircle region and a Warburg tail by
- * locating the FIRST local maximum of |Im(Z)| as a function of ascending
- * frequency-index (i.e. sorted low → high frequency, where the semicircle
- * peak appears before the low-frequency Warburg climb).
+ * Split a full EIS sweep into a semicircle region and a Warburg tail.
  *
- * Returns the zReal value at the detected separator point.
- * Falls back to a null separator (no split) when no local max is found
- * or when it is too close to either endpoint.
+ * Walks high→low frequency, finds the first prominent local maximum of a
+ * lightly-smoothed |Im(Z)| (the semicircle peak), then the next local
+ * minimum (the bottom of the arc) as the separator. Smoothing is applied
+ * ONLY for the peak/separator search — the returned regions use raw points.
+ *
+ * Sets `separatorUncertain=true` (with a warning) when the peak prominence
+ * is below threshold or no clear post-peak minimum exists, so the UI can
+ * advise manual adjustment. Falls back to a conservative percentile-based
+ * split rather than refusing to split on noisy data.
  */
-export function splitRegionsAuto(
-  data: EISDataPoint[],
-): { separatorZReal: number | null; semicircle: EISDataPoint[]; warburg: EISDataPoint[] } {
-  const noSplit = { separatorZReal: null, semicircle: data.slice(), warburg: [] as EISDataPoint[] };
+export function splitRegionsAuto(data: EISDataPoint[]): SplitRegionsResult {
+  const noSplit: SplitRegionsResult = {
+    separatorZReal: null,
+    semicircle: data.slice(),
+    warburg: [] as EISDataPoint[],
+  };
   if (!data || data.length < 5) return noSplit;
 
-  // Sort low → high frequency. Walking forward = walking from Warburg tail
-  // toward high-frequency end. We want the first local max of |Im(Z)| as
-  // we walk from HIGH → LOW frequency (the semicircle peak appears first
-  // before the Warburg tail rises again). So sort high → low.
   const sorted = [...data].sort((a, b) => b.frequency - a.frequency);
   const n = sorted.length;
 
-  const absIm = sorted.map(d => Math.abs(d.zImag));
+  const absImRaw = sorted.map((d) => Math.abs(d.zImag));
+  // Smooth for SELECTION ONLY; the returned regions use raw points.
+  const absIm = movingMedian3(absImRaw);
 
   // First local maximum walking high → low frequency.
-  // NEVER use global max — Warburg tail |Im(Z)| can exceed the semicircle peak.
   let peakIdx: number | null = null;
   for (let i = 1; i < n - 1; i++) {
     if (absIm[i] > absIm[i - 1] && absIm[i] > absIm[i + 1]) {
@@ -324,37 +393,84 @@ export function splitRegionsAuto(
       break;
     }
   }
-  // Fallback to global max only if no local max found
+  let uncertain = false;
+  const warnings: string[] = [];
   if (peakIdx === null) {
+    // No local max: fall back to global max — but mark uncertain.
     let best = 0;
     for (let i = 1; i < n; i++) if (absIm[i] > absIm[best]) best = i;
     peakIdx = best;
+    uncertain = true;
+    warnings.push("No clear semicircle peak found — using global maximum.");
   }
-  if (peakIdx >= n - 2) return noSplit;
+  if (peakIdx >= n - 2) {
+    // Peak at the very low-frequency end — no room for a separator.
+    return {
+      ...noSplit,
+      separatorUncertain: true,
+      separatorWarning:
+        "Automatic separator uncertain — no measurable Warburg tail after the peak.",
+    };
+  }
+
+  // ── Prominence check: peak must rise meaningfully above its neighbourhood.
+  const peakVal = absIm[peakIdx];
+  let localMin = peakVal;
+  const winLo = Math.max(0, peakIdx - 3);
+  const winHi = Math.min(n - 1, peakIdx + 3);
+  for (let i = winLo; i <= winHi; i++) if (absIm[i] < localMin) localMin = absIm[i];
+  const globalMaxAbsIm = Math.max(...absIm);
+  const prominence = peakVal - localMin;
+  if (peakVal <= 0 || prominence < 0.05 * Math.max(globalMaxAbsIm, 1e-12)) {
+    uncertain = true;
+    warnings.push("Semicircle peak prominence is low — separator may be unreliable.");
+  }
 
   // After the peak (walking toward LOWER frequency), find the local minimum
   // of |Im(Z)| — that's the bottom of the semicircle, i.e. the separator.
   let sepIdx = peakIdx;
+  let foundMin = false;
   for (let i = peakIdx + 1; i < n - 1; i++) {
     if (absIm[i] <= absIm[i - 1] && absIm[i] <= absIm[i + 1]) {
       sepIdx = i;
+      foundMin = true;
       break;
     }
     sepIdx = i;
   }
+  if (!foundMin) {
+    uncertain = true;
+    warnings.push("No clear minimum after the semicircle peak.");
+    // Conservative fallback: use the 35th-percentile frequency on the
+    // low-frequency side (avoids cutting too aggressively).
+    const fallbackIdx = Math.min(
+      n - 2,
+      Math.max(peakIdx + 1, Math.floor(peakIdx + 0.35 * (n - peakIdx))),
+    );
+    sepIdx = fallbackIdx;
+  }
   if (sepIdx <= peakIdx) return noSplit;
 
-  // CRITICAL: Filter by FREQUENCY, not by zReal.
-  // The Warburg tail folds back to LOWER zReal values at low frequency,
-  // so a zReal-based filter would incorrectly include Warburg points in
-  // the semicircle region. Frequency is monotonic — high freq = semicircle.
-  const separatorFreq = sorted[sepIdx].frequency;
+  // CRITICAL: Filter by FREQUENCY, not by zReal — Warburg can fold back to
+  // lower zReal at low frequency; frequency is the monotonic axis.
+  const separatorFrequency = sorted[sepIdx].frequency;
   const separatorZReal = sorted[sepIdx].zReal;
-  const semicircle = data.filter(d => d.frequency >= separatorFreq);
-  const warburg    = data.filter(d => d.frequency <  separatorFreq);
+  const semicircle = data.filter((d) => d.frequency >= separatorFrequency);
+  const warburg    = data.filter((d) => d.frequency <  separatorFrequency);
   if (semicircle.length < 4) return noSplit;
-  return { separatorZReal, semicircle, warburg };
+
+  return {
+    separatorZReal,
+    separatorFrequency,
+    semicircle,
+    warburg,
+    separatorUncertain: uncertain || undefined,
+    separatorWarning: uncertain
+      ? `Automatic separator uncertain — adjust manually. (${warnings.join(" ")})`
+      : undefined,
+  };
 }
+
 
 // ─── Automatic Randles fit (runs on sweep completion) ─────────
 
@@ -364,7 +480,7 @@ export function splitRegionsAuto(
  *   - auto-detects the semicircle region via `splitRegionsAuto`
  *   - returns the result in `RandlesFitResult` shape (Aw=0 — Warburg is
  *     analyzed separately via `extractWarburgSlope`)
- *   - includes per-parameter standard errors and reduced χ².
+ *   - includes per-parameter standard errors and weighted SSR/dof.
  */
 export function fitRandlesAuto(data: EISDataPoint[]): RandlesFitResult | null {
   if (!data || data.length < 5) return null;
@@ -383,18 +499,32 @@ export function fitRandlesAuto(data: EISDataPoint[]): RandlesFitResult | null {
 
   const f0 = 1 / (2 * Math.PI * Math.max(Rct, 1e-9) * Math.max(Cdl, 1e-30));
 
+  const semiFreqs = semi.map((d) => d.frequency).filter((f) => f > 0);
+  const fitFreqRange = semiFreqs.length > 0
+    ? { min: Math.min(...semiFreqs), max: Math.max(...semiFreqs) }
+    : undefined;
+
+  const warnFlags = [
+    ...(cnls.warnings ?? []),
+    ...(split.separatorWarning ? [split.separatorWarning] : []),
+  ];
+
   return {
     Rs, Rct, Cdl, Aw: 0,
-    fitErrorPct: cnls.converged ? cnls.chiSquared * 100 : -1,
+    // sqrt(weightedSsr/dof)*100 ≈ modulus-weighted RMSE %, consistent with CNLSFitResults.
+    fitErrorPct: cnls.converged ? Math.sqrt(Math.max(cnls.chiSquared, 0)) * 100 : -1,
     fittedCurve: cnls.converged ? cnls.fittedCurve : [],
     f0,
-    warnFlags: cnls.warnings,
+    warnFlags: warnFlags.length > 0 ? warnFlags : undefined,
     semicirclePoints: cnls.nPoints,
     totalPoints: data.length,
     errors: cnls.errors,
     chiSquared: cnls.chiSquared,
     dof,
     autoSeparatorZReal: split.separatorZReal ?? undefined,
+    fitFreqRange,
+    separatorUncertain: split.separatorUncertain,
+    separatorWarning: split.separatorWarning,
     auto: true,
   };
 }
@@ -403,49 +533,120 @@ export function fitRandlesAuto(data: EISDataPoint[]): RandlesFitResult | null {
 
 // ─── Warburg slope extraction ─────────────────────────────────
 
-/**
- * Extracts the Warburg slope from the points the caller has
- * identified as the Warburg tail (right of the separator).
- */
-export function extractWarburgSlope(warburgData: EISDataPoint[]): WarburgResult {
-  if (!warburgData || warburgData.length < 3) return { ok: false, nPoints: warburgData?.length ?? 0 };
-
-  const warburg = [...warburgData].sort((a, b) => b.frequency - a.frequency);
-  const lowestW  = warburg[warburg.length - 1];
-  const omegaLow = 2 * Math.PI * Math.max(lowestW.frequency, 1e-9);
-  // zImag is true Im(Z) — negative for capacitive. Warburg Aw and slope
-  // are defined in terms of -Im(Z) (positive values on Nyquist plot).
-  const Aw = Math.abs(lowestW.zImag) * Math.sqrt(omegaLow);
-
-  const n    = warburg.length;
-  const xs   = warburg.map(p => p.zReal);
-  const ys   = warburg.map(p => -p.zImag);  // flip to positive (-Im(Z))
+/** Linear regression helper: returns slope, intercept and R². */
+function linreg(xs: number[], ys: number[]): { slope: number; intercept: number; r2: number } | null {
+  const n = xs.length;
+  if (n < 2) return null;
   const meanX = xs.reduce((a, b) => a + b, 0) / n;
   const meanY = ys.reduce((a, b) => a + b, 0) / n;
-  const ssXX  = xs.reduce((s, x) => s + (x - meanX) ** 2, 0);
-  const ssXY  = xs.reduce((s, x, i) => s + (x - meanX) * (ys[i] - meanY), 0);
-
-  if (ssXX < 1e-9) return { ok: false, nPoints: n, Aw };
-
-  const slope = ssXY / ssXX;
-
-  let warburgWarning: string | undefined;
-  if (slope < 0.5 || slope > 2.0) {
-    warburgWarning =
-      "Slope deviates significantly from ideal Warburg (1.0) — diffusion may not be rate-limiting";
-  } else if (slope < 0.8 || slope > 1.2) {
-    warburgWarning =
-      "Slope slightly off ideal Warburg (1.0) — mixed kinetic-diffusion control possible";
+  let ssXX = 0, ssXY = 0, ssYY = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - meanX;
+    const dy = ys[i] - meanY;
+    ssXX += dx * dx; ssXY += dx * dy; ssYY += dy * dy;
   }
-
-  return { ok: true, slope, Aw, nPoints: n, warburgWarning };
+  if (ssXX < 1e-30) return null;
+  const slope = ssXY / ssXX;
+  const intercept = meanY - slope * meanX;
+  const ssRes = ys.reduce((s, y, i) => s + (y - (slope * xs[i] + intercept)) ** 2, 0);
+  const r2 = ssYY > 1e-30 ? 1 - ssRes / ssYY : 0;
+  return { slope, intercept, r2 };
 }
 
-// ─── Kramers-Kronig validity test ─────────────────────────────
+/**
+ * Extract the Warburg coefficient Aw via linear regression of −Im(Z) on
+ * 1/√ω WITH a fitted intercept (semi-infinite Warburg: −Z'' ≈ Aw/√ω + b,
+ * with b ideally 0 but in practice non-zero for mixed kinetic/diffusion
+ * control or when the selected tail still contains a small piece of the
+ * semicircle). Also reports the Nyquist slope of −Im(Z) vs Z' (ideal ≈ 1)
+ * and R² of both regressions so the UI can flag noisy or non-Warburg
+ * tails. Returns ok=false when the regression degenerates.
+ */
+export function extractWarburgSlope(warburgData: EISDataPoint[]): WarburgResult {
+  if (!warburgData || warburgData.length < 3) {
+    return {
+      ok: false,
+      nPoints: warburgData?.length ?? 0,
+      method: "regression_1_sqrt_omega_with_intercept",
+      warnings: ["Not enough Warburg points (need ≥ 3)."],
+    };
+  }
+  const warburg = [...warburgData].sort((a, b) => b.frequency - a.frequency);
+  const n = warburg.length;
+
+
+  // Regression of -Im(Z) on x = 1/√ω WITH a non-zero intercept. The
+  // intercept is non-zero whenever the selected tail is offset (e.g. the
+  // selection still includes part of the semicircle, or finite-length
+  // diffusion has a non-Warburg DC offset). Fitting it explicitly is
+  // more robust than the legacy intercept-free form and matches the
+  // method label reported downstream.
+  const invSqrtW = warburg.map(p => 1 / Math.sqrt(2 * Math.PI * Math.max(p.frequency, 1e-12)));
+  const negIm    = warburg.map(p => -p.zImag);
+  const regIm    = linreg(invSqrtW, negIm);
+  // Nyquist slope of -Im(Z) vs Z' (ideal Warburg ≈ 1).
+  const xsZ      = warburg.map(p => p.zReal);
+  const regNyq   = linreg(xsZ, negIm);
+  // Z' vs 1/√ω — diagnostic only, R² indicates quality.
+  const regRe    = linreg(invSqrtW, warburg.map(p => p.zReal));
+
+  const method: WarburgMethod = "regression_1_sqrt_omega_with_intercept";
+
+  if (!regIm || !regNyq) {
+    return {
+      ok: false,
+      nPoints: n,
+      method,
+      warnings: ["Warburg regression degenerated (collinear x or insufficient points)."],
+    };
+  }
+
+  const Aw          = regIm.slope;
+  const intercept   = regIm.intercept;
+  const slope       = regNyq.slope;
+
+  const warnings: string[] = [];
+  if (n < 3) warnings.push("Not enough Warburg points (need ≥ 3).");
+  if (!(Aw > 0))
+    warnings.push("Warburg coefficient Aw ≤ 0 — not physically meaningful; check tail selection.");
+  if (regIm.r2 < 0.8)
+    warnings.push(
+      `Warburg regression weak (R²=${regIm.r2.toFixed(2)}) — selected tail may not be pure diffusion.`,
+    );
+  if (slope < 0.7 || slope > 1.3)
+    warnings.push(
+      `Nyquist slope ${slope.toFixed(2)} outside informational band [0.7, 1.3] — diffusion may not be rate-limiting.`,
+    );
+
+  return {
+    ok: true,
+    slope,
+    slopeNyquist: slope,
+    Aw,
+    interceptImag: intercept,
+    r2Imag: regIm.r2,
+    r2: regIm.r2,
+    r2Real: regRe?.r2,
+    method,
+    nPoints: n,
+    warburgWarning: warnings[0],
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
+}
+
+// ─── Kramers-Kronig approximate residual check ────────────────
+//
+// NOTE: This is NOT a rigorous Lin-KK / Schönleber–Boukamp test. It is a
+// finite-range discrete Hilbert-transform residual that depends on the
+// frequency grid and edge handling. A passing result does NOT prove KK
+// validity, and a failing result may simply reflect insufficient frequency
+// span, drift, noise, or simply that the discrete transform is being
+// applied near the band edges. For rigorous validation, run a proper
+// Lin-KK fit on the spectrum. The UI labels this as "Approx. KK residual".
 
 export function kramersKronigTest(data: EISDataPoint[]): KKResult {
   if (!data || data.length < 5) {
-    return { passed: false, residualPct: 100, warning: "Not enough points for KK test" };
+    return { passed: false, residualPct: 100, method: "approximate_residual", warning: "Not enough points for approx. KK residual check" };
   }
 
   const sorted = data
@@ -453,7 +654,7 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
     .filter(d => d.frequency > 0)
     .sort((a, b) => a.frequency - b.frequency);
   const n = sorted.length;
-  if (n < 5) return { passed: false, residualPct: 100, warning: "Not enough valid points for KK test" };
+  if (n < 5) return { passed: false, residualPct: 100, method: "approximate_residual", warning: "Not enough valid points for approx. KK residual check" };
 
   const omega = sorted.map(d => 2 * Math.PI * d.frequency);
   const zRe   = sorted.map(d => d.zReal);
@@ -486,7 +687,7 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
     counted++;
   }
 
-  if (counted < 3) return { passed: true, residualPct: 0 };
+  if (counted < 3) return { passed: true, residualPct: 0, method: "approximate_residual" };
 
   meanZ = Math.max(meanZ / counted, 1e-9);
   const residualPct = (absResid / counted / meanZ) * 100;
@@ -499,8 +700,9 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
   return {
     passed,
     residualPct,
+    method: "approximate_residual",
     warning: passed
       ? undefined
-      : `KK test: ${residualPct.toFixed(1)}% residual (threshold ${adaptiveThreshold}% for ${n} pts) — data may be non-linear or noisy. Check electrode stability.`,
+      : `Approx. KK residual ${residualPct.toFixed(1)}% > threshold ${adaptiveThreshold}% (n=${n}). May indicate nonlinearity, instability, drift, noise, insufficient frequency range, or model mismatch. Use a rigorous Lin-KK fit for definitive validation.`,
   };
 }

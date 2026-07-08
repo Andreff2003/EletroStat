@@ -1,17 +1,19 @@
 import type { RandlesFitResult, WarburgResult, KKResult } from "@/utils/randlesFit";
+import type { LinKKResult } from "@/utils/linKK";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface Props {
   fit: RandlesFitResult | null;
   warburg: WarburgResult | null;
   kk?: KKResult | null;
+  linKK?: LinKKResult | null;
 }
 
 /**
  * Randles equivalent-circuit fit results + Warburg slope.
  * Rct is highlighted as the primary calibration parameter.
  */
-const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
+const CircuitFitResults = ({ fit, warburg, kk, linKK }: Props) => {
   if (!fit) {
     return (
       <div className="rounded-lg border border-border bg-card p-3">
@@ -29,12 +31,8 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
     Number.isFinite(v) ? v.toFixed(digits) : "—";
 
   const cdlMicroF = fit.Cdl * 1e6;
-  const f0 = fit.f0 ?? (1 / (2 * Math.PI * Math.max(fit.Rct, 1e-9) * Math.max(fit.Cdl, 1e-30)));
-  const f0Str = Number.isFinite(f0)
-    ? f0 >= 0.01 && f0 < 1e6
-      ? f0.toFixed(2)
-      : f0.toExponential(2)
-    : "—";
+  // f0 is rendered by the CNLS panel above to avoid showing the same number
+  // twice — kept here in `fit.f0` for downstream consumers, not displayed.
 
   const fitAny = fit as RandlesFitResult & {
     warburgStartFreq?: number;
@@ -186,39 +184,11 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
         </span>
       </div>
 
-      {isAuto && fit.chiSquared !== undefined && (
-        <div className="flex items-center justify-between text-xs font-mono">
-          <span className="text-muted-foreground">χ²_red</span>
-          <span
-            className={
-              fit.chiSquared < 0.01
-                ? "text-graph-primary"
-                : fit.chiSquared > 0.05
-                  ? "text-destructive"
-                  : "text-foreground"
-            }
-          >
-            {fit.chiSquared.toExponential(2)}
-            <span className="text-muted-foreground ml-2">
-              (N={fit.semicirclePoints}, dof={fit.dof})
-            </span>
-          </span>
-        </div>
-      )}
+      {/* Weighted SSR / dof, f₀ and Approx KK rows are intentionally omitted
+          here — the CNLS Fit panel above already reports them and showing the
+          same numbers twice was misleading. */}
 
-      <TooltipProvider delayDuration={150}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center justify-between text-xs font-mono cursor-help border-t border-border pt-2">
-              <span className="text-muted-foreground">f₀ (characteristic)</span>
-              <span className="text-foreground">{f0Str} Hz</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-xs text-xs font-mono">
-            Peak frequency of the semicircle. Confirms Rct × Cdl product.
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+
 
       {fit.warnFlags && fit.warnFlags.length > 0 && (
         <div className="flex flex-wrap gap-1 pt-1">
@@ -233,33 +203,39 @@ const CircuitFitResults = ({ fit, warburg, kk }: Props) => {
         </div>
       )}
 
-      {kk && (
-        <TooltipProvider delayDuration={150}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="border-t border-border pt-2 cursor-help space-y-1">
-                <span
-                  className={
-                    kk.passed
-                      ? "inline-flex items-center rounded-md border border-graph-primary/40 bg-graph-primary/10 px-2 py-0.5 text-[10px] font-mono text-graph-primary"
-                      : "inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10px] font-mono text-destructive"
-                  }
-                >
-                  {kk.passed ? "✓" : "✗"} KK Test {kk.passed ? "passed" : "failed"} ({kk.residualPct.toFixed(1)}%)
-                </span>
-                {!kk.passed && kk.warning && (
-                  <div className="text-[10px] font-mono text-destructive leading-snug">
-                    {kk.warning}
-                  </div>
-                )}
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-xs text-xs font-mono">
-              Kramers-Kronig test verifies that the system is linear, causal and stable during the measurement. A passing result validates that the EIS spectrum is physically meaningful.
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+      {linKK && (
+        <div className="border-t border-border pt-2 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+              Lin-KK validation
+            </span>
+            <span
+              className={
+                linKK.passed
+                  ? "inline-flex items-center rounded-md border border-graph-primary/40 bg-graph-primary/10 px-2 py-0.5 text-[10px] font-mono text-graph-primary"
+                  : linKK.residualRmsPct <= 10
+                    ? "inline-flex items-center rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-mono text-yellow-500"
+                    : "inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10px] font-mono text-destructive"
+              }
+            >
+              {linKK.passed ? "✓ Pass" : linKK.residualRmsPct <= 10 ? "⚠ Warning" : "✗ Fail"}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-[10px] font-mono text-muted-foreground">
+            <div>RMS: <span className="text-foreground">{linKK.residualRmsPct.toFixed(2)} %</span></div>
+            <div>Max: <span className="text-foreground">{linKK.maxResidualPct.toFixed(2)} %</span></div>
+            <div>RC: <span className="text-foreground">{linKK.tauCount}</span></div>
+          </div>
+          <div className="text-[9px] font-mono text-muted-foreground/70 leading-snug">
+            Passing supports consistency with linear, causal, stable EIS behavior within the measured frequency range.
+          </div>
+        </div>
       )}
+
+      {/* Approx. KK badge removed from main UI — Lin-KK above is the
+          consistency check shown to the user. Approx KK is kept in the
+          CSV export (marked informational only). */}
+      {kk == null && null}
 
       <div className="border-t border-border pt-2 space-y-1">
         <div className="text-[10px] text-muted-foreground font-mono uppercase">Warburg (low-freq tail)</div>
