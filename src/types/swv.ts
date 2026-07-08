@@ -37,6 +37,8 @@ export type SWVSmoothingMethod =
 
 export type SWVSimulationModel =
   | "empirical_peak"
+  /** Legacy alias — matches the string exported by SWV_SIMULATION_MODEL_ID. */
+  | "empirical_swv_peak_langmuir"
   | "reversible_surface"
   | "reversible_diffusion_approx"
   | "quasi_reversible_approx";
