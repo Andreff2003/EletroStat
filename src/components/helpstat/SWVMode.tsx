@@ -29,7 +29,6 @@ import ParametersPanel, {
 import { useSimulatedSWVData, SWV_SIMULATION_MODEL_ID } from "@/hooks/useSimulatedSWVData";
 import {
   analyzeSWV,
-  computeINet,
   validateSWVParameters,
 } from "@/utils/swvMetrics";
 import type {
@@ -566,5 +565,3 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
 }
 
 
-// Re-export the tiny helper so the tests can hit it via the mode module too.
-export { computeINet };
