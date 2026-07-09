@@ -162,6 +162,25 @@ describe("SWV — invariants", () => {
       Math.abs((metrics.peakCurrentRaw_uA as number) - (metrics.peakCurrentCorrected_uA as number)),
     ).toBeGreaterThan(1e-6);
   });
+  it("tolerates an isolated NaN sample without corrupting the sweep analysis", () => {
+    const clean = makeGaussianData(1, 0.002);
+    const baseline = analyzeSWV(clean, "linear_edges").metrics;
+    // Pick an index far from the peak (early edge) so we exercise the
+    // baseline-fit exclusion path — the peak sits around E ≈ 0.22 V.
+    const dirty = clean.map((p) => ({ ...p }));
+    const dropIdx = 5;
+    dirty[dropIdx] = { ...dirty[dropIdx], INet: NaN };
+    const { corrected, metrics } = analyzeSWV(dirty, "linear_edges");
+    expect(metrics.snr).not.toBeNull();
+    expect(Number.isFinite(metrics.snr as number)).toBe(true);
+    expect(metrics.peakDetected).toBe(true);
+    expect(metrics.peakDetected).toBe(baseline.peakDetected);
+    expect(metrics.warnings.some((w) => /missing sample/i.test(w))).toBe(true);
+    // Displayed / exported series MUST preserve the missing point as NaN,
+    // never fabricate a value.
+    expect(Number.isNaN(corrected[dropIdx].ICorrected as number)).toBe(true);
+    expect(Number.isNaN(corrected[dropIdx].baseline as number)).toBe(true);
+  });
   it("empty data returns a full SWVMetrics shape (no missing fields)", () => {
     const { metrics } = analyzeSWV([], "auto");
     expect(metrics).toMatchObject({
