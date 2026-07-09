@@ -199,16 +199,28 @@ export function correctBaseline(
   const yEdge: number[] = [];
   const edgeFraction = 0.2;
   const edgeCount = Math.max(2, Math.floor(n * edgeFraction));
+  // Only fit on finite (E, iNet) samples — a single NaN would otherwise
+  // poison the normal-equation sums and produce a NaN baseline everywhere.
+  const isFinitePt = (i: number) =>
+    Number.isFinite(E[i]) && Number.isFinite(iNet[i]);
   for (let i = 0; i < edgeCount; i++) {
-    if (i < band.lo || i >= band.hi) { xEdge.push(E[i]); yEdge.push(iNet[i]); }
+    if ((i < band.lo || i >= band.hi) && isFinitePt(i)) {
+      xEdge.push(E[i]); yEdge.push(iNet[i]);
+    }
   }
   for (let i = n - edgeCount; i < n; i++) {
-    if (i < band.lo || i >= band.hi) { xEdge.push(E[i]); yEdge.push(iNet[i]); }
+    if ((i < band.lo || i >= band.hi) && isFinitePt(i)) {
+      xEdge.push(E[i]); yEdge.push(iNet[i]);
+    }
   }
   if (xEdge.length < 4) {
-    // Fall back to all points outside the peak band.
+    // Fall back to all finite points outside the peak band.
+    xEdge.length = 0;
+    yEdge.length = 0;
     for (let i = 0; i < n; i++) {
-      if (i < band.lo || i >= band.hi) { xEdge.push(E[i]); yEdge.push(iNet[i]); }
+      if ((i < band.lo || i >= band.hi) && isFinitePt(i)) {
+        xEdge.push(E[i]); yEdge.push(iNet[i]);
+      }
     }
     warnings.push("Peak overlaps baseline region — using all non-peak points.");
   }
@@ -254,7 +266,7 @@ export function correctBaseline(
     const { a, b } = linearFit(xEdge, yEdge);
     return {
       methodUsed: "linear_edges",
-      baseline: E.map((x) => a * x + b),
+      baseline: E.map((x) => (Number.isFinite(x) ? a * x + b : NaN)),
       slope_uA_V: a,
       intercept_uA: b,
       warnings,
@@ -265,14 +277,18 @@ export function correctBaseline(
   const [c2, c1, c0] = polyFit2(xEdge, yEdge);
   // Warn only when the quadratic term contributes a substantial fraction of
   // the observed signal amplitude (|c2|·span² comparable to |peak|).
-  const spanE = Math.abs(E[E.length - 1] - E[0]);
-  const peakAmp = Math.max(...iNet.map((v) => Math.abs(v))) || 1;
+  const finiteE = E.filter((v) => Number.isFinite(v));
+  const spanE = finiteE.length >= 2
+    ? Math.abs(finiteE[finiteE.length - 1] - finiteE[0])
+    : 0;
+  const finiteAmps = iNet.filter((v) => Number.isFinite(v)).map((v) => Math.abs(v));
+  const peakAmp = finiteAmps.length ? Math.max(...finiteAmps) : 1;
   if (Math.abs(c2) * spanE * spanE > 0.5 * peakAmp) {
     warnings.push("Polynomial baseline curvature is large — verify with raw plot.");
   }
   return {
     methodUsed: "polynomial",
-    baseline: E.map((x) => c2 * x * x + c1 * x + c0),
+    baseline: E.map((x) => (Number.isFinite(x) ? c2 * x * x + c1 * x + c0 : NaN)),
     slope_uA_V: null,
     intercept_uA: c0,
     warnings,
@@ -323,10 +339,39 @@ export function detectSWVPeak(
 
   // Exclude the two outermost points from the candidate peak search (edges
   // are the most likely victims of baseline residuals).
-  let maxIdx = 1, minIdx = 1;
+  // A single NaN in iCorrected would otherwise poison every comparison
+  // (`NaN > x` and `NaN < x` are both false), so restrict the search to
+  // finite points and use the first finite interior index as seed.
+  let seed = -1;
   for (let i = 1; i < n - 1; i++) {
-    if (iCorrected[i] > iCorrected[maxIdx]) maxIdx = i;
-    if (iCorrected[i] < iCorrected[minIdx]) minIdx = i;
+    if (Number.isFinite(iCorrected[i])) { seed = i; break; }
+  }
+  if (seed < 0) {
+    warnings.push("No finite corrected samples — cannot detect a peak.");
+    return {
+      peakCurrentRaw_uA: null,
+      peakCurrentCorrected_uA: null,
+      peakPotential_V: null,
+      halfPeakWidth_mV: null,
+      baselineMethod,
+      baselineMethodUsed,
+      baselineSlope_uA_V: baselineSlope,
+      baselineIntercept_uA: baselineIntercept,
+      snr: null,
+      noiseRms_uA: null,
+      peakArea_uA_V: null,
+      lodEstimate_nM: null,
+      peakDetected: false,
+      peakPolarity: "unknown",
+      warnings,
+    };
+  }
+  let maxIdx = seed, minIdx = seed;
+  for (let i = 1; i < n - 1; i++) {
+    const v = iCorrected[i];
+    if (!Number.isFinite(v)) continue;
+    if (v > iCorrected[maxIdx]) maxIdx = i;
+    if (v < iCorrected[minIdx]) minIdx = i;
   }
   const maxVal = iCorrected[maxIdx];
   const minVal = iCorrected[minIdx];
@@ -345,7 +390,9 @@ export function detectSWVPeak(
   const halfWin = Math.max(3, Math.floor(n * 0.1));
   const outside: number[] = [];
   for (let i = 0; i < n; i++) {
-    if (Math.abs(i - peakIdx) > halfWin) outside.push(iCorrected[i]);
+    if (Math.abs(i - peakIdx) > halfWin && Number.isFinite(iCorrected[i])) {
+      outside.push(iCorrected[i]);
+    }
   }
   // Noise: MAD-based robust estimate scaled to Gaussian σ.
   // Fallback ladder (mirrors the fix already applied in CV):
@@ -355,7 +402,9 @@ export function detectSWVPeak(
   //   3) Peak-amplitude floor (max|I|·1e-4) — a strictly positive sentinel
   //      so SNR stays finite and downstream peak-detection does not silently
   //      report "no peak" on ideally clean signals.
-  const noiseSample = outside.length ? outside : iCorrected;
+  const noiseSample = outside.length
+    ? outside
+    : iCorrected.filter((v) => Number.isFinite(v));
   let noiseRms = 1.4826 * mad(noiseSample);
   let noiseFallback = false;
   if (!(noiseRms > 0)) {
@@ -367,7 +416,8 @@ export function detectSWVPeak(
     noiseFallback = true;
   }
   if (!(noiseRms > 0)) {
-    const amp = Math.max(...iCorrected.map((v) => Math.abs(v)));
+    const finiteAbs = iCorrected.filter((v) => Number.isFinite(v)).map((v) => Math.abs(v));
+    const amp = finiteAbs.length ? Math.max(...finiteAbs) : 0;
     noiseRms = Math.max(amp * 1e-4, Number.EPSILON);
     noiseFallback = true;
   }
@@ -411,7 +461,12 @@ export function detectSWVPeak(
   const hi = Math.min(n - 1, peakIdx + halfWin);
   let area = 0;
   for (let i = lo; i < hi; i++) {
-    area += 0.5 * (iCorrected[i] + iCorrected[i + 1]) * (E[i + 1] - E[i]);
+    const y0 = iCorrected[i], y1 = iCorrected[i + 1];
+    const x0 = E[i], x1 = E[i + 1];
+    if (Number.isFinite(y0) && Number.isFinite(y1)
+      && Number.isFinite(x0) && Number.isFinite(x1)) {
+      area += 0.5 * (y0 + y1) * (x1 - x0);
+    }
   }
 
   const peakDetected = snr >= 3 && Math.abs(peakVal) > 3 * noiseRms;
@@ -468,8 +523,27 @@ export function analyzeSWV(
   }
   const E = data.map((d) => d.E);
   const iNet = data.map((d) => d.INet);
+  // Count samples where INet (or E) is not finite — the ingest layer
+  // preserves NaN when the firmware omits a forward/reverse frame; a single
+  // dropped frame must not contaminate baseline fit, noise estimate or peak
+  // detection for the whole sweep.
+  let missing = 0;
+  for (let i = 0; i < iNet.length; i++) {
+    if (!Number.isFinite(iNet[i]) || !Number.isFinite(E[i])) missing++;
+  }
   const baseline = correctBaseline(E, iNet, method);
-  const iCorr = iNet.map((y, i) => y - baseline.baseline[i]);
+  if (missing > 0) {
+    baseline.warnings.unshift(
+      `${missing} missing sample(s) excluded from analysis.`,
+    );
+  }
+  // Preserve NaN in the displayed / exported series at the exact indices the
+  // ingest layer marked as missing — never fabricate a value for the plot.
+  const iCorr = iNet.map((y, i) =>
+    Number.isFinite(y) && Number.isFinite(baseline.baseline[i])
+      ? y - baseline.baseline[i]
+      : NaN,
+  );
   const metrics = detectSWVPeak(
     E,
     iCorr,
@@ -482,7 +556,9 @@ export function analyzeSWV(
   );
   const corrected: SWVDataPoint[] = data.map((d, i) => ({
     ...d,
-    baseline: baseline.baseline[i],
+    baseline: Number.isFinite(baseline.baseline[i]) && Number.isFinite(d.INet)
+      ? baseline.baseline[i]
+      : NaN,
     ICorrected: iCorr[i],
   }));
   return { corrected, metrics };
