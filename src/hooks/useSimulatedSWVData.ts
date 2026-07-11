@@ -4,10 +4,18 @@
  * MODEL — empirical/educational, not a rigorous SWV solver.
  * ---------------------------------------------------------
  * The differential current is generated as a Gaussian peak at Epeak whose
- * amplitude follows a Langmuir isotherm in concentration:
+ * amplitude follows a Langmuir isotherm in concentration, modulated by
+ * empirical gains that capture the first-order dependences observed in
+ * real reversible SWV responses:
  *
- *   I_net(E) = Ipeak · exp(-0.5 · ((E - Epeak) / σ)²) + baseline(E) + noise
- *   Ipeak    = Imax · C / (C + Kd)     (Langmuir)
+ *   Ipeak = Imax · C/(C+Kd) · G_f · G_A · G_amp
+ *   G_f   = clamp((f / fRef)^0.4, 0.3, 3)          (Ip ≈ ∝ √f softened)
+ *   G_A   = clamp(A / A_ref, 0.1, 20)              (Randles–Ševčík: Ip ∝ A)
+ *   G_amp = (Esw/(Esw+E0)) / (Eref/(Eref+E0))       (saturating in amplitude)
+ *
+ *   I_net(E) = Ipeak · exp(-0.5 · ((E - Epeak) / σ)²) + baseline(E) + η(I)
+ *   baseline(E) = a + b·E + c·E²                   (mild curvature)
+ *   η(I)        = N(0, σ0 + k·√|I|)                (shot/ADC-like scaling)
  *
  * Forward / reverse currents are split so their difference reproduces the
  * differential peak, plus a common capacitive background and independent
@@ -29,6 +37,14 @@ import type { SWVDataPoint, SWVParameters } from "@/types/swv";
 const IMAX_UA = 1.6;   // saturation peak current
 const KD_NM = 30;      // apparent Langmuir Kd for cortisol demo
 const EPEAK_V = 0.22;  // default cortisol redox-label peak position
+const FREQ_REF_HZ = 25;       // reference frequency for the gain normalisation
+const AREA_REF_CM2 = 0.07;    // reference electrode area (typical SPE)
+const AMP_REF_MV = 25;        // reference SWV amplitude
+const AMP_HALFSAT_MV = 20;    // Esw where the amplitude gain reaches 0.5
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
 
 export interface UseSimulatedSWVDataReturn {
   data: SWVDataPoint[];
@@ -73,12 +89,33 @@ export function useSimulatedSWVData(): UseSimulatedSWVDataReturn {
       const program = generateSWVProgram(params);
       if (program.length === 0) return;
       const C = Math.max(0, params.concentration_nM ?? 0);
-      const Ipeak = IMAX_UA * (C / (C + KD_NM));
+      // ── empirical scaling gains ────────────────────────────────────────
+      const freqGain = clamp(
+        Math.pow(Math.max(params.frequency_Hz, 1e-3) / FREQ_REF_HZ, 0.4),
+        0.3,
+        3,
+      );
+      const area = params.area_cm2 && params.area_cm2 > 0 ? params.area_cm2 : AREA_REF_CM2;
+      const areaGain = clamp(area / AREA_REF_CM2, 0.1, 20);
+      const ampSat = (esw: number) => esw / (esw + AMP_HALFSAT_MV);
+      const ampGain = ampSat(Math.max(params.amplitude_mV, 1e-3)) / ampSat(AMP_REF_MV);
+      const Ipeak = IMAX_UA * (C / (C + KD_NM)) * freqGain * areaGain * ampGain;
       // σ (V) related to half-peak width; rough dependence on amplitude.
       const sigma = Math.max(0.02, 0.03 + params.amplitude_mV / 4000);
-      const cBg = 0.05; // capacitive background µA
-      const bgSlope = 0.02; // µA/V mild baseline slope
-      const noiseSigma = 0.01; // µA independent pulse noise
+      const Epeak = Number.isFinite(params.simulationEpeak_V as number)
+        ? (params.simulationEpeak_V as number)
+        : EPEAK_V;
+      // Baseline: mild polynomial (a + b·E + c·E²). c kept small on purpose
+      // so linear_edges baseline correction still recovers the peak well.
+      const cBg = 0.05;      // µA — capacitive background (a)
+      const bgSlope = 0.02;  // µA/V — linear tilt (b)
+      const bgCurv = 0.015;  // µA/V² — small curvature (c)
+      // Signal-dependent noise: σ(I) = σ0 + k·√|I|. Mimics shot/ADC noise
+      // without going full flicker/50-Hz territory (out of scope).
+      const noiseFloor = 0.008; // µA independent baseline noise
+      const noiseGain = 0.006;  // µA per √µA of signal
+      const noiseAt = (i: number) =>
+        noiseFloor + noiseGain * Math.sqrt(Math.max(0, Math.abs(i)));
       let i = 0;
       setIsRunning(true);
       setIsComplete(false);
@@ -90,14 +127,15 @@ export function useSimulatedSWVData(): UseSimulatedSWVDataReturn {
           return;
         }
         const step = program[i];
-        const baseline = cBg + bgSlope * step.E;
+        const baseline = cBg + bgSlope * step.E + bgCurv * step.E * step.E;
         const iNetClean =
-          Ipeak * Math.exp(-0.5 * ((step.E - EPEAK_V) / sigma) ** 2) + baseline;
-        const netNoise = gaussianNoise(noiseSigma);
+          Ipeak * Math.exp(-0.5 * ((step.E - Epeak) / sigma) ** 2) + baseline;
+        const netNoise = gaussianNoise(noiseAt(iNetClean));
         const iNet = iNetClean + netNoise;
         const commonCap = cBg + bgSlope * step.E * 0.5;
-        const iForward = commonCap + 0.5 * (iNet - baseline) + gaussianNoise(noiseSigma);
-        const iReverse = commonCap - 0.5 * (iNet - baseline) + gaussianNoise(noiseSigma);
+        const halfDiff = 0.5 * (iNet - baseline);
+        const iForward = commonCap + halfDiff + gaussianNoise(noiseAt(commonCap + halfDiff));
+        const iReverse = commonCap - halfDiff + gaussianNoise(noiseAt(commonCap - halfDiff));
         const pt: SWVDataPoint = {
           E: step.E,
           IForward: iForward,
