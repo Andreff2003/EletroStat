@@ -91,6 +91,12 @@ export interface SWVParameters {
   baselineMethod?: SWVBaselineMethod;
   smoothing?: SWVSmoothingMethod;
   model?: SWVSimulationModel;
+  /**
+   * Optional simulated peak potential (V vs reference). Only used by the
+   * empirical SWV simulator; ignored for live acquisition. Not surfaced in
+   * the UI — reserved for programmatic tuning per analyte.
+   */
+  simulationEpeak_V?: number;
 }
 
 export interface SWVMetrics {
