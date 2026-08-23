@@ -1,3 +1,4 @@
+import { EmptyPlotState } from "@/components/EmptyPlotState";
 import { useMemo } from "react";
 import {
   ComposedChart,
@@ -29,6 +30,8 @@ interface Props {
   plotMode?: "raw" | "corrected";
   overlays?: SWVOverlay[];
   height?: number;
+  /** Compact read-only rendering for the dashboard grid. */
+  compact?: boolean;
 }
 
 const fmt = (v: unknown, unit: string, digits = 3) =>
@@ -48,6 +51,7 @@ export default function SWVPlot({
   plotMode = "raw",
   overlays = [],
   height = 360,
+  compact = false,
 }: Props) {
   const correctedAvailable =
     !!corrected &&
@@ -55,6 +59,11 @@ export default function SWVPlot({
     corrected.some((p) => Number.isFinite(p.ICorrected));
   const effectiveMode: "raw" | "corrected" =
     plotMode === "corrected" && correctedAvailable ? "corrected" : "raw";
+  const seriesCount =
+    1 + // main I net line
+    (showForwardReverse ? 2 : 0) +
+    (showBaseline ? 1 : 0) +
+    overlays.length;
   const rows = useMemo(() => {
     const src = corrected && corrected.length === data.length ? corrected : data;
     return src.map((p, i) => ({
@@ -70,34 +79,47 @@ export default function SWVPlot({
     }));
   }, [data, corrected, effectiveMode]);
 
+  if (data.length === 0 && overlays.length === 0) {
+    return (
+      <EmptyPlotState
+        title="No SWV scan yet"
+        hint="Click Start SWV to run a square-wave voltammetry scan."
+      />
+    );
+  }
+
   return (
-    <div style={{ width: "100%", height }}>
+    <div style={{ width: "100%", height: compact ? "100%" : height }}>
       <ResponsiveContainer>
-        <ComposedChart data={rows} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
+        <ComposedChart data={rows} margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 10, right: 20, left: 10, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
           <XAxis
             dataKey="E"
             type="number"
             domain={["auto", "auto"]}
-            label={{ value: "E / V", position: "insideBottom", offset: -5 }}
+            label={compact ? undefined : { value: "E / V", position: "insideBottom", offset: -5 }}
+            tick={{ fontSize: compact ? 9 : 11 }}
             tickFormatter={(v: number) => v.toFixed(2)}
           />
           <YAxis
-            label={{ value: "I / µA", angle: -90, position: "insideLeft" }}
+            label={compact ? undefined : { value: "I / µA", angle: -90, position: "insideLeft" }}
+            tick={{ fontSize: compact ? 9 : 11 }}
             tickFormatter={(v: number) => v.toFixed(2)}
           />
           <Tooltip
             formatter={(v: number | string, name: string) => [fmt(Number(v), "µA"), name]}
             labelFormatter={(v: number) => `E = ${Number(v).toFixed(3)} V`}
           />
-          <Legend />
+          {!compact && seriesCount > 1 && (
+            <Legend wrapperStyle={{ fontSize: 11, fontFamily: "monospace" }} />
+          )}
           {overlays.map((ov) => (
             <Line
               key={ov.id}
               type="monotone"
               data={ov.data}
               dataKey="INet"
-              name={ov.label}
+              name={`${ov.label}${effectiveMode === "corrected" ? " (corrected)" : " (raw)"}`}
               stroke={ov.color}
               dot={false}
               strokeWidth={1.5}
@@ -105,15 +127,22 @@ export default function SWVPlot({
               isAnimationActive={false}
             />
           ))}
-          <Line type="monotone" dataKey="INet" name="I_net" stroke="#3b82f6" dot={false} strokeWidth={2} />
+          <Line
+            type="monotone"
+            dataKey="INet"
+            name={effectiveMode === "corrected" ? "I net (corrected)" : "I net (raw)"}
+            stroke="#3b82f6"
+            dot={false}
+            strokeWidth={2}
+          />
           {showForwardReverse && (
             <>
-              <Line type="monotone" dataKey="IForward" name="I_forward" stroke="#10b981" dot={false} strokeWidth={1} />
-              <Line type="monotone" dataKey="IReverse" name="I_reverse" stroke="#ef4444" dot={false} strokeWidth={1} />
+              <Line type="monotone" dataKey="IForward" name="I forward" stroke="#10b981" dot={false} strokeWidth={1} />
+              <Line type="monotone" dataKey="IReverse" name="I reverse" stroke="#ef4444" dot={false} strokeWidth={1} />
             </>
           )}
           {showBaseline && (
-            <Line type="monotone" dataKey="baseline" name="baseline" stroke="#9ca3af" dot={false} strokeDasharray="4 4" />
+            <Line type="monotone" dataKey="baseline" name="Baseline" stroke="#9ca3af" dot={false} strokeDasharray="4 4" />
           )}
           {metrics?.peakPotential_V != null && metrics.peakCurrentCorrected_uA != null && (
             <ReferenceDot

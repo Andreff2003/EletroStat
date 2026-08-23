@@ -120,8 +120,10 @@ export function useSimulatedEIS(speed: number = 200) {
         setIsRunning(false);
         return;
       }
-      setData(prev => [...prev, allPoints.current[indexRef.current]]);
+      const pt = allPoints.current[indexRef.current];
       indexRef.current++;
+      if (!pt) return; // guard against a rebuilt/shorter buffer mid-sweep
+      setData(prev => [...prev, pt]);
     }, speed);
     return () => clearInterval(interval);
   }, [isRunning, speed]);
@@ -147,6 +149,24 @@ export function useSimulatedEIS(speed: number = 200) {
 }
 
 /**
+ * Overridable simulation parameters for the BioFET hooks. All fields are
+ * optional; missing values fall back to the module-level constants above so
+ * behaviour is unchanged when the caller doesn't customise anything.
+ */
+export interface FETSimOverrides {
+  kd_nM?: number;
+  vtBaseline_V?: number;
+  deltaVtMax_V?: number;
+  idMax_uA?: number;
+  idealityFactor?: number;
+  bindingRate_perS?: number;
+  readoutBias_V?: number;
+  timeDuration_s?: number;
+  timeStep_s?: number;
+  injectionTime_s?: number;
+}
+
+/**
  * BioFET — transfer curve. Analyte Vt shifts right with concentration.
  */
 export function useSimulatedFETTransfer(speed: number = 100) {
@@ -158,21 +178,31 @@ export function useSimulatedFETTransfer(speed: number = 100) {
   const allBaseline = useRef<FETTransferPoint[]>([]);
   const allAnalyte = useRef<FETTransferPoint[]>([]);
 
-  const buildPoints = useCallback((concentration: number, vgMin = -0.5, vgMax = 1.5, totalPoints = 51) => {
+  const buildPoints = useCallback((
+    concentration: number,
+    vgMin = -0.5,
+    vgMax = 1.5,
+    totalPoints = 51,
+    overrides: FETSimOverrides = {},
+  ) => {
+    const kd = overrides.kd_nM ?? KD;
+    const vtBase = overrides.vtBaseline_V ?? VT_BASELINE;
+    const dVtMax = overrides.deltaVtMax_V ?? VT_MAX_SHIFT;
+    const idMax = overrides.idMax_uA ?? ID_MAX;
+    const n = overrides.idealityFactor ?? 2.0;
+
     const deltaVt =
-      concentration > 0
-        ? VT_MAX_SHIFT * concentration / (concentration + KD)
-        : 0;
-    const VtBase = VT_BASELINE;
-    const VtAnalyte = VT_BASELINE + deltaVt;
+      concentration > 0 ? dVtMax * concentration / (concentration + kd) : 0;
+    const VtBase = vtBase;
+    const VtAnalyte = vtBase + deltaVt;
 
     const base: FETTransferPoint[] = [];
     const analyte: FETTransferPoint[] = [];
 
     // Softplus-smoothed MOSFET model — see src/utils/fetModel.ts. K is chosen
-    // so that strong-inversion Id at Vg = vgMax matches ID_MAX for baseline.
-    const K = ID_MAX / ((vgMax - VtBase) ** 2);
-    const params = { K, n: 2.0, vt_thermal: KT_Q_300K };
+    // so that strong-inversion Id at Vg = vgMax matches idMax for baseline.
+    const K = idMax / ((vgMax - VtBase) ** 2);
+    const params = { K, n, vt_thermal: KT_Q_300K };
 
     for (let i = 0; i < totalPoints; i++) {
       const vg = vgMin + (i / (totalPoints - 1)) * (vgMax - vgMin);
@@ -192,15 +222,24 @@ export function useSimulatedFETTransfer(speed: number = 100) {
         return;
       }
       const idx = indexRef.current;
-      setBaseline(prev => [...prev, allBaseline.current[idx]]);
-      setWithAnalyte(prev => [...prev, allAnalyte.current[idx]]);
+      const b = allBaseline.current[idx];
+      const a = allAnalyte.current[idx];
       indexRef.current++;
+      if (!b || !a) return; // guard against a rebuilt/shorter buffer mid-sweep
+      setBaseline(prev => [...prev, b]);
+      setWithAnalyte(prev => [...prev, a]);
     }, speed);
     return () => clearInterval(interval);
   }, [isRunning, speed]);
 
-  const start = useCallback((concentration: number = 0, vgMin?: number, vgMax?: number, totalPoints?: number) => {
-    const { base, analyte } = buildPoints(concentration, vgMin, vgMax, totalPoints);
+  const start = useCallback((
+    concentration: number = 0,
+    vgMin?: number,
+    vgMax?: number,
+    totalPoints?: number,
+    overrides?: FETSimOverrides,
+  ) => {
+    const { base, analyte } = buildPoints(concentration, vgMin, vgMax, totalPoints, overrides);
     allBaseline.current = base;
     allAnalyte.current = analyte;
     setBaseline([]);
@@ -230,26 +269,35 @@ export function useSimulatedFETTime(speed: number = 200) {
   const [data, setData] = useState<FETTimePoint[]>([]);
   const timeRef = useRef(0);
   const concRef = useRef(0);
+  const overridesRef = useRef<FETSimOverrides>({});
   const [isRunning, setIsRunning] = useState(false);
 
   useEffect(() => {
     if (!isRunning) return;
 
     const concentration = concRef.current;
+    const o = overridesRef.current;
+    const kd = o.kd_nM ?? KD;
+    const vtBase = o.vtBaseline_V ?? VT_BASELINE;
+    const dVtMax = o.deltaVtMax_V ?? VT_MAX_SHIFT;
+    const idMax = o.idMax_uA ?? ID_MAX;
+    const n = o.idealityFactor ?? 2.0;
+    const bindingRate = o.bindingRate_perS ?? 0.5;
+    const vgRead = o.readoutBias_V ?? FET_TIME_VG_READ_V;
+    const duration = o.timeDuration_s ?? FET_TIME_DURATION_S;
+    const DT = o.timeStep_s ?? FET_TIME_DT_S;
+    const injectionTime = o.injectionTime_s ?? 10;
+
     // Equilibrium ΔVt from the same Langmuir binding used in the transfer
     // curve so the two simulated signals are physically consistent.
     const deltaVtEq =
-      concentration > 0 ? VT_MAX_SHIFT * concentration / (concentration + KD) : 0;
-    const injectionTime = 10;
-    const bindingRate = 0.5;
+      concentration > 0 ? dVtMax * concentration / (concentration + kd) : 0;
 
     // Fixed read-out gate bias and FET parameters — mirrors useSimulatedFETTransfer.
-    const VtBase = VT_BASELINE;
+    const VtBase = vtBase;
     const vgMaxRef = 1.5;
-    const K = ID_MAX / ((vgMaxRef - VtBase) ** 2);
-    const fetParams = { K, n: 2.0, vt_thermal: KT_Q_300K };
-
-    const DT = FET_TIME_DT_S;
+    const K = idMax / ((vgMaxRef - VtBase) ** 2);
+    const fetParams = { K, n, vt_thermal: KT_Q_300K };
 
     const interval = setInterval(() => {
       const t = timeRef.current * DT;
@@ -259,7 +307,7 @@ export function useSimulatedFETTime(speed: number = 200) {
         vt = VtBase + deltaVtEq * (1 - Math.exp(-bindingRate * elapsed));
       }
       const id = addCurrentNoise(
-        fetDrainCurrent(FET_TIME_VG_READ_V, vt, fetParams),
+        fetDrainCurrent(vgRead, vt, fetParams),
         0.01,
         0.05,
       );
@@ -268,14 +316,15 @@ export function useSimulatedFETTime(speed: number = 200) {
         id: Math.round(id * 100) / 100,
       }]);
       timeRef.current++;
-      if (t >= FET_TIME_DURATION_S) setIsRunning(false);
+      if (t >= duration) setIsRunning(false);
     }, speed);
 
     return () => clearInterval(interval);
   }, [isRunning, speed]);
 
-  const start = useCallback((concentration: number = 0) => {
+  const start = useCallback((concentration: number = 0, overrides: FETSimOverrides = {}) => {
     concRef.current = concentration;
+    overridesRef.current = overrides;
     setData([]);
     timeRef.current = 0;
     setIsRunning(true);

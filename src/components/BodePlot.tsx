@@ -1,3 +1,4 @@
+import { EmptyPlotState } from "@/components/EmptyPlotState";
 import { useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -7,13 +8,18 @@ import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
 interface BodePlotProps {
   data: EISDataPoint[];
+  overlays?: { label: string; color: string; data: EISDataPoint[] }[];
 }
 
-const BodePlot = ({ data }: BodePlotProps) => {
+const BodePlot = ({ data, overlays }: BodePlotProps) => {
   const plotData = data.map(d => ({
     freq: d.frequency,
     zMag: d.zMag,
     phase: d.phase,
+  }));
+  const ovs = (overlays ?? []).map((o) => ({
+    ...o,
+    data: o.data.map((d) => ({ freq: d.frequency, zMag: d.zMag, phase: d.phase })),
   }));
 
   const [zoomArea, setZoomArea] = useState<{ x1: number; x2: number } | null>(null);
@@ -41,6 +47,15 @@ const BodePlot = ({ data }: BodePlotProps) => {
     setZoomDomain({ x: [x1, x2] });
     setZoomArea(null);
   };
+
+  if (data.length === 0 && ovs.length === 0) {
+    return (
+      <EmptyPlotState
+        title="No EIS sweep yet"
+        hint="Click Start EIS to begin a simulated sweep, or switch Data Source to Live (ESP32) to connect your device."
+      />
+    );
+  }
 
   return (
     <div className="w-full h-full" style={{ position: "relative" }}>
@@ -116,6 +131,35 @@ const BodePlot = ({ data }: BodePlotProps) => {
           />
           <Line yAxisId="left" type="monotone" dataKey="zMag" name="|Z| (Ω)" stroke="hsl(160 70% 50%)" strokeWidth={2} dot={false} isAnimationActive={false} />
           <Line yAxisId="right" type="monotone" dataKey="phase" name="Phase (°)" stroke="hsl(35 90% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
+          {ovs.map((o, i) => [
+            <Line
+              key={`ov-mag-${i}`}
+              yAxisId="left"
+              type="monotone"
+              data={o.data}
+              dataKey="zMag"
+              name={`${o.label} |Z|`}
+              stroke={o.color}
+              strokeWidth={1.5}
+              strokeDasharray="5 3"
+              dot={false}
+              isAnimationActive={false}
+            />,
+            <Line
+              key={`ov-ph-${i}`}
+              yAxisId="right"
+              type="monotone"
+              data={o.data}
+              dataKey="phase"
+              name={`${o.label} φ`}
+              stroke={o.color}
+              strokeOpacity={0.6}
+              strokeWidth={1.5}
+              strokeDasharray="2 3"
+              dot={false}
+              isAnimationActive={false}
+            />,
+          ])}
           {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
             <ReferenceArea yAxisId="left" x1={zoomArea.x1} x2={zoomArea.x2} strokeOpacity={0.3} fill="hsl(160 70% 55%)" fillOpacity={0.15} />
           )}

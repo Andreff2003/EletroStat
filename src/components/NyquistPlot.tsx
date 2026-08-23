@@ -1,3 +1,4 @@
+import { EmptyPlotState } from "@/components/EmptyPlotState";
 import { useMemo, useState } from "react";
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
@@ -21,6 +22,9 @@ interface NyquistPlotProps {
   showSeparator?: boolean;
   separatorZReal?: number | null;
   onSeparatorChange?: (zReal: number) => void;
+
+  /** Compact read-only rendering for the dashboard grid. */
+  compact?: boolean;
 }
 
 const SEMI_COLOR = "hsl(160 70% 55%)"; // teal
@@ -34,8 +38,9 @@ const NyquistPlot = ({
   showSeparator = false,
   separatorZReal = null,
   onSeparatorChange,
+  compact = false,
 }: NyquistPlotProps) => {
-  const ovs = overlays ?? [];
+  const ovs = compact ? [] : (overlays ?? []);
 
   const { minZ, maxZ } = useMemo(() => {
     if (data.length === 0) return { minZ: 0, maxZ: 1 };
@@ -48,7 +53,7 @@ const NyquistPlot = ({
   }, [data]);
 
   const sep = separatorZReal;
-  const hasSep = showSeparator && sep != null;
+  const hasSep = !compact && showSeparator && sep != null;
 
   // Find the frequency corresponding to the separator zReal value.
   // We filter by FREQUENCY (not zReal) to correctly exclude the Warburg
@@ -115,9 +120,18 @@ const NyquistPlot = ({
     setZoomArea(null);
   };
 
+  if (data.length === 0 && ovs.length === 0) {
+    return (
+      <EmptyPlotState
+        title="No EIS sweep yet"
+        hint="Click Start EIS to begin a simulated sweep, or switch Data Source to Live (ESP32) to connect your device."
+      />
+    );
+  }
+
   return (
     <div className="w-full h-full flex flex-col" style={{ position: "relative" }}>
-      {zoomDomain && (
+      {!compact && zoomDomain && (
         <button
           onClick={() => setZoomDomain(null)}
           style={{
@@ -135,10 +149,10 @@ const NyquistPlot = ({
       <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart
-            margin={{ top: 10, right: 20, bottom: 40, left: 20 }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
+            margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 28, right: 24, bottom: 24, left: 48 }}
+            onMouseDown={compact ? undefined : handleMouseDown}
+            onMouseMove={compact ? undefined : handleMouseMove}
+            onMouseUp={compact ? undefined : handleMouseUp}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 15% 15%)" />
             <XAxis
@@ -147,8 +161,8 @@ const NyquistPlot = ({
               name="Z' (Ω)"
               domain={zoomDomain ? zoomDomain.x : ['auto', 'auto']}
               allowDataOverflow
-              label={{ value: "Z' (Ohms) — Real Impedance", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
-              tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+              label={compact ? undefined : { value: "Z' (Ohms) — Real Impedance", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
+              tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
               stroke="hsl(220 15% 20%)"
             />
             <YAxis
@@ -157,8 +171,24 @@ const NyquistPlot = ({
               name="-Z'' (Ω)"
               domain={zoomDomain ? zoomDomain.y : ['auto', 'auto']}
               allowDataOverflow
-              label={{ value: "-Z'' (Ohms) — Imaginary", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(215 15% 50%)", fontSize: 12 }}
-              tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+              label={compact ? undefined : (props: any) => {
+                const { viewBox } = props;
+                const cy = viewBox.y + viewBox.height / 2;
+                return (
+                  <text
+                    x={14}
+                    y={cy}
+                    transform={`rotate(-90, 14, ${cy})`}
+                    textAnchor="middle"
+                    fill="hsl(160 70% 50%)"
+                    fontSize={11}
+                    fontFamily="monospace"
+                  >
+                    -Z'' (Ohms) — Imaginary
+                  </text>
+                );
+              }}
+              tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
               stroke="hsl(220 15% 20%)"
             />
             <Tooltip
@@ -238,10 +268,10 @@ const NyquistPlot = ({
                 ifOverflow="extendDomain"
               />
             )}
-            {(ovs.length > 0 || hasSep) && (
+            {!compact && (ovs.length > 0 || hasSep) && (
               <Legend wrapperStyle={{ fontSize: 11, fontFamily: "monospace" }} />
             )}
-            {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
+            {!compact && isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
               <ReferenceArea
                 x1={Math.min(zoomArea.x1, zoomArea.x2)}
                 x2={Math.max(zoomArea.x1, zoomArea.x2)}
@@ -254,7 +284,7 @@ const NyquistPlot = ({
         </ResponsiveContainer>
       </div>
 
-      {hasSep && onSeparatorChange && (
+      {!compact && hasSep && onSeparatorChange && (
         <div className="mt-2 px-2 pb-1">
           <div className="flex items-center justify-between text-[11px] font-mono mb-1">
             <span style={{ color: SEP_COLOR }}>

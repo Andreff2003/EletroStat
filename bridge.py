@@ -47,25 +47,6 @@ except ImportError:  # pragma: no cover
 IMAX_UA = 1.6
 KD_NM = 30.0
 EPEAK_V = 0.22
-FREQ_REF_HZ = 25.0
-AREA_REF_CM2 = 0.07
-AMP_REF_MV = 25.0
-AMP_HALFSAT_MV = 20.0
-NOISE_FLOOR_UA = 0.008
-NOISE_GAIN_UA = 0.006
-BG_CURV = 0.015  # µA/V² — mild baseline curvature
-
-
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
-
-
-def _amp_sat(esw: float) -> float:
-    return esw / (esw + AMP_HALFSAT_MV)
-
-
-def _noise_at(i_ua: float) -> float:
-    return NOISE_FLOOR_UA + NOISE_GAIN_UA * math.sqrt(max(0.0, abs(i_ua)))
 
 
 def _langmuir(c_nM: float) -> float:
@@ -82,8 +63,6 @@ async def _stream_swv_simulated(send, p: Dict[str, Any]) -> None:
     quiet = float(p.get("quietTime_s", 2.0))
     direction = str(p.get("direction", "anodic"))
     conc = float(p.get("concentration", 0))
-    area = float(p.get("area_cm2", AREA_REF_CM2) or AREA_REF_CM2)
-    epeak = float(p.get("simulationEpeak_V", EPEAK_V))
     # Mirror the frontend validators — never accept a payload that would
     # produce a NaN-laden stream.
     if not (step_mV > 0):
@@ -104,12 +83,7 @@ async def _stream_swv_simulated(send, p: Dict[str, Any]) -> None:
     step_V = step_mV / 1000.0
     n = int(math.floor(abs(endE - startE) / step_V + 1e-9)) + 1
     ramp = 1 if endE >= startE else -1
-    # Empirical gains mirroring src/hooks/useSimulatedSWVData.ts so live
-    # simulation and frontend simulation agree on Ip scaling.
-    freq_gain = _clamp((max(freq, 1e-3) / FREQ_REF_HZ) ** 0.4, 0.3, 3.0)
-    area_gain = _clamp((area if area > 0 else AREA_REF_CM2) / AREA_REF_CM2, 0.1, 20.0)
-    amp_gain = _amp_sat(max(amp_mV, 1e-3)) / _amp_sat(AMP_REF_MV)
-    ipk = _langmuir(conc) * freq_gain * area_gain * amp_gain
+    ipk = _langmuir(conc)
     sigma = max(0.02, 0.03 + amp_mV / 4000.0)
     period = 1.0 / freq
     await send({"type": "swv_status", "status": "running"})
@@ -117,13 +91,12 @@ async def _stream_swv_simulated(send, p: Dict[str, Any]) -> None:
         await asyncio.sleep(min(quiet, 0.5))
         for i in range(n):
             E = startE + ramp * i * step_V
-            base = 0.05 + 0.02 * E + BG_CURV * E * E
-            clean = ipk * math.exp(-0.5 * ((E - epeak) / sigma) ** 2) + base
-            i_net = clean + random.gauss(0, _noise_at(clean))
+            base = 0.05 + 0.02 * E
+            i_net = ipk * math.exp(-0.5 * ((E - EPEAK_V) / sigma) ** 2) + base \
+                + random.gauss(0, 0.01)
             cbg = 0.05 + 0.01 * E
-            half = 0.5 * (i_net - base)
-            i_fwd = cbg + half + random.gauss(0, _noise_at(cbg + half))
-            i_rev = cbg - half + random.gauss(0, _noise_at(cbg - half))
+            i_fwd = cbg + 0.5 * (i_net - base) + random.gauss(0, 0.01)
+            i_rev = cbg - 0.5 * (i_net - base) + random.gauss(0, 0.01)
             # Never emit NaN — every value is finite by construction of the
             # empirical model, but we still round to 6 decimal places so no
             # accidental subnormals leak into the JSON payload.

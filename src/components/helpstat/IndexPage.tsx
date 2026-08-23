@@ -1,3 +1,4 @@
+import { Hint, InfoHint } from "@/components/InfoHint";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import SWVMode, { type SWVController } from "@/components/helpstat/SWVMode";
@@ -19,8 +20,11 @@ import NyquistPlot from "@/components/NyquistPlot";
 import BodePlot from "@/components/BodePlot";
 import FETTransferPlot from "@/components/FETTransferPlot";
 import FETTimePlot from "@/components/FETTimePlot";
+import SWVPlot from "@/components/SWVPlot";
 import StatusIndicator from "@/components/StatusIndicator";
 import ConnectionPanel from "@/components/ConnectionPanel";
+import MultiChannelPanel, { type Channel } from "@/components/MultiChannelPanel";
+import MultiChannelView from "@/components/MultiChannelView";
 import SignalQuality from "@/components/SignalQuality";
 import SweepProgress, { type SweepStatus } from "@/components/SweepProgress";
 import {
@@ -29,9 +33,14 @@ import {
   useSimulatedFETTime,
 } from "@/hooks/useSimulatedData";
 import { useSimulatedCVData, CV_E0_PRIME } from "@/hooks/useSimulatedCVData";
+import { useSWVModeState } from "@/hooks/useSWVModeState";
 import CVPlot from "@/components/CVPlot";
+import { DashboardCell } from "@/components/DashboardCell";
+import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
+
 import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
 import { computeCVMetrics } from "@/utils/computeCVMetrics";
+import { analyzeSWV } from "@/utils/swvMetrics";
 import {
   exportEISData,
   exportFETTransferData,
@@ -42,11 +51,13 @@ import {
   exportCVData,
   exportCVCalibrationCSV,
 } from "@/utils/csvExport";
+import { parseImportedCsv } from "@/utils/csvImport";
 import { useWebSocketData } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
   DEFAULT_EIS_PARAMS,
   DEFAULT_FET_PARAMS,
   DEFAULT_CV_PARAMS,
+  computeEISPointCount,
   type EISParams,
   type FETParams,
   type CVParams,
@@ -79,7 +90,7 @@ import {
   hasAnyNotes,
   type MeasurementNotes,
 } from "@/utils/measurementNotes";
-import { EXPECTED_FET_TIME_POINTS } from "@/utils/fetConstants";
+
 
 import CNLSFitResults from "@/components/CNLSFitResults";
 import {
@@ -106,6 +117,7 @@ import {
   type StoredEISMeasurement,
   type StoredFETMeasurement,
   type StoredCVMeasurement,
+  type StoredSWVMeasurement,
 } from "@/utils/sessionStore";
 import { logActivity, clearActivityLog } from "@/utils/activityLog";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
@@ -136,6 +148,25 @@ interface CVOverlayCurve {
   data: CVDataPoint[];
 }
 
+interface SWVOverlayCurve {
+  id: string;
+  label: string;
+  color: string;
+  data: import("@/types/swv").SWVDataPoint[];
+}
+
+type DemoPhase = "idle" | "eis" | "cv" | "swv" | "fet" | "done";
+const PHASE_ORDER: DemoPhase[] = ["eis", "cv", "swv", "fet"];
+const PHASE_LABEL: Record<DemoPhase, string> = {
+  idle: "",
+  eis: "EIS",
+  cv: "CV",
+  swv: "SWV",
+  fet: "BioFET",
+  done: "",
+};
+
+
 interface FETOverlayCurve {
   id: string;
   label: string;
@@ -144,9 +175,127 @@ interface FETOverlayCurve {
   withAnalyte: import("@/hooks/useSimulatedData").FETTransferPoint[];
 }
 
+/**
+ * Open a native file picker for a CSV previously exported by this app and
+ * hand the parsed overlay data back through `onOk`. Used by EIS/CV/SWV
+ * "Import CSV" buttons. This is visualization-only — no re-analysis, no
+ * fitting; the parsed points are drawn verbatim as an overlay curve.
+ */
+function importOverlayCsv(
+  expected: "eis" | "cv" | "swv" | "fet_transfer" | "fet_time",
+  onOk: (r: {
+    mode: "eis" | "cv" | "swv" | "fet_transfer" | "fet_time";
+    measurements: {
+      id: string;
+      concentration: number | null;
+      points: unknown[];
+      baseline?: unknown[];
+      analyte?: unknown[];
+      markers?: { time: number; label: string }[];
+      label: string;
+    }[];
+    skipped: number;
+    fileLabel: string;
+  }) => void,
+) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".csv,text/csv";
+  input.style.display = "none";
+  input.onchange = async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const r = parseImportedCsv(text, expected);
+      if ("error" in r) {
+        toast.error(r.error);
+        return;
+      }
+      const fileLabel = f.name.replace(/\.[^.]+$/, "");
+      const multi = r.measurements.length > 1;
+      const measurements = r.measurements.map((m, i) => {
+        const suffix = m.concentration != null ? `${m.concentration} nM` : m.id;
+        const baseLabel = multi ? `${fileLabel} · ${suffix}` : fileLabel;
+        const chLabel = (m as { channelLabel?: string }).channelLabel;
+        const label = chLabel ? `${chLabel} — ${baseLabel}` : baseLabel;
+        if (r.mode === "fet_transfer") {
+          const mm = m as import("@/utils/csvImport").ImportedFETTransferMeasurement;
+          return { id: mm.id || `imported_${i}`, concentration: mm.concentration, points: [], baseline: mm.baseline, analyte: mm.analyte, label };
+        }
+        if (r.mode === "fet_time") {
+          const mm = m as import("@/utils/csvImport").ImportedFETTimeMeasurement;
+          return { id: mm.id || `imported_${i}`, concentration: mm.concentration, points: mm.points, markers: mm.markers, label };
+        }
+        const mm = m as { id: string; concentration: number | null; points: unknown[] };
+        return { id: mm.id || `imported_${i}`, concentration: mm.concentration, points: mm.points, label };
+      });
+      onOk({ mode: r.mode, measurements, skipped: r.skipped, fileLabel });
+      if (r.skipped > 0) {
+        toast.warning(`${r.skipped} linha(s) inválida(s) descartadas.`);
+      }
+    } catch (err) {
+      toast.error(
+        `Falha ao ler CSV: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+  input.click();
+}
+
+
+
+/**
+ * Per-channel auto-reconnect with exponential backoff (1s → 30s), mirroring
+ * bridge.py's WiFi retry loop. Purely a connection concern — no measurement
+ * data or math is touched.
+ */
+function useChannelReconnect(
+  active: boolean,
+  url: string,
+  status: ReturnType<typeof useWebSocketData>["status"],
+  connect: (url: string) => void,
+) {
+  const attemptRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (status === "connected") {
+      attemptRef.current = 0;
+      return;
+    }
+    if (!active || !url) return;
+    if (status === "connecting") return;
+    const delay = Math.min(30000, 1000 * 2 ** attemptRef.current);
+    timerRef.current = setTimeout(() => {
+      attemptRef.current += 1;
+      connect(url);
+    }, delay);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [active, url, status, connect]);
+}
+
+type DashStatus = "idle" | "running" | "complete" | "error";
+
+function mapStatus(s: string): DashStatus {
+  if (s === "running") return "running";
+  if (s === "complete") return "complete";
+  if (s === "error") return "error";
+  return "idle";
+}
+
 const Index = () => {
-  const [mode, setMode] = useState<"eis" | "fet" | "cv" | "swv">("eis");
-  const [dataSource, setDataSource] = useState<"simulated" | "live">("simulated");
+  const [mode, setMode] = useState<"eis" | "fet" | "cv" | "swv" | "dashboard">("eis");
+  const [dataSource, setDataSource] = useState<"simulated" | "live" | "multichannel">("simulated");
+  const [multiChannelLayout, setMultiChannelLayout] = useState<"combined" | "separate">("combined");
+  const [channels, setChannels] = useState<Channel[]>([
+    { id: 1, label: "Sensor 1", url: "ws://127.0.0.1:81", enabled: true, color: OVERLAY_COLORS[0], autoReconnect: true },
+    { id: 2, label: "Sensor 2", url: "ws://127.0.0.1:82", enabled: false, color: OVERLAY_COLORS[1], autoReconnect: true },
+    { id: 3, label: "Sensor 3", url: "ws://127.0.0.1:83", enabled: false, color: OVERLAY_COLORS[2], autoReconnect: true },
+  ]);
+  const [hasAttemptedConnection, setHasAttemptedConnection] = useState(false);
   const [eisParams, setEisParams] = useState<EISParams>(DEFAULT_EIS_PARAMS);
   const [fetParams, setFetParams] = useState<FETParams>(DEFAULT_FET_PARAMS);
   const [cvParams, setCvParams] = useState<CVParams>(DEFAULT_CV_PARAMS);
@@ -155,6 +304,7 @@ const Index = () => {
     quietTime_s: 2, direction: "anodic", concentration_nM: 10, area_cm2: 0.0707,
     nElectrons: 1, temperature_K: 298.15, baselineMethod: "auto",
     smoothing: "none", model: "empirical_peak",
+    diffusionCoeff: 7.26e-6, formalPotential: 0.22, k0: 0.01, alpha: 0.5,
   });
   const [swvCtrl, setSwvCtrl] = useState<SWVController | null>(null);
 
@@ -193,6 +343,17 @@ const Index = () => {
   // Overlay mode (BioFET)
   const [fetOverlayMode, setFetOverlayMode] = useState(false);
   const [fetOverlays, setFetOverlays] = useState<FETOverlayCurve[]>([]);
+  const [fetTimeOverlays, setFetTimeOverlays] = useState<import("@/components/FETTimePlot").FETTimeOverlay[]>([]);
+  // Overlay curves for SWV live in the parent so they survive mode switches
+  // (SWVMode is conditionally mounted).
+  const [swvOverlays, setSwvOverlays] = useState<SWVOverlayCurve[]>([]);
+
+  // Guided demo state (declared early so completion handlers can read it).
+  const [demoRunning, setDemoRunning] = useState(false);
+  const [demoStep, setDemoStep] = useState(0);
+  const [demoPhase, setDemoPhase] = useState<DemoPhase>("idle");
+  const demoCancelledRef = useRef(false);
+
   const [cvPlotMode, setCvPlotMode] = useState<"raw" | "corrected">("raw");
   const [cvBaselineMethod, setCvBaselineMethod] = useState<
     "auto" | "none" | "linear-first-15" | "linear-edges"
@@ -252,12 +413,67 @@ const Index = () => {
 
   // Simulated data hooks
   const eis = useSimulatedEIS(150);
-  const fetTransfer = useSimulatedFETTransfer(80);
-  const fetTime = useSimulatedFETTime(150);
+  const fetTransfer = useSimulatedFETTransfer(fetParams.intervalMs);
+  const fetTime = useSimulatedFETTime(fetParams.intervalMs);
   const cv = useSimulatedCVData(40);
+  // SWV state lives here (always mounted) so it survives mode switches,
+  // exactly like the CV/EIS/FET simulation state above.
+  const swvState = useSWVModeState();
 
   // Live WebSocket data hook
   const ws = useWebSocketData();
+
+  // Multi-channel: three fully independent WebSocket hooks (index matches channels[i])
+  const ws1 = useWebSocketData();
+  const ws2 = useWebSocketData();
+  const ws3 = useWebSocketData();
+  const wsChannels = [ws1, ws2, ws3];
+  const isMulti = dataSource === "multichannel";
+  // Per-channel "user wants this connected" intent, drives auto-reconnect.
+  const [wantConnected, setWantConnected] = useState<boolean[]>([false, false, false]);
+  const exportSource: "simulated" | "live" = dataSource === "simulated" ? "simulated" : "live";
+  /** Broadcast a command to every enabled + connected channel. */
+  const broadcastCommand = (command: string, payload?: Record<string, unknown>) => {
+    channels.forEach((c, i) => {
+      if (c.enabled && wsChannels[i].status === "connected") {
+        wsChannels[i].sendCommand(command, payload);
+      }
+    });
+  };
+  const anyChannelConnected = channels.some((c, i) => c.enabled && wsChannels[i].status === "connected");
+  const connectedCount = channels.filter(
+    (c, i) => c.enabled && wsChannels[i].status === "connected",
+  ).length;
+  const enabledCount = channels.filter((c) => c.enabled).length;
+  const staleChannels = channels.filter(
+    (c, i) => c.enabled && wsChannels[i].status !== "connected",
+  );
+  const liveNotReady =
+    (dataSource === "live" && ws.status !== "connected") || (isMulti && !anyChannelConnected);
+  // Auto-reconnect: one hook instance per channel, only while the user wants
+  // that channel connected (manual Disconnect clears the intent).
+  useChannelReconnect(
+    isMulti && channels[0].enabled && channels[0].autoReconnect && wantConnected[0],
+    channels[0].url, ws1.status, ws1.connect,
+  );
+  useChannelReconnect(
+    isMulti && channels[1].enabled && channels[1].autoReconnect && wantConnected[1],
+    channels[1].url, ws2.status, ws2.connect,
+  );
+  useChannelReconnect(
+    isMulti && channels[2].enabled && channels[2].autoReconnect && wantConnected[2],
+    channels[2].url, ws3.status, ws3.connect,
+  );
+
+  const clearAllChannels = () => {
+    channels.forEach((c, i) => {
+      if (!c.enabled) return;
+      wsChannels[i].clearEIS();
+      wsChannels[i].clearFET();
+      wsChannels[i].clearCV();
+      wsChannels[i].clearSWV();
+    });
+  };
 
   // Restore session on mount
   useEffect(() => {
@@ -335,12 +551,15 @@ const Index = () => {
   const fetTimeDataArr = dataSource === "simulated" ? fetTime.data : ws.fetTimeData;
 
   // Expected counts based on configured parameters
-  const expectedEisPoints = eisParams.points;
+  const expectedEisPoints = computeEISPointCount(eisParams);
   const expectedFetTransferPoints = useMemo(
     () => Math.max(1, Math.round((fetParams.vgMax - fetParams.vgMin) / (fetParams.vgStep / 1000)) + 1),
     [fetParams.vgMin, fetParams.vgMax, fetParams.vgStep]
   );
-  const expectedFetTimePoints = EXPECTED_FET_TIME_POINTS;
+  const expectedFetTimePoints = useMemo(
+    () => Math.max(1, Math.floor(fetParams.timeDuration_s / fetParams.timeStep_s) + 1),
+    [fetParams.timeDuration_s, fetParams.timeStep_s]
+  );
   const expectedFetTotal =
     expectedFetTransferPoints * 2 + expectedFetTimePoints;
   const fetReceivedTotal =
@@ -435,7 +654,10 @@ const Index = () => {
     const rctForCalib = params?.rct ?? 0;
     const rsForCalib = params?.rs ?? 0;
     try {
-      if (overlayMode) {
+      // Auto-capture into the overlay comparison view (same logic as the
+      // manual "+ Capture" button) so it is already there when Overlay
+      // Mode is switched on later.
+      if (finalData.length > 0 && demoRunning) {
         setEisOverlays((prev) => {
           const label =
             dataSource === "live" && ws.lastFilename
@@ -469,8 +691,11 @@ const Index = () => {
         params: {
           freqMin: eisParams.freqMin,
           freqMax: eisParams.freqMax,
-          points: eisParams.points,
+          points: computeEISPointCount(eisParams),
           amplitude: eisParams.amplitude,
+          pointDensityMode: eisParams.pointDensityMode,
+          pointsPerDecade: eisParams.pointsPerDecade,
+          dcBias: eisParams.dcBias,
         },
         data: finalData.slice(),
         extracted: autoConverged
@@ -691,7 +916,10 @@ const Index = () => {
     if (fetAutoStopFiredRef.current) return;
     fetAutoStopFiredRef.current = true;
     clearFetInactivity();
-    if (dataSource === "simulated") {
+    if (isMulti) {
+      broadcastCommand("stop");
+      saveChannelMeasurements("fet");
+    } else if (dataSource === "simulated") {
       fetTransfer.stop();
       fetTime.stop();
     } else {
@@ -699,6 +927,39 @@ const Index = () => {
     }
     setFrozenFetBaseline(finalBaseline);
     setFrozenFetAnalyte(finalAnalyte);
+    // Auto-capture the transfer curve into the overlay comparison view
+    // (same shape as the manual "+ Capture" button). Guarded once per
+    // sweep by fetAutoStopFiredRef above.
+    if ((finalBaseline.length > 0 || finalAnalyte.length > 0) && demoRunning) {
+      setFetOverlays((prev) => {
+        const label =
+          concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+        const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+        const next = [
+          ...prev,
+          {
+            id: newId(),
+            label,
+            color,
+            baseline: finalBaseline.slice(),
+            withAnalyte: finalAnalyte.slice(),
+          },
+        ];
+        return next.length > 8 ? next.slice(next.length - 8) : next;
+      });
+    }
+    if (finalTime.length > 0 && demoRunning) {
+      setFetTimeOverlays((prev) => {
+        const label =
+          concentration > 0 ? `${concentration} nM` : `Measurement ${prev.length + 1}`;
+        const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+        const next = [
+          ...prev,
+          { id: newId(), label, color, data: finalTime.slice() },
+        ];
+        return next.length > 8 ? next.slice(next.length - 8) : next;
+      });
+    }
     setFetStatus("complete");
     const total = finalBaseline.length + finalAnalyte.length + finalTime.length;
     toast.success(`Sweep complete — ${total} points collected`);
@@ -806,7 +1067,8 @@ const Index = () => {
     setSessionMeasurements((prev) => [...prev, storedFet]);
   };
 
-  const handleStartEIS = () => {
+  const handleStartEIS = (concentrationOverride?: number) => {
+    const conc = concentrationOverride ?? concentration;
     eisAutoStopFiredRef.current = false;
     setFrozenEis(null);
     setRandlesFit(null);
@@ -819,20 +1081,36 @@ const Index = () => {
     setEisStatus("running");
     setEisMeasurementId(createMeasurementId("eis"));
     setEisMeasurementTimestamp(Date.now());
+    const actualPoints = computeEISPointCount(eisParams);
     logActivity(
       "measurement",
-      `EIS measurement started — concentration=${concentration} nM, source=${dataSource}, points=${eisParams.points}`,
+      `EIS measurement started — concentration=${conc} nM, source=${dataSource}, points=${actualPoints} (${eisParams.pointDensityMode}), dcBias=${eisParams.dcBias} V`,
     );
-    if (dataSource === "simulated") {
-      eis.start(concentration, eisParams.points);
+    if (isMulti) {
+      clearAllChannels();
+      broadcastCommand("start_eis", {
+        freqMin: eisParams.freqMin,
+        freqMax: eisParams.freqMax,
+        pointDensityMode: eisParams.pointDensityMode,
+        pointsPerDecade: eisParams.pointsPerDecade,
+        points: actualPoints,
+        amplitude: eisParams.amplitude,
+        dcBias: eisParams.dcBias,
+        concentration: conc,
+      });
+    } else if (dataSource === "simulated") {
+      eis.start(conc, actualPoints);
     } else {
       ws.clearEIS();
       ws.sendCommand("start_eis", {
         freqMin: eisParams.freqMin,
         freqMax: eisParams.freqMax,
-        points: eisParams.points,
+        pointDensityMode: eisParams.pointDensityMode,
+        pointsPerDecade: eisParams.pointsPerDecade,
+        points: actualPoints,
         amplitude: eisParams.amplitude,
-        concentration,
+        dcBias: eisParams.dcBias,
+        concentration: conc,
       });
     }
   };
@@ -849,6 +1127,11 @@ const Index = () => {
     setGeometricFallback(false);
     setSeparatorZReal(null);
     setEisFitted(false);
+    if (isMulti) {
+      clearAllChannels();
+      broadcastCommand("stop");
+      return;
+    }
     if (dataSource === "simulated") {
       eis.reset();
     } else {
@@ -857,7 +1140,8 @@ const Index = () => {
     }
   };
 
-  const handleStartFET = () => {
+  const handleStartFET = (concentrationOverride?: number) => {
+    const conc = concentrationOverride ?? concentration;
     fetAutoStopFiredRef.current = false;
     setFrozenFetBaseline(null);
     setFrozenFetAnalyte(null);
@@ -867,16 +1151,40 @@ const Index = () => {
     setFetMeasurementTimestamp(Date.now());
     logActivity(
       "measurement",
-      `BioFET measurement started — concentration=${concentration} nM, source=${dataSource}`,
+      `BioFET measurement started — concentration=${conc} nM, source=${dataSource}`,
     );
+    if (isMulti) {
+      clearAllChannels();
+      broadcastCommand("start_fet", {
+        vgMin: fetParams.vgMin,
+        vgMax: fetParams.vgMax,
+        vgStep: fetParams.vgStep / 1000,
+        intervalMs: fetParams.intervalMs,
+        concentration: conc,
+      });
+      return;
+    }
     if (dataSource === "simulated") {
+      const overrides = {
+        kd_nM: fetParams.kd_nM,
+        vtBaseline_V: fetParams.vtBaseline_V,
+        deltaVtMax_V: fetParams.deltaVtMax_V,
+        idMax_uA: fetParams.idMax_uA,
+        idealityFactor: fetParams.idealityFactor,
+        bindingRate_perS: fetParams.bindingRate_perS,
+        readoutBias_V: fetParams.readoutBias_V,
+        timeDuration_s: fetParams.timeDuration_s,
+        timeStep_s: fetParams.timeStep_s,
+        injectionTime_s: fetParams.injectionTime_s,
+      };
       fetTransfer.start(
-        concentration,
+        conc,
         fetParams.vgMin,
         fetParams.vgMax,
         expectedFetTransferPoints,
+        overrides,
       );
-      fetTime.start(concentration);
+      fetTime.start(conc, overrides);
     } else {
       ws.clearFET();
       ws.sendCommand("start_fet", {
@@ -884,7 +1192,7 @@ const Index = () => {
         vgMax: fetParams.vgMax,
         vgStep: fetParams.vgStep / 1000, // mV → V
         intervalMs: fetParams.intervalMs,
-        concentration,
+        concentration: conc,
       });
     }
   };
@@ -896,6 +1204,11 @@ const Index = () => {
     setFrozenFetAnalyte(null);
     setFetStatus("idle");
     setFetMarkers([]);
+    if (isMulti) {
+      clearAllChannels();
+      broadcastCommand("stop");
+      return;
+    }
     if (dataSource === "simulated") {
       fetTransfer.reset();
       fetTime.reset();
@@ -905,12 +1218,102 @@ const Index = () => {
     }
   };
 
+  /**
+   * Multi-Channel persistence: save each enabled+populated channel's sweep as
+   * its own session measurement, tagged with the channel that produced it so
+   * exports stay traceable per sensor. Raw data only — no math is changed.
+   */
+  const saveChannelMeasurements = (technique: "eis" | "fet" | "cv" | "swv") => {
+    if (!isMulti) return;
+    const now = Date.now();
+    const stored: StoredMeasurement[] = [];
+    channels.forEach((c, i) => {
+      if (!c.enabled) return;
+      const chan = wsChannels[i];
+      const tag = { channelId: c.id, channelLabel: c.label };
+      if (technique === "eis" && chan.eisData.length > 0) {
+        const m: StoredEISMeasurement = {
+          id: newId(), mode: "eis", timestamp: now, concentration,
+          measurementId: `${eisMeasurementId}_ch${c.id}`,
+          measurementTimestamp: eisMeasurementTimestamp || now,
+          ...tag,
+          params: {
+            freqMin: eisParams.freqMin, freqMax: eisParams.freqMax,
+            points: computeEISPointCount(eisParams), amplitude: eisParams.amplitude,
+            pointDensityMode: eisParams.pointDensityMode,
+            pointsPerDecade: eisParams.pointsPerDecade, dcBias: eisParams.dcBias,
+          },
+          data: chan.eisData.slice(),
+          extracted: {},
+        };
+        stored.push(m);
+      }
+      if (technique === "fet" && (chan.fetBaseline.length > 0 || chan.fetAnalyte.length > 0 || chan.fetTimeData.length > 0)) {
+        const m: StoredFETMeasurement = {
+          id: newId(), mode: "fet", timestamp: now, concentration,
+          measurementId: `${fetMeasurementId}_ch${c.id}`,
+          measurementTimestamp: fetMeasurementTimestamp || now,
+          ...tag,
+          params: {
+            vgMin: fetParams.vgMin, vgMax: fetParams.vgMax,
+            vgStep: fetParams.vgStep, intervalMs: fetParams.intervalMs,
+          },
+          baseline: chan.fetBaseline.slice(),
+          analyte: chan.fetAnalyte.slice(),
+          timeData: chan.fetTimeData.slice(),
+          markers: [],
+          extracted: {},
+        };
+        stored.push(m);
+      }
+      if (technique === "cv" && chan.cvData.length > 0) {
+        const m: StoredCVMeasurement = {
+          id: newId(), mode: "cv", timestamp: now, concentration: cvParams.cMM,
+          measurementId: `${cvMeasurementId}_ch${c.id}`,
+          measurementTimestamp: cvMeasurementTimestamp || now,
+          ...tag,
+          params: { ...cvParams },
+          data: chan.cvData.slice(),
+          metrics: computeCVMetrics(chan.cvData, {
+            scanRate_mVs: cvParams.scanRate, n: cvParams.n, cMM: cvParams.cMM,
+            areaCm2: cvParams.areaCm2, baselineMethodInput: cvBaselineMethod,
+          }) ?? null,
+        };
+        stored.push(m);
+      }
+      if (technique === "swv" && chan.swvData.length > 0) {
+        const { corrected, metrics } = analyzeSWV(chan.swvData, swvParams.baselineMethod ?? "auto");
+        const m: StoredSWVMeasurement = {
+          id: newId(), mode: "swv", timestamp: now, source: "live",
+          concentration: swvParams.concentration_nM,
+          measurementId: `swv_${now}_ch${c.id}`,
+          measurementTimestamp: now,
+          ...tag,
+          params: { ...swvParams },
+          data: chan.swvData.slice(),
+          correctedData: corrected,
+          extracted: metrics,
+        };
+        stored.push(m);
+      }
+    });
+    if (stored.length === 0) return;
+    setSessionMeasurements((prev) => [...prev, ...stored]);
+    logActivity(
+      "measurement",
+      `Multi-Channel ${technique.toUpperCase()} saved — ${stored.length} channel measurement(s)`,
+    );
+  };
+
   // Manual stop (mid-sweep)
   const handleStopEIS = () => {
     if (eisStatus !== "running") return;
     eisAutoStopFiredRef.current = true;
     clearEisInactivity();
-    if (dataSource === "simulated") {
+    if (isMulti) {
+      broadcastCommand("stop");
+      saveChannelMeasurements("eis");
+    } else if (dataSource === "simulated") {
       eis.stop();
     } else {
       ws.sendCommand("stop");
@@ -924,7 +1327,10 @@ const Index = () => {
     if (fetStatus !== "running") return;
     fetAutoStopFiredRef.current = true;
     clearFetInactivity();
-    if (dataSource === "simulated") {
+    if (isMulti) {
+      broadcastCommand("stop");
+      saveChannelMeasurements("fet");
+    } else if (dataSource === "simulated") {
       fetTransfer.stop();
       fetTime.stop();
     } else {
@@ -1037,6 +1443,21 @@ const Index = () => {
     if (!cvMeasurementId) return;
     if (cvSavedIdRef.current === cvMeasurementId) return;
     if (cvDataLive.length < 3) return;
+    // Auto-capture into the overlay comparison view (same logic as the
+    // manual "+ Capture" button) — demo only. Guarded by cvSavedIdRef below,
+    // so it fires exactly once per completed sweep.
+    if (demoRunning) {
+      setCvOverlays((prev) => {
+        const label =
+          cvParams.cMM > 0 ? `${cvParams.cMM} mM` : `Blank ${prev.length + 1}`;
+        const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+        const next = [
+          ...prev,
+          { id: newId(), label, color, data: cvDataLive.slice() },
+        ];
+        return next.length > 8 ? next.slice(next.length - 8) : next;
+      });
+    }
     const metrics = computeCVMetrics(cvDataLive, {
       scanRate_mVs: cvParams.scanRate,
       n: cvParams.n,
@@ -1067,11 +1488,270 @@ const Index = () => {
   }, [
     dataSource, cv.isRunning, cv.data, isLiveCVRunning, ws.cvData,
     cvMeasurementId, cvMeasurementTimestamp, cvParams, cvBaselineMethod, cvNotes,
+    demoRunning,
   ]);
 
   // "Running" now means status === running, not just connected/animating
   const isEISRunning = eisStatus === "running";
   const isFETRunning = fetStatus === "running";
+
+  // ──────────────────────────────────────────────────────────────
+  // CV start / calibration helpers — shared by the toolbar buttons
+  // and the guided demo so both go through identical code paths.
+  // ──────────────────────────────────────────────────────────────
+  const handleStartCV = (cMMOverride?: number) => {
+    setCvMeasurementId(createMeasurementId("cv"));
+    setCvMeasurementTimestamp(Date.now());
+    const params = cMMOverride != null ? { ...cvParams, cMM: cMMOverride } : cvParams;
+    if (cMMOverride != null) setCvParams(params);
+    if (isMulti) {
+      clearAllChannels();
+      broadcastCommand("start_cv", { ...params });
+      return;
+    }
+    if (dataSource === "simulated") {
+      cv.start(params);
+    } else {
+      ws.clearCV();
+      setIsLiveCVRunning(true);
+      ws.sendCommand("start_cv", { ...params });
+    }
+  };
+
+  const handleAddCvCalibrationPoint = () => {
+    const cvDataNow = dataSource === "simulated" ? cv.data : ws.cvData;
+    const metrics = computeCVMetrics(cvDataNow, {
+      scanRate_mVs: cvParams.scanRate,
+      n: cvParams.n,
+      cMM: cvParams.cMM,
+      areaCm2: cvParams.areaCm2,
+      baselineMethodInput: cvBaselineMethod,
+    });
+    if (!metrics) {
+      toast.error("No CV metrics yet — run a CV sweep first.");
+      return;
+    }
+    const cleanNotes = sanitizeMeasurementNotes(cvNotes);
+    const pt = buildCVCalibrationPoint(cvParams.cMM, metrics, cvParams.cvModel, {
+      measurementId: cvMeasurementId,
+      sampleId: cleanNotes?.sampleId,
+      electrodeId: cleanNotes?.electrodeId,
+      notes: shortNotesSummary(cleanNotes),
+      timestamp: cvMeasurementTimestamp,
+    });
+    // Always append — replicates (including blank replicates) are
+    // required for LOD estimation.
+    setCvCalibration((prev) => [...prev, pt]);
+    if (hasAnyNotes(cleanNotes)) setCvPreviousNotes(cleanNotes!);
+    logActivity(
+      "calibration",
+      `CV calibration point added — C=${cvParams.cMM} mM, response=${
+        responseFor(pt, cvResponseMode)?.toFixed(2) ?? "n/a"
+      } µA`,
+    );
+    toast.success(`Added CV point at ${cvParams.cMM} mM`);
+  };
+
+  // ──────────────────────────────────────────────────────────────
+  // GUIDED DEMO — runs a full simulated session across all 4 modes.
+  // ──────────────────────────────────────────────────────────────
+  // (demoRunning / demoStep / demoCancelledRef are declared near the top so
+  // completion handlers defined earlier can read them.)
+
+  // Status mirrors so the polling loop never reads a stale closure.
+  const eisStatusRef = useRef(eisStatus);
+  const fetStatusRef = useRef(fetStatus);
+  const cvRunningRef = useRef(false);
+  const cvPointsRef = useRef(0);
+  const swvCtrlRef = useRef<SWVController | null>(swvCtrl);
+  useEffect(() => { eisStatusRef.current = eisStatus; }, [eisStatus]);
+  useEffect(() => { fetStatusRef.current = fetStatus; }, [fetStatus]);
+  useEffect(() => {
+    cvRunningRef.current = dataSource === "simulated" ? cv.isRunning : isLiveCVRunning;
+    cvPointsRef.current = (dataSource === "simulated" ? cv.data : ws.cvData).length;
+  }, [dataSource, cv.isRunning, cv.data, isLiveCVRunning, ws.cvData]);
+  useEffect(() => { swvCtrlRef.current = swvCtrl; }, [swvCtrl]);
+
+  // Handlers captured fresh every render — the async demo steps must never
+  // call a stale closure (state read inside them would be out of date).
+  const latestRef = useRef({
+    handleStartEIS, handleStartFET, handleStartCV,
+    handleFitRandles, handleAddCvCalibrationPoint,
+  });
+  latestRef.current = {
+    handleStartEIS, handleStartFET, handleStartCV,
+    handleFitRandles, handleAddCvCalibrationPoint,
+  };
+
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  // "Start All" — one-shot parallel start of whatever is currently idle.
+  const isCVRunningNow = dataSource === "simulated" ? cv.isRunning : isLiveCVRunning;
+  const isAnyTechniqueRunning =
+    eisStatus === "running" || isCVRunningNow ||
+    (swvCtrl?.isRunning ?? false) || fetStatus === "running";
+
+  async function handleStartAll() {
+    const steps: { label: string; run: () => void | Promise<void> }[] = [
+      { label: "EIS", run: () => { if (eisStatus !== "running") handleStartEIS(); } },
+      { label: "CV", run: () => { if (!isCVRunningNow) handleStartCV(); } },
+      { label: "SWV", run: () => { if (!swvCtrl?.isRunning) swvCtrl?.start(); } },
+      { label: "BioFET", run: () => { if (fetStatus !== "running") handleStartFET(); } },
+    ];
+
+    for (const step of steps) {
+      try {
+        await step.run();
+      } catch (err) {
+        console.error(`[Start All] ${step.label} failed:`, err);
+        toast.error(
+          `Start All: ${step.label} failed to start — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      await sleep(150);
+    }
+  }
+
+
+
+
+  const waitForStatus = (check: () => boolean, timeoutMs: number) =>
+    new Promise<void>((resolve, reject) => {
+      const startedAt = Date.now();
+      const poll = () => {
+        if (demoCancelledRef.current) return reject(new Error("cancelled"));
+        if (check()) return resolve();
+        if (Date.now() - startedAt > timeoutMs) return reject(new Error("timeout"));
+        requestAnimationFrame(poll);
+      };
+      poll();
+    });
+
+  const runEisStep = async (conc: number) => {
+    setMode("eis");
+    setConcentration(conc);
+    await sleep(60); // let the concentration state land before completion reads it
+    latestRef.current.handleStartEIS(conc);
+    // Wait for the NEW sweep to actually start before waiting for it to
+    // finish — a stale "complete" from the previous step would otherwise
+    // resolve this instantly.
+    await waitForStatus(() => eisStatusRef.current === "running", 8000);
+    await waitForStatus(() => eisStatusRef.current === "complete", 20000);
+    await sleep(300);
+    latestRef.current.handleFitRandles(); // also appends the EIS calibration point
+    await sleep(300);
+  };
+
+  const runCvStep = async (conc_mM: number) => {
+    setMode("cv");
+    latestRef.current.handleStartCV(conc_mM);
+    // Wait for the sweep to actually start before waiting for it to finish,
+    // otherwise stale "not running" state resolves the wait immediately.
+    await waitForStatus(() => cvRunningRef.current, 8000);
+    await waitForStatus(
+      () => !cvRunningRef.current && cvPointsRef.current > 3,
+      60000,
+    );
+    await sleep(300);
+    latestRef.current.handleAddCvCalibrationPoint();
+    await sleep(200);
+  };
+
+  const runSwvStep = async (conc_nM: number) => {
+    setMode("swv");
+    setSwvParams((prev) => ({ ...prev, concentration_nM: conc_nM }));
+    // SWV Mode mounts lazily — wait until it hands us its controller.
+    await waitForStatus(() => !!swvCtrlRef.current, 10000);
+    await sleep(150);
+    swvCtrlRef.current?.start();
+    await waitForStatus(() => !!swvCtrlRef.current?.isRunning, 8000);
+    await waitForStatus(
+      () => !!swvCtrlRef.current && !swvCtrlRef.current.isRunning && swvCtrlRef.current.hasData,
+      90000,
+    );
+    await sleep(300);
+  };
+
+  const runFetStep = async (conc: number) => {
+    setMode("fet");
+    setConcentration(conc);
+    await sleep(60);
+    latestRef.current.handleStartFET(conc);
+    await waitForStatus(() => fetStatusRef.current === "running", 8000);
+    await waitForStatus(() => fetStatusRef.current === "complete", 30000);
+    await sleep(300);
+  };
+
+  const eisPhaseSteps = [
+    { label: "EIS @ 0 nM", run: () => runEisStep(0) },
+    { label: "EIS @ 10 nM", run: () => runEisStep(10) },
+    { label: "EIS @ 100 nM", run: () => runEisStep(100) },
+  ];
+  const cvPhaseSteps = [
+    { label: "CV @ 1 mM", run: () => runCvStep(1) },
+    { label: "CV @ 5 mM", run: () => runCvStep(5) },
+    { label: "CV @ 10 mM", run: () => runCvStep(10) },
+  ];
+  const swvPhaseSteps = [
+    { label: "SWV scan @ 0 nM", run: () => runSwvStep(0) },
+    { label: "SWV scan @ 10 nM", run: () => runSwvStep(10) },
+    { label: "SWV scan @ 50 nM", run: () => runSwvStep(50) },
+  ];
+  const fetPhaseSteps = [
+    { label: "BioFET run @ 0 nM", run: () => runFetStep(0) },
+    { label: "BioFET run @ 10 nM", run: () => runFetStep(10) },
+    { label: "BioFET run @ 100 nM", run: () => runFetStep(100) },
+  ];
+  const PHASE_STEPS: Record<
+    "eis" | "cv" | "swv" | "fet",
+    { label: string; run: () => Promise<void> }[]
+  > = { eis: eisPhaseSteps, cv: cvPhaseSteps, swv: swvPhaseSteps, fet: fetPhaseSteps };
+
+  const cancelDemo = () => {
+    demoCancelledRef.current = true;
+    toast.info("Demo cancelled — stopping after the current step.");
+  };
+
+  const runDemoPhase = async (phase: "eis" | "cv" | "swv" | "fet") => {
+    if (demoRunning) return;
+    setDemoRunning(true);
+    demoCancelledRef.current = false;
+    try {
+      for (const [i, step] of PHASE_STEPS[phase].entries()) {
+        if (demoCancelledRef.current) {
+          toast.info("Demo stopped.");
+          setDemoPhase("idle");
+          return;
+        }
+        setDemoStep(i + 1);
+        toast.info(`Demo: running ${step.label}…`);
+        await step.run();
+      }
+      const idx = PHASE_ORDER.indexOf(phase);
+      const next: DemoPhase = idx + 1 < PHASE_ORDER.length ? PHASE_ORDER[idx + 1] : "done";
+      setDemoPhase(next);
+      if (next === "done") {
+        toast.success(
+          "Demo complete! Explore the results, calibration curves, and export options.",
+        );
+      } else {
+        toast.success(
+          `${PHASE_LABEL[phase]} demo done — review the results, then click "Continue to ${PHASE_LABEL[next]} Mode" when ready.`,
+        );
+      }
+    } catch (err) {
+      if (demoCancelledRef.current) toast.info("Demo stopped.");
+      else toast.error(`Demo step failed during the ${PHASE_LABEL[phase]} phase.`);
+      console.warn("[Demo]", err);
+      setDemoPhase("idle");
+    } finally {
+      setDemoRunning(false);
+      setDemoStep(0);
+    }
+
+  };
+
 
   // Data shown in Signal Quality (frozen after stop/complete)
   const sqEisData = frozenEis ?? eisData;
@@ -1083,14 +1763,38 @@ const Index = () => {
   const liveFetVt = useMemo(() => computeFETVt(sqFetAnalyte), [sqFetAnalyte]);
   const liveFetVtBaseline = useMemo(() => computeFETVt(sqFetBaseline), [sqFetBaseline]);
 
-  // Add a sample-addition marker at the current time on the FET time trace
+  // Add a sample-addition marker at the current time on the FET time trace.
+  // If clicked BEFORE the sweep starts (no data yet and not running), prompt
+  // the user for the intended injection time and wire it into fetParams so
+  // the simulated binding onset uses it. Otherwise just place a visual
+  // marker — past simulated behaviour cannot be changed retroactively.
   const handleAddFetMarker = () => {
+    const isPreStart = !fetTime.isRunning && fetTimeDataArr.length === 0;
+    if (isPreStart) {
+      const raw = window.prompt(
+        "Injection time (s) — used as simulated binding onset when the sweep starts:",
+        String(fetParams.injectionTime_s),
+      );
+      if (raw == null) return;
+      const t = parseFloat(raw);
+      if (!Number.isFinite(t) || t < 0) {
+        toast.error("Invalid injection time");
+        return;
+      }
+      setFetParams((p) => ({ ...p, injectionTime_s: t }));
+      const label = `Injection planned — t = ${t.toFixed(1)} s`;
+      setFetMarkers((prev) => [...prev, { time: t, label }]);
+      logActivity("sample", `Injection time preset to t=${t.toFixed(1)} s (concentration=${concentration} nM)`);
+      toast.success(label);
+      return;
+    }
     const last = fetTimeDataArr[fetTimeDataArr.length - 1];
     const t = last ? last.time : 0;
     const label = `Sample added — t = ${t.toFixed(1)} s`;
     setFetMarkers((prev) => [...prev, { time: t, label }]);
     logActivity("sample", `Sample added at t=${t.toFixed(1)} s (concentration=${concentration} nM)`);
     toast.success(label);
+    toast("Marker placed — note: simulated binding onset is fixed at sweep start settings.");
   };
 
   // Clear the entire stored session
@@ -1109,13 +1813,13 @@ const Index = () => {
 
   // Export calibration table as TSV
   const exportCalibrationCSV = () => {
-    if (mode === "cv" || mode === "swv") return;
+    if (mode === "cv" || mode === "swv" || mode === "dashboard") return;
     const list = mode === "eis" ? eisCalibration : fetCalibration;
     if (list.length === 0) return;
-    exportCalibrationTSV(mode, list, dataSource);
+    exportCalibrationTSV(mode, list, exportSource);
   };
 
-  const handleChangeSource = (source: "simulated" | "live") => {
+  const handleChangeSource = (source: "simulated" | "live" | "multichannel") => {
     // Reset everything when switching
     eis.reset();
     fetTransfer.reset();
@@ -1133,6 +1837,12 @@ const Index = () => {
     eisAutoStopFiredRef.current = false;
     fetAutoStopFiredRef.current = false;
     if (source === "simulated" && ws.status === "connected") {
+      ws.disconnect();
+    }
+    if (source !== "multichannel") {
+      wsChannels.forEach((c) => { if (c.status === "connected") c.disconnect(); });
+    }
+    if (source === "multichannel" && ws.status === "connected") {
       ws.disconnect();
     }
     setDataSource(source);
@@ -1162,7 +1872,7 @@ const Index = () => {
             variant="outline"
             onClick={() =>
               exportSessionCSV(sessionMeasurements, {
-                source: dataSource,
+                source: exportSource,
                 calibration: [
                   ...eisCalibration.map((p) => ({ ...p, mode: "eis" as const })),
                   ...fetCalibration.map((p) => ({ ...p, mode: "fet" as const })),
@@ -1212,25 +1922,131 @@ const Index = () => {
             }`} />
             <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
           </div>
+          {dataSource === "simulated" && (
+            <>
+              {demoPhase === "idle" && !demoRunning && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => runDemoPhase("eis")}
+                  className="font-mono text-xs"
+                >
+                  ▶ Try Demo Data
+                </Button>
+              )}
+              {demoRunning && (
+                <>
+                  <Button size="sm" variant="outline" disabled className="font-mono text-xs">
+                    ▶ Running {PHASE_LABEL[demoPhase === "idle" ? "eis" : demoPhase]}… ({demoStep}/3)
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={cancelDemo} className="font-mono text-xs">
+                    ✕ Cancel Demo
+                  </Button>
+                </>
+              )}
+              {!demoRunning && demoPhase !== "idle" && demoPhase !== "done" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => runDemoPhase(demoPhase)}
+                  className="font-mono text-xs"
+                >
+                  Continue to {PHASE_LABEL[demoPhase]} Mode →
+                </Button>
+              )}
+              {!demoRunning && demoPhase === "done" && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setDemoPhase("idle")}
+                  className="font-mono text-xs"
+                >
+                  ✓ Demo complete — reset
+                </Button>
+              )}
+            </>
+          )}
         </div>
       </header>
 
       {/* Connection Panel */}
-      <div className="mb-4">
+      <div className="mb-4 space-y-2">
         <ConnectionPanel
           dataSource={dataSource}
           onChangeSource={handleChangeSource}
           connectionStatus={ws.status}
           errorMessage={ws.errorMessage}
-          onConnect={ws.connect}
+          onConnect={(url) => { setHasAttemptedConnection(true); ws.connect(url); }}
           onDisconnect={ws.disconnect}
+          multiConnectedCount={connectedCount}
+          multiEnabledCount={enabledCount}
         />
+        {isMulti && (
+          <MultiChannelPanel
+            channels={channels}
+            statuses={wsChannels.map((c) => c.status)}
+            errors={wsChannels.map((c) => c.errorMessage)}
+            onToggleEnabled={(i, enabled) =>
+              setChannels((prev) => prev.map((c, idx) => (idx === i ? { ...c, enabled } : c)))
+            }
+            onChangeUrl={(i, url) =>
+              setChannels((prev) => prev.map((c, idx) => (idx === i ? { ...c, url } : c)))
+            }
+            onRename={(i, label) =>
+              setChannels((prev) => prev.map((c, idx) => (idx === i ? { ...c, label } : c)))
+            }
+            onToggleAutoReconnect={(i, autoReconnect) =>
+              setChannels((prev) => prev.map((c, idx) => (idx === i ? { ...c, autoReconnect } : c)))
+            }
+            onConnect={(i) => {
+              setWantConnected((prev) => prev.map((v, idx) => (idx === i ? true : v)));
+              wsChannels[i].connect(channels[i].url);
+            }}
+            onDisconnect={(i) => {
+              setWantConnected((prev) => prev.map((v, idx) => (idx === i ? false : v)));
+              wsChannels[i].disconnect();
+            }}
+            layout={multiChannelLayout}
+            onChangeLayout={setMultiChannelLayout}
+            showLayoutToggle={
+              channels.filter((c, i) => c.enabled && wsChannels[i].status === "connected").length >= 2
+            }
+          />
+        )}
+        {isMulti && staleChannels.length > 0 && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs space-y-1">
+            <p className="text-amber-400 font-medium">
+              ⚠ {staleChannels.length} enabled channel{staleChannels.length > 1 ? "s are" : " is"} not connected
+              {" "}({staleChannels.map((c) => c.label).join(", ")})
+            </p>
+            <p className="text-muted-foreground">
+              Data from {staleChannels.length > 1 ? "these sensors" : "this sensor"} will be missing from the
+              plots and exports. Connect {staleChannels.length > 1 ? "them" : "it"} or disable the channel to
+              silence this warning.
+            </p>
+          </div>
+        )}
+        {dataSource === "live" && hasAttemptedConnection &&
+          (ws.status === "error" || ws.status === "disconnected") && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs space-y-1">
+            <p className="text-destructive font-medium">
+              ⚠ {ws.status === "error" ? "Connection failed" : "Disconnected"}
+              {ws.errorMessage ? ` — ${ws.errorMessage}` : ""}
+            </p>
+            <ul className="text-muted-foreground list-disc list-inside space-y-0.5">
+              <li>Is bridge.py running on your computer?</li>
+              <li>Are you connected to the ESP32's WiFi (or is the IP correct)?</li>
+              <li>Does the address match what bridge.py printed on startup (usually ws://127.0.0.1:81)?</li>
+              <li>Try clicking Connect again after checking the above.</li>
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Measurement Parameters */}
-      <div className="mb-4">
+      <div className={mode === "dashboard" ? "hidden" : "mb-4"}>
         <ParametersPanel
-          mode={mode}
+          mode={mode === "dashboard" ? "eis" : mode}
           eisParams={eisParams}
           fetParams={fetParams}
           cvParams={cvParams}
@@ -1283,16 +2099,39 @@ const Index = () => {
           >
             SWV Mode
           </Button>
+          <Button
+            variant={mode === "dashboard" ? "default" : "secondary"}
+            size="sm"
+            onClick={() => setMode("dashboard")}
+            className="font-mono text-xs"
+          >
+            Dashboard
+          </Button>
         </div>
+
+        {mode === "dashboard" && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleStartAll}
+            disabled={isAnyTechniqueRunning}
+            className="font-mono text-xs ml-auto"
+          >
+            {isAnyTechniqueRunning ? "● Running…" : "▶ Start All"}
+          </Button>
+        )}
+
+
+
 
         {/* Controls */}
         <div className="flex gap-2">
           {mode === "eis" && (
             <>
-              <Button size="sm" onClick={handleStartEIS} disabled={isEISRunning || (dataSource === "live" && ws.status !== "connected")} className="font-mono text-xs">▶ Start EIS</Button>
-              <Button size="sm" variant="destructive" onClick={handleStopEIS} disabled={!isEISRunning} className="font-mono text-xs">■ Stop</Button>
-              <Button size="sm" variant="secondary" onClick={handleResetEIS} className="font-mono text-xs">↺ Reset</Button>
-              <Button size="sm" variant="outline" onClick={() => exportEISData(eisData, dataSource, {
+              <Button size="sm" onClick={() => handleStartEIS()} disabled={isEISRunning || demoRunning || liveNotReady} className="font-mono text-xs">▶ Start EIS</Button>
+              <Button size="sm" variant="destructive" onClick={handleStopEIS} disabled={!isEISRunning || demoRunning} className="font-mono text-xs">■ Stop</Button>
+              <Button size="sm" variant="secondary" onClick={handleResetEIS} disabled={demoRunning} className="font-mono text-xs">↺ Reset</Button>
+              <Button size="sm" variant="outline" onClick={() => exportEISData(eisData, exportSource, {
                 notes: sanitizeMeasurementNotes(eisNotes),
                 measurementId: eisMeasurementId,
                 measurementTimestamp: eisMeasurementTimestamp,
@@ -1308,9 +2147,9 @@ const Index = () => {
           )}
           {mode === "fet" && (
             <>
-              <Button size="sm" onClick={handleStartFET} disabled={isFETRunning || (dataSource === "live" && ws.status !== "connected")} className="font-mono text-xs">▶ Start FET</Button>
-              <Button size="sm" variant="destructive" onClick={handleStopFET} disabled={!isFETRunning} className="font-mono text-xs">■ Stop</Button>
-              <Button size="sm" variant="secondary" onClick={handleResetFET} className="font-mono text-xs">↺ Reset</Button>
+              <Button size="sm" onClick={() => handleStartFET()} disabled={isFETRunning || demoRunning || liveNotReady} className="font-mono text-xs">▶ Start FET</Button>
+              <Button size="sm" variant="destructive" onClick={handleStopFET} disabled={!isFETRunning || demoRunning} className="font-mono text-xs">■ Stop</Button>
+              <Button size="sm" variant="secondary" onClick={handleResetFET} disabled={demoRunning} className="font-mono text-xs">↺ Reset</Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -1329,7 +2168,7 @@ const Index = () => {
                     analyte: fetAnalyteData,
                     timeData: fetTimeDataArr,
                     markers: fetMarkers,
-                    source: dataSource,
+                    source: exportSource,
                     meta,
                     concentration,
                     params: {
@@ -1337,6 +2176,16 @@ const Index = () => {
                       vgMax: fetParams.vgMax,
                       vgStep: fetParams.vgStep,
                       intervalMs: fetParams.intervalMs,
+                      kd_nM: fetParams.kd_nM,
+                      vtBaseline_V: fetParams.vtBaseline_V,
+                      deltaVtMax_V: fetParams.deltaVtMax_V,
+                      idMax_uA: fetParams.idMax_uA,
+                      idealityFactor: fetParams.idealityFactor,
+                      bindingRate_perS: fetParams.bindingRate_perS,
+                      readoutBias_V: fetParams.readoutBias_V,
+                      timeDuration_s: fetParams.timeDuration_s,
+                      timeStep_s: fetParams.timeStep_s,
+                      injectionTime_s: fetParams.injectionTime_s,
                     },
                     metrics: m,
                     responseMode: fetResponseMode,
@@ -1352,22 +2201,11 @@ const Index = () => {
             <>
               <Button
                 size="sm"
-                onClick={() => {
-                  // Mint a fresh measurement id + timestamp for this sweep.
-                  // Notes already on screen ride along with this measurement.
-                  setCvMeasurementId(createMeasurementId("cv"));
-                  setCvMeasurementTimestamp(Date.now());
-                  if (dataSource === "simulated") {
-                    cv.start(cvParams);
-                  } else {
-                    ws.clearCV();
-                    setIsLiveCVRunning(true);
-                    ws.sendCommand("start_cv", { ...cvParams });
-                  }
-                }}
+                onClick={() => handleStartCV()}
                 disabled={
                   (dataSource === "simulated" ? cv.isRunning : isLiveCVRunning) ||
-                  (dataSource === "live" && ws.status !== "connected")
+                  demoRunning ||
+                  liveNotReady
                 }
                 className="font-mono text-xs"
               >▶ Start CV</Button>
@@ -1375,18 +2213,21 @@ const Index = () => {
                 size="sm"
                 variant="destructive"
                 onClick={() => {
+                  if (isMulti) { saveChannelMeasurements("cv"); broadcastCommand("stop"); return; }
                   if (dataSource === "simulated") cv.stop();
                   else { setIsLiveCVRunning(false); ws.sendCommand("stop"); }
                 }}
-                disabled={dataSource === "simulated" ? !cv.isRunning : !isLiveCVRunning}
+                disabled={isMulti ? !anyChannelConnected : ((dataSource === "simulated" ? !cv.isRunning : !isLiveCVRunning) || demoRunning)}
                 className="font-mono text-xs"
               >■ Stop</Button>
               <Button
                 size="sm"
                 variant="secondary"
                 onClick={() => {
+                  if (isMulti) { clearAllChannels(); broadcastCommand("stop"); return; }
                   cv.reset(); ws.clearCV(); setIsLiveCVRunning(false);
                 }}
+                disabled={demoRunning}
                 className="font-mono text-xs"
               >↺ Reset</Button>
               <Button
@@ -1411,7 +2252,7 @@ const Index = () => {
                       measurementId: cvMeasurementId,
                       measurementTimestamp: cvMeasurementTimestamp,
                     },
-                    dataSource,
+                    exportSource,
                     cvPlotMode,
                   );
                 }}
@@ -1422,9 +2263,9 @@ const Index = () => {
           )}
           {mode === "swv" && (
             <>
-              <Button size="sm" onClick={() => swvCtrl?.start()} disabled={!swvCtrl || swvCtrl.isRunning || (dataSource === "live" && ws.status !== "connected")} className="font-mono text-xs">▶ Start SWV</Button>
-              <Button size="sm" variant="destructive" onClick={() => swvCtrl?.stop()} disabled={!swvCtrl?.isRunning} className="font-mono text-xs">■ Stop</Button>
-              <Button size="sm" variant="secondary" onClick={() => swvCtrl?.reset()} className="font-mono text-xs">↺ Reset</Button>
+              <Button size="sm" onClick={() => { if (isMulti) { clearAllChannels(); broadcastCommand("start_swv", { ...swvParams }); return; } swvCtrl?.start(); }} disabled={isMulti ? !anyChannelConnected : (!swvCtrl || swvCtrl.isRunning || demoRunning)} className="font-mono text-xs">▶ Start SWV</Button>
+              <Button size="sm" variant="destructive" onClick={() => { if (isMulti) { saveChannelMeasurements("swv"); broadcastCommand("stop"); return; } swvCtrl?.stop(); }} disabled={!swvCtrl?.isRunning || demoRunning} className="font-mono text-xs">■ Stop</Button>
+              <Button size="sm" variant="secondary" onClick={() => { if (isMulti) { clearAllChannels(); broadcastCommand("stop"); return; } swvCtrl?.reset(); }} disabled={demoRunning} className="font-mono text-xs">↺ Reset</Button>
               <Button size="sm" variant="outline" onClick={() => swvCtrl?.exportCsv()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">⬇ Export CSV</Button>
               <Button size="sm" variant="outline" onClick={() => swvCtrl?.addCalibration()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">+ Calibration Point</Button>
             </>
@@ -1432,8 +2273,20 @@ const Index = () => {
         </div>
       </div>
 
+      {isMulti && (
+        <div className="mb-4">
+          <MultiChannelView
+            mode={mode}
+            channels={channels}
+            wsChannels={wsChannels}
+            layout={multiChannelLayout}
+            e0Prime={cvParams.formalPotential ?? CV_E0_PRIME}
+          />
+        </div>
+      )}
+
       {/* EIS MODE */}
-      {mode === "eis" && (
+      {mode === "eis" && !isMulti && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <Tabs defaultValue="nyquist" className="w-full">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -1469,6 +2322,29 @@ const Index = () => {
                 disabled={eisData.length === 0}
                 className="font-mono text-xs"
               >＋ Capture</Button>
+              <Hint text="Import a previously exported HelpStat EIS CSV as an overlay">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    importOverlayCsv("eis", ({ measurements }) => {
+                      setEisOverlays((prev) => {
+                        let next = prev.slice();
+                        for (const m of measurements) {
+                          const color = OVERLAY_COLORS[next.length % OVERLAY_COLORS.length];
+                          next = [
+                            ...next,
+                            { id: newId(), label: m.label, color, data: m.points as EISDataPoint[] },
+                          ];
+                        }
+                        return next.length > 8 ? next.slice(next.length - 8) : next;
+                      });
+                    })
+                  }
+                  className="font-mono text-xs"
+                >⇪ Import CSV</Button>
+              </Hint>
+
               <Button
                 size="sm"
                 variant="ghost"
@@ -1487,18 +2363,18 @@ const Index = () => {
           </div>
 
           <div className="rounded-lg border border-border bg-card p-3">
-            <TabsContent value="nyquist" className="mt-0 h-[440px] md:h-[540px]">
+            <TabsContent value="nyquist" className="mt-0 h-[440px] md:h-[540px] overflow-visible">
               <NyquistPlot
                 data={eisData}
                 fittedCurve={cnlsFit?.fittedCurve ?? randlesFit?.fittedCurve}
-                overlays={eisOverlays}
+                overlays={overlayMode ? eisOverlays : []}
                 showSeparator={eisStatus === "complete" && separatorZReal != null}
                 separatorZReal={separatorZReal}
                 onSeparatorChange={(v) => setSeparatorZReal(v)}
               />
             </TabsContent>
             <TabsContent value="bode" className="mt-0 h-[400px] md:h-[500px]">
-              <BodePlot data={eisData} />
+              <BodePlot data={eisData} overlays={overlayMode ? eisOverlays : []} />
             </TabsContent>
           </div>
 
@@ -1614,7 +2490,7 @@ const Index = () => {
       )}
 
       {/* BIOFET MODE */}
-      {mode === "fet" && (
+      {mode === "fet" && !isMulti && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <div className="space-y-4">
           <div>
@@ -1656,11 +2532,31 @@ const Index = () => {
                 >＋ Capture</Button>
                 <Button
                   size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    importOverlayCsv("fet_transfer", ({ measurements, fileLabel }) => {
+                      setFetOverlays((prev) => {
+                        const next = [...prev, ...measurements.map((m, i) => ({
+                          id: newId(),
+                          label: m.label ?? `${fileLabel} #${i + 1}`,
+                          color: OVERLAY_COLORS[(prev.length + i) % OVERLAY_COLORS.length],
+                          baseline: (m.baseline ?? []) as import("@/hooks/useSimulatedData").FETTransferPoint[],
+                          withAnalyte: (m.analyte ?? []) as import("@/hooks/useSimulatedData").FETTransferPoint[],
+                        }))];
+                        return next.length > 8 ? next.slice(next.length - 8) : next;
+                      });
+                    })
+                  }
+                  className="font-mono text-xs"
+                >⇪ Import CSV</Button>
+                <Button
+                  size="sm"
                   variant="ghost"
                   onClick={() => setFetOverlays([])}
                   disabled={fetOverlays.length === 0}
                   className="font-mono text-xs"
                 >Clear ({fetOverlays.length})</Button>
+
                 <StatusIndicator
                   isRunning={isFETRunning && fetBaselineData.length > 0}
                   label={isFETRunning && fetBaselineData.length > 0 ? "Sweeping Vg..." : "Idle"}
@@ -1677,16 +2573,17 @@ const Index = () => {
                   >
                     <span style={{ background: ov.color, width: 8, height: 8, borderRadius: 999 }} />
                     {ov.label}
-                    <button
-                      className="ml-1 text-muted-foreground hover:text-foreground"
-                      onClick={() => setFetOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
-                      title="Remove overlay"
-                    >×</button>
+                    <Hint text="Remove overlay">
+                      <button
+                        className="ml-1 text-muted-foreground hover:text-foreground"
+                        onClick={() => setFetOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
+                      >×</button>
+                    </Hint>
                   </span>
                 ))}
               </div>
             )}
-            <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
+            <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px] overflow-visible">
               <FETTransferPlot
                 baseline={fetBaselineData}
                 withAnalyte={fetAnalyteData}
@@ -1704,11 +2601,36 @@ const Index = () => {
                   size="sm"
                   variant="default"
                   onClick={handleAddFetMarker}
-                  disabled={!isFETRunning && fetTimeDataArr.length === 0}
+                  disabled={false}
                   className="font-mono text-xs"
                 >
                   ＋ Add Sample
                 </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    importOverlayCsv("fet_time", ({ measurements, fileLabel }) => {
+                      setFetTimeOverlays((prev) => {
+                        const next = [...prev, ...measurements.map((m, i) => ({
+                          id: newId(),
+                          label: m.label ?? `${fileLabel} #${i + 1}`,
+                          color: OVERLAY_COLORS[(prev.length + i) % OVERLAY_COLORS.length],
+                          data: (m.points ?? []) as import("@/hooks/useSimulatedData").FETTimePoint[],
+                        }))];
+                        return next.length > 8 ? next.slice(next.length - 8) : next;
+                      });
+                    })
+                  }
+                  className="font-mono text-xs"
+                >⇪ Import CSV</Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setFetTimeOverlays([])}
+                  disabled={fetTimeOverlays.length === 0}
+                  className="font-mono text-xs"
+                >Clear ({fetTimeOverlays.length})</Button>
                 <StatusIndicator
                   isRunning={isFETRunning && fetTimeDataArr.length > 0}
                   label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
@@ -1717,7 +2639,8 @@ const Index = () => {
               </div>
             </div>
             <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} />
+              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} overlays={fetOverlayMode ? fetTimeOverlays : []} />
+
             </div>
             {fetMarkers.length > 0 && (
               <div className="mt-1 text-[11px] font-mono text-muted-foreground">
@@ -1818,7 +2741,7 @@ const Index = () => {
       )}
 
       {/* CV MODE */}
-      {mode === "cv" && (() => {
+      {mode === "cv" && !isMulti && (() => {
         const cvDataLive = dataSource === "simulated" ? cv.data : ws.cvData;
         const cvMetrics = computeCVMetrics(cvDataLive, {
           scanRate_mVs: cvParams.scanRate,
@@ -1866,6 +2789,29 @@ const Index = () => {
                     disabled={cvDataLive.length === 0}
                     className="font-mono text-xs"
                   >＋ Capture</Button>
+                  <Hint text="Import a previously exported HelpStat CV CSV as an overlay">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        importOverlayCsv("cv", ({ measurements }) => {
+                          setCvOverlays((prev) => {
+                            let next = prev.slice();
+                            for (const m of measurements) {
+                              const color = OVERLAY_COLORS[next.length % OVERLAY_COLORS.length];
+                              next = [
+                                ...next,
+                                { id: newId(), label: m.label, color, data: m.points as CVDataPoint[] },
+                              ];
+                            }
+                            return next.length > 8 ? next.slice(next.length - 8) : next;
+                          });
+                        })
+                      }
+  
+                      className="font-mono text-xs"
+                    >⇪ Import CSV</Button>
+                  </Hint>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -1901,21 +2847,22 @@ const Index = () => {
                   >
                     Baseline {cvShowBaseline ? "ON" : "OFF"}
                   </Button>
-                  <select
-                    value={cvBaselineMethod}
-                    onChange={(e) =>
-                      setCvBaselineMethod(
-                        e.target.value as typeof cvBaselineMethod,
-                      )
-                    }
-                    className="h-7 rounded-md border border-input bg-background px-2 font-mono text-[11px]"
-                    title="Baseline subtraction method"
-                  >
-                    <option value="auto">Baseline: Auto</option>
-                    <option value="none">Baseline: None</option>
-                    <option value="linear-first-15">Baseline: Linear first 15%</option>
-                    <option value="linear-edges">Baseline: Linear edges</option>
-                  </select>
+                  <Hint text="Baseline subtraction method">
+                    <select
+                      value={cvBaselineMethod}
+                      onChange={(e) =>
+                        setCvBaselineMethod(
+                          e.target.value as typeof cvBaselineMethod,
+                        )
+                      }
+                      className="h-7 rounded-md border border-input bg-background px-2 font-mono text-[11px]"
+                    >
+                      <option value="auto">Baseline: Auto</option>
+                      <option value="none">Baseline: None</option>
+                      <option value="linear-first-15">Baseline: Linear first 15%</option>
+                      <option value="linear-edges">Baseline: Linear edges</option>
+                    </select>
+                  </Hint>
                   <StatusIndicator
                     isRunning={isCVRunning && cvDataLive.length > 0}
                     label={isCVRunning ? "Sweeping..." : "Idle"}
@@ -1934,11 +2881,12 @@ const Index = () => {
                     <span key={ov.id} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5">
                       <span style={{ background: ov.color, width: 8, height: 8, borderRadius: 999 }} />
                       {ov.label}
-                      <button
-                        className="ml-1 text-muted-foreground hover:text-foreground"
-                        onClick={() => setCvOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
-                        title="Remove overlay"
-                      >×</button>
+                      <Hint text="Remove overlay">
+                        <button
+                          className="ml-1 text-muted-foreground hover:text-foreground"
+                          onClick={() => setCvOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
+                        >×</button>
+                      </Hint>
                     </span>
                   ))}
                 </div>
@@ -1947,9 +2895,9 @@ const Index = () => {
                 <CVPlot
                   data={cvDataLive}
                   metrics={cvMetrics}
-                  e0Prime={CV_E0_PRIME}
+                  e0Prime={cvParams.formalPotential ?? CV_E0_PRIME}
                   plotMode={cvPlotMode}
-                  overlays={cvOverlays}
+                  overlays={cvOverlayMode ? cvOverlays : []}
                   showBaseline={cvShowBaseline}
                 />
               </div>
@@ -1987,22 +2935,22 @@ const Index = () => {
                       { label: "Ipc raw", value: Number.isFinite(cvMetrics.IpcRaw) ? `${cvMetrics.IpcRaw.toFixed(2)} µA` : "—", t: "Cathodic peak current — uncorrected" },
                       { label: "Ipa corr", value: Number.isFinite(cvMetrics.IpaCorrected) ? `${cvMetrics.IpaCorrected.toFixed(2)} µA` : "—", t: "Baseline-corrected anodic peak" },
                       { label: "Ipc corr", value: Number.isFinite(cvMetrics.IpcCorrected) ? `${cvMetrics.IpcCorrected.toFixed(2)} µA` : "—", t: "Baseline-corrected cathodic peak" },
-                      { label: "Epa", value: Number.isFinite(cvMetrics.Epa) ? `${cvMetrics.Epa.toFixed(3)} V` : "—" },
-                      { label: "Epc", value: Number.isFinite(cvMetrics.Epc) ? `${cvMetrics.Epc.toFixed(3)} V` : "—" },
+                      { label: "Epa", value: Number.isFinite(cvMetrics.Epa) ? `${cvMetrics.Epa.toFixed(3)} V` : "—", t: "Anodic peak potential — where oxidation current peaks." },
+                      { label: "Epc", value: Number.isFinite(cvMetrics.Epc) ? `${cvMetrics.Epc.toFixed(3)} V` : "—", t: "Cathodic peak potential — where reduction current peaks." },
                       { label: "ΔEp", value: Number.isFinite(cvMetrics.deltaEp) ? `${cvMetrics.deltaEp.toFixed(0)} mV` : "—", t: `Expected ≈ ${(59.16 / Math.max(1, cvParams.n)).toFixed(0)} mV for n=${cvParams.n} at 25 °C` },
-                      { label: "E°'", value: Number.isFinite(cvMetrics.E0prime) ? `${cvMetrics.E0prime.toFixed(3)} V` : "—" },
-                      { label: "|Ipa/Ipc|", value: Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—" },
+                      { label: "E°'", value: Number.isFinite(cvMetrics.E0prime) ? `${cvMetrics.E0prime.toFixed(3)} V` : "—", t: "Formal potential, ≈ midpoint between Epa and Epc." },
+                      { label: "|Ipa/Ipc|", value: Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—", t: "Peak current ratio. Near 1.0 = reversible couple." },
                       { label: "n est.", value: cvMetrics.n_est_valid ? cvMetrics.n_electrons.toFixed(2) : "—", t: "Valid only for reversible diffusion-controlled systems at 25 °C." },
                       {
                         label: `D apparent (${cvMetrics.D_status})`,
                         value: Number.isFinite(cvMetrics.D_apparent)
                           ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s`
                           : "—",
-                        t: "valid → reversible only · apparent → quasi-reversible informational · invalid → not applicable",
+                        t: "Valid = reversible system. Apparent = quasi-reversible estimate. Invalid = not applicable here.",
                       },
-                      { label: "SNR (min)", value: `${Math.min(cvMetrics.SNR_anodic, cvMetrics.SNR_cathodic).toFixed(1)}`, t: "min(SNR_anodic, SNR_cathodic) — corrected peak ÷ noise (1.4826·MAD)" },
-                      { label: "Noise", value: `${cvMetrics.noise_uA.toFixed(3)} µA`, t: "Robust noise estimate (1.4826·MAD of baseline residuals)" },
-                      { label: "Reversibility", value: cvMetrics.reversibility },
+                      { label: "SNR (min)", value: `${Math.min(cvMetrics.SNR_anodic, cvMetrics.SNR_cathodic).toFixed(1)}`, t: "Weakest peak's signal-to-noise ratio. Higher is more reliable." },
+                      { label: "Noise", value: `${cvMetrics.noise_uA.toFixed(3)} µA`, t: "Estimated baseline noise level, robust to outliers." },
+                      { label: "Reversibility", value: cvMetrics.reversibility, t: "Classified from ΔEp and |Ipa/Ipc| against reversible-system thresholds." },
                       {
                         label: "Baseline",
                         value:
@@ -2019,9 +2967,10 @@ const Index = () => {
                         t: "Main metrics are calculated from this cycle. Corrected view spans all cycles when available.",
                       },
                     ].map((it) => (
-                      <div key={it.label} className="bg-secondary rounded-md p-2" title={it.t}>
+                      <div key={it.label} className="bg-secondary rounded-md p-2">
                         <div className="text-[10px] text-muted-foreground font-mono uppercase">
-                          {it.label}{it.t ? <span className="ml-1 opacity-60">ⓘ</span> : null}
+                          {it.label}
+                          {it.t ? <InfoHint text={it.t} /> : null}
                         </div>
                         <div className="text-sm font-mono text-foreground">{it.value}</div>
                       </div>
@@ -2069,44 +3018,14 @@ const Index = () => {
                 }
                 responseMode={cvResponseMode}
                 onChangeResponseMode={setCvResponseMode}
-                onAddCurrent={() => {
-                  if (!cvMetrics) {
-                    toast.error("No CV metrics yet — run a CV sweep first.");
-                    return;
-                  }
-                  const cleanNotes = sanitizeMeasurementNotes(cvNotes);
-                  const pt = buildCVCalibrationPoint(
-                    cvParams.cMM,
-                    cvMetrics,
-                    cvParams.cvModel,
-                    {
-                      measurementId: cvMeasurementId,
-                      sampleId: cleanNotes?.sampleId,
-                      electrodeId: cleanNotes?.electrodeId,
-                      notes: shortNotesSummary(cleanNotes),
-                      timestamp: cvMeasurementTimestamp,
-                    },
-                  );
-                  // Always append — replicates (including blank replicates) are
-                  // required for LOD estimation.
-                  setCvCalibration((prev) => [...prev, pt]);
-                  // Remember the notes so the next sweep can copy-from-previous.
-                  if (hasAnyNotes(cleanNotes)) setCvPreviousNotes(cleanNotes!);
-                  logActivity(
-                    "calibration",
-                    `CV calibration point added — C=${cvParams.cMM} mM, response=${
-                      responseFor(pt, cvResponseMode)?.toFixed(2) ?? "n/a"
-                    } µA`,
-                  );
-                  toast.success(`Added CV point at ${cvParams.cMM} mM`);
-                }}
+                onAddCurrent={handleAddCvCalibrationPoint}
                 onClear={() => {
                   setCvCalibration([]);
                   toast("CV calibration cleared");
                 }}
                 onExport={() =>
                   exportCVCalibrationCSV(cvCalibration, {
-                    source: dataSource,
+                    source: exportSource,
                     responseMode: cvResponseMode,
                     n: cvParams.n,
                     areaCm2: cvParams.areaCm2,
@@ -2139,15 +3058,58 @@ const Index = () => {
         );
       })()}
 
-      {mode === "swv" && (
+      {(mode === "swv" || mode === "dashboard") && (
+        <div className={mode === "dashboard" || isMulti ? "hidden" : undefined}>
         <SWVMode
-          dataSource={dataSource}
+          dataSource={exportSource}
           ws={ws}
           externalParams={swvParams}
           onChangeParams={setSwvParams}
           onController={setSwvCtrl}
+          onSessionUpdate={setSessionMeasurements}
+          overlays={swvOverlays}
+          setOverlays={setSwvOverlays}
+          demoRunning={demoRunning}
+          state={swvState}
         />
+        </div>
       )}
+
+      {mode === "dashboard" && !isMulti && (() => {
+        const cvDataLive = dataSource === "simulated" ? cv.data : ws.cvData;
+        const isCVRunning = dataSource === "simulated" ? cv.isRunning : isLiveCVRunning;
+        const cvStatus: DashStatus = isCVRunning ? "running" : cvDataLive.length > 0 ? "complete" : "idle";
+        const swvStatus: DashStatus = swvCtrl?.isRunning ? "running" : swvCtrl?.hasData ? "complete" : "idle";
+        return (
+          <DashboardErrorBoundary>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+            <DashboardCell title="EIS — Nyquist" status={mapStatus(eisStatus)} onOpen={() => setMode("eis")}>
+              <NyquistPlot data={eisData} overlays={[]} compact />
+            </DashboardCell>
+            <DashboardCell title="CV — I vs E" status={cvStatus} onOpen={() => setMode("cv")}>
+              <CVPlot
+                data={cvDataLive}
+                metrics={null}
+                e0Prime={cvParams.formalPotential ?? CV_E0_PRIME}
+                overlays={[]}
+                compact
+              />
+            </DashboardCell>
+            <DashboardCell title="SWV — I vs E" status={swvStatus} onOpen={() => setMode("swv")}>
+              <SWVPlot data={swvCtrl?.data ?? []} overlays={[]} compact />
+            </DashboardCell>
+            <DashboardCell title="BioFET — Id vs Vg" status={mapStatus(fetStatus)} onOpen={() => setMode("fet")}>
+              <FETTransferPlot baseline={fetBaselineData} withAnalyte={fetAnalyteData} overlays={[]} compact />
+            </DashboardCell>
+            <DashboardCell title="BioFET — Id vs Time" status={mapStatus(fetStatus)} onOpen={() => setMode("fet")}>
+              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} overlays={[]} compact />
+            </DashboardCell>
+          </div>
+          </DashboardErrorBoundary>
+
+        );
+      })()}
 
       <footer className="mt-8 text-center text-[10px] text-muted-foreground font-mono">
         HelpStat Biosensor v0.2 — {dataSource === "simulated" ? "Simulated Mode" : "Live Mode"} — ESP32-S3 WebSocket

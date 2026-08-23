@@ -3,6 +3,8 @@ import type { EISDataPoint, FETTransferPoint } from "@/hooks/useSimulatedData";
 import type { CVMetrics } from "@/utils/computeCVMetrics";
 import { computeCVSignalQuality } from "@/utils/cvSignalQuality";
 import type { SWVDataPoint, SWVMetrics } from "@/types/swv";
+import { InfoHint } from "@/components/InfoHint";
+
 
 
 /**
@@ -435,17 +437,18 @@ interface MetricRowProps {
 }
 
 const MetricRow = ({ label, value, level, title }: MetricRowProps & { title?: string }) => (
-  <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/40 last:border-0" title={title}>
+  <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/40 last:border-0">
     <div className="flex items-center gap-2 min-w-0">
       <div className={`w-2 h-2 rounded-full shrink-0 ${dotClass(level)}`} />
       <span className="text-[11px] font-mono text-muted-foreground truncate">
         {label}
-        {title ? <span className="ml-1 opacity-60">ⓘ</span> : null}
+        {title ? <InfoHint text={title} /> : null}
       </span>
     </div>
     <span className="text-xs font-mono text-foreground tabular-nums">{value}</span>
   </div>
 );
+
 
 const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared, separatorZReal, separatorFreq, linKKResidualPct, linKKPassed, fetVtBaseline, fetVtAnalyte, cvMetrics, cvNElectrons = 1, cvDeltaEpToleranceMv = 20, swvData, swvMetrics }: SignalQualityProps) => {
   const eisMetrics = useMemo(
@@ -531,29 +534,31 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
       <div className="space-y-0">
         {mode === "eis" && (
           <>
-            <MetricRow label="Semicircle Fit" value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending} level={eisMetrics.semicircleLevel} />
-            <MetricRow label="Residual Noise" title="From CNLS: sqrt(weighted SSR/dof)·100 ≈ modulus-weighted RMSE %. Fallback (no CNLS): RMS of |Z| vs. 3-point linear predictor (% of |Z|)." value={ready ? `${eisMetrics.pointNoise.toFixed(2)} %` : pending} level={eisMetrics.noiseLevel} />
+            <MetricRow label="Semicircle Fit" title="How closely the points trace a smooth semicircle. Low values suggest noise or a badly placed separator." value={ready ? `${eisMetrics.semicircleFit.toFixed(1)} %` : pending} level={eisMetrics.semicircleLevel} />
+            <MetricRow label="Residual Noise" title="Deviation from a smooth curve, as % of signal size. Lower is better." value={ready ? `${eisMetrics.pointNoise.toFixed(2)} %` : pending} level={eisMetrics.noiseLevel} />
             <MetricRow
               label="Lin-KK (RMS res.)"
               title="Lin-KK consistency: fit to a sum of M parallel RC elements. RMS residual ≤5% supports linear/causal/stable behavior in the measured range. Does NOT prove a specific equivalent circuit."
               value={Number.isFinite(eisMetrics.linKKPct) ? `${eisMetrics.linKKPct.toFixed(2)} %` : "—"}
               level={eisMetrics.linKKLevel}
             />
-            <MetricRow label="Rs (Ω)" value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending} level={eisMetrics.rsLevel} />
-            <MetricRow label="Total Points" value={`${eisMetrics.totalPoints}`} level={eisMetrics.pointsLevel} />
+            <MetricRow label="Rs (Ω)" title="Solution resistance, from the highest-frequency point. Should stay stable across repeat measurements." value={ready ? `${eisMetrics.rsStability.toFixed(0)} Ω` : pending} level={eisMetrics.rsLevel} />
+            <MetricRow label="Total Points" title="Number of frequency points in this sweep." value={`${eisMetrics.totalPoints}`} level={eisMetrics.pointsLevel} />
+
           </>
         )}
         {mode === "fet" && (
           <>
-            <MetricRow label="Ion / Ioff Ratio" value={ready ? fetMetrics.ionIoff.toFixed(1) : pending} level={fetMetrics.ionLevel} />
-            <MetricRow label="ΔVt" value={deltaVtStr} level={deltaVtLevel} />
+            <MetricRow label="Ion / Ioff Ratio" title="On/off current ratio — higher means a cleaner switching response, independent of analyte binding." value={ready ? fetMetrics.ionIoff.toFixed(1) : pending} level={fetMetrics.ionLevel} />
+            <MetricRow label="ΔVt" title="Threshold voltage shift between baseline and analyte curves — the main signal for cortisol binding." value={deltaVtStr} level={deltaVtLevel} />
             <MetricRow
               label="Subthreshold Slope"
-              title="SS is approximate — quadratic model only"
+              title="How sharply current turns on with gate voltage. Lower = sharper response. Approximate (quadratic fit)."
               value={ready ? (fetMetrics.subthresholdSlope > 0 ? `${fetMetrics.subthresholdSlope.toFixed(0)} mV/dec` : "—") : pending}
               level={fetMetrics.ssLevel}
             />
-            <MetricRow label="Ioff Current" value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending} level={fetMetrics.ioffLevel} />
+            <MetricRow label="Ioff Current" title="Off-state drain current. Should stay small and stable." value={ready ? `${fetMetrics.ioff.toFixed(2)} µA` : pending} level={fetMetrics.ioffLevel} />
+
             <MetricRow label="Baseline Noise" title="100·std/|mean| over the deep-off (low Vg) region of the baseline. <5% green, <15% yellow, else red." value={ready ? `${fetMetrics.baselineStability.toFixed(1)} %` : pending} level={fetMetrics.stabilityLevel} />
             {fetMetrics.negativeCurrentWarning && (
               <div className="text-[10px] font-mono text-yellow-500 mt-1 leading-snug">
@@ -564,15 +569,15 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
         )}
         {mode === "cv" && (
           <>
-            <MetricRow label="Reversibility" value={cvMetrics ? cvMetrics.reversibility : pending} level={cvLevels.reversibilityLevel} />
+            <MetricRow label="Reversibility" title="Classifies the redox couple by peak separation and current ratio: reversible, quasi-reversible, or irreversible." value={cvMetrics ? cvMetrics.reversibility : pending} level={cvLevels.reversibilityLevel} />
             <MetricRow
               label={`ΔEp (exp. ${(59.16 / Math.max(1, cvNElectrons)).toFixed(0)} mV)`}
               title={`Expected ΔEp = 59.16 / n at 25 °C for n=${cvNElectrons}`}
               value={cvMetrics && Number.isFinite(cvMetrics.deltaEp) ? `${cvMetrics.deltaEp.toFixed(0)} mV` : "—"}
               level={cvLevels.deltaEpLevel}
             />
-            <MetricRow label="|Ipa/Ipc|" value={cvMetrics && Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—"} level={cvLevels.ratioLevel} />
-            <MetricRow label="Peaks Detected" value={cvMetrics ? `${(cvMetrics.hasAnodic ? 1 : 0) + (cvMetrics.hasCathodic ? 1 : 0)} / 2` : pending} level={cvLevels.peakLevel} />
+            <MetricRow label="|Ipa/Ipc|" title="Anodic/cathodic peak current ratio. Near 1.0 = reversible couple." value={cvMetrics && Number.isFinite(cvMetrics.IpaIpcRatio) ? cvMetrics.IpaIpcRatio.toFixed(2) : "—"} level={cvLevels.ratioLevel} />
+            <MetricRow label="Peaks Detected" title="Oxidation/reduction peaks found, out of 2 expected." value={cvMetrics ? `${(cvMetrics.hasAnodic ? 1 : 0) + (cvMetrics.hasCathodic ? 1 : 0)} / 2` : pending} level={cvLevels.peakLevel} />
             <MetricRow
               label="SNR (min)"
               title="min(SNR_anodic, SNR_cathodic) — corrected peak current ÷ noise estimate"
@@ -581,7 +586,7 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
             />
             <MetricRow
               label="D apparent"
-              title="valid → reversible only · apparent → quasi-reversible (informational) · invalid → not applicable"
+              title="Valid = reversible system. Apparent = quasi-reversible estimate. Invalid = not applicable here."
               value={cvMetrics && Number.isFinite(cvMetrics.D_apparent)
                 ? `${cvMetrics.D_apparent.toExponential(2)} cm²/s (${cvMetrics.D_status})`
                 : cvMetrics ? `— (${cvMetrics.D_status})` : "—"}

@@ -8,13 +8,19 @@ import type { ConnectionStatus } from "@/hooks/useWebSocketData";
  * In Live mode, lets you enter the ESP32's WebSocket URL.
  */
 
+export type DataSource = "simulated" | "live" | "multichannel";
+
 interface ConnectionPanelProps {
-  dataSource: "simulated" | "live";
-  onChangeSource: (source: "simulated" | "live") => void;
+  dataSource: DataSource;
+  onChangeSource: (source: DataSource) => void;
   connectionStatus: ConnectionStatus;
   errorMessage: string;
   onConnect: (url: string) => void;
   onDisconnect: () => void;
+  /** Multi-Channel: how many enabled channels are currently connected. */
+  multiConnectedCount?: number;
+  /** Multi-Channel: how many channels are enabled. */
+  multiEnabledCount?: number;
 }
 
 export default function ConnectionPanel({
@@ -24,6 +30,8 @@ export default function ConnectionPanel({
   errorMessage,
   onConnect,
   onDisconnect,
+  multiConnectedCount = 0,
+  multiEnabledCount = 0,
 }: ConnectionPanelProps) {
   const [wsUrl, setWsUrl] = useState("ws://192.168.4.1:81");
 
@@ -61,6 +69,27 @@ export default function ConnectionPanel({
             className="font-mono text-xs h-7 px-3"
           >
             Live (ESP32)
+          </Button>
+          <Button
+            size="sm"
+            variant={dataSource === "multichannel" ? "default" : "outline"}
+            onClick={() => onChangeSource("multichannel")}
+            className="font-mono text-xs h-7 px-3"
+          >
+            Multi-Channel Live
+            {dataSource === "multichannel" && multiEnabledCount > 0 && (
+              <span
+                className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-mono ${
+                  multiConnectedCount === multiEnabledCount
+                    ? "bg-graph-primary/20 text-graph-primary"
+                    : multiConnectedCount === 0
+                      ? "bg-destructive/20 text-destructive"
+                      : "bg-amber-500/20 text-amber-400"
+                }`}
+              >
+                ● {multiConnectedCount}/{multiEnabledCount}
+              </span>
+            )}
           </Button>
         </div>
       </div>

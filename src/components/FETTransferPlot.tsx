@@ -1,3 +1,4 @@
+import { EmptyPlotState } from "@/components/EmptyPlotState";
 import { useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -17,9 +18,12 @@ interface FETTransferPlotProps {
   baseline: FETTransferPoint[];
   withAnalyte: FETTransferPoint[];
   overlays?: FETOverlay[];
+  /** Compact read-only rendering for the dashboard grid. */
+  compact?: boolean;
 }
 
-const FETTransferPlot = ({ baseline, withAnalyte, overlays = [] }: FETTransferPlotProps) => {
+const FETTransferPlot = ({ baseline, withAnalyte, overlays: overlaysProp = [], compact = false }: FETTransferPlotProps) => {
+  const overlays = compact ? [] : overlaysProp;
   const plotData = baseline.map((b, i) => ({
     vg: b.vg,
     baseline: b.id,
@@ -58,9 +62,18 @@ const FETTransferPlot = ({ baseline, withAnalyte, overlays = [] }: FETTransferPl
     setZoomArea(null);
   };
 
+  if (baseline.length === 0 && withAnalyte.length === 0) {
+    return (
+      <EmptyPlotState
+        title="No transfer curve yet"
+        hint="Click Start FET to sweep the transfer curve (Id vs Vg)."
+      />
+    );
+  }
+
   return (
     <div className="w-full h-full" style={{ position: "relative" }}>
-      {zoomDomain && (
+      {!compact && zoomDomain && (
         <button
           onClick={() => setZoomDomain(null)}
           style={{
@@ -78,10 +91,10 @@ const FETTransferPlot = ({ baseline, withAnalyte, overlays = [] }: FETTransferPl
       <ResponsiveContainer width="100%" height="100%">
         <LineChart
           data={plotData}
-          margin={{ top: 10, right: 20, bottom: 40, left: 20 }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+          margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 16, right: 24, bottom: 48, left: 56 }}
+          onMouseDown={compact ? undefined : handleMouseDown}
+          onMouseMove={compact ? undefined : handleMouseMove}
+          onMouseUp={compact ? undefined : handleMouseUp}
         >
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 15% 15%)" />
           <XAxis
@@ -89,15 +102,31 @@ const FETTransferPlot = ({ baseline, withAnalyte, overlays = [] }: FETTransferPl
             type="number"
             domain={zoomDomain ? zoomDomain.x : ["auto", "auto"]}
             allowDataOverflow
-            label={{ value: "Gate Voltage Vg (V)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
-            tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+            label={compact ? undefined : { value: "Gate Voltage Vg (V)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
+            tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
             stroke="hsl(220 15% 20%)"
           />
           <YAxis
             domain={zoomDomain ? zoomDomain.y : ["auto", "auto"]}
             allowDataOverflow
-            label={{ value: "Drain Current Id (µA)", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(215 15% 50%)", fontSize: 12 }}
-            tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+            label={compact ? undefined : (props: any) => {
+              const { viewBox } = props;
+              const cy = viewBox.y + viewBox.height / 2;
+              return (
+                <text
+                  x={14}
+                  y={cy}
+                  transform={`rotate(-90, 14, ${cy})`}
+                  textAnchor="middle"
+                  fill="hsl(215 15% 50%)"
+                  fontSize={11}
+                  fontFamily="monospace"
+                >
+                  Drain Current Id (µA)
+                </text>
+              );
+            }}
+            tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
             stroke="hsl(220 15% 20%)"
           />
           <Tooltip
@@ -111,46 +140,40 @@ const FETTransferPlot = ({ baseline, withAnalyte, overlays = [] }: FETTransferPl
             }}
             formatter={(value: number) => [`${value.toFixed(2)} µA`]}
           />
-          <Legend wrapperStyle={{ color: "hsl(215 15% 50%)", fontSize: 12 }} />
-          {overlays.map((ov) => {
-            const ovData = ov.baseline.map((b, i) => ({
-              vg: b.vg,
-              [`ov_base_${ov.id}`]: b.id,
-              [`ov_ana_${ov.id}`]: ov.withAnalyte[i]?.id ?? null,
-            }));
-            return (
-              <>
-                <Line
-                  key={`ovb_${ov.id}`}
-                  type="monotone"
-                  data={ovData}
-                  dataKey={`ov_base_${ov.id}`}
-                  name={`${ov.label} · baseline`}
-                  stroke={ov.color}
-                  strokeWidth={1.2}
-                  strokeDasharray="2 2"
-                  dot={false}
-                  isAnimationActive={false}
-                />
-                <Line
-                  key={`ova_${ov.id}`}
-                  type="monotone"
-                  data={ovData}
-                  dataKey={`ov_ana_${ov.id}`}
-                  name={`${ov.label} · analyte`}
-                  stroke={ov.color}
-                  strokeWidth={1.2}
-                  strokeDasharray="6 3"
-                  dot={false}
-                  isAnimationActive={false}
-                />
-              </>
-            );
-          })}
+          {!compact && <Legend wrapperStyle={{ color: "hsl(215 15% 50%)", fontSize: 12 }} />}
+          {overlays.flatMap((ov) => [
+            <Line
+              key={`ovb_${ov.id}`}
+              type="monotone"
+              data={ov.baseline}
+              dataKey="id"
+              name={`${ov.label} · baseline`}
+              stroke={ov.color}
+              strokeOpacity={0.55}
+              strokeWidth={1.2}
+              strokeDasharray="2 2"
+              dot={false}
+              isAnimationActive={false}
+            />,
+            <Line
+              key={`ova_${ov.id}`}
+              type="monotone"
+              data={ov.withAnalyte}
+              dataKey="id"
+              name={`${ov.label} · analyte`}
+              stroke={ov.color}
+              strokeOpacity={1}
+              strokeWidth={1.6}
+              strokeDasharray="6 3"
+              dot={false}
+              isAnimationActive={false}
+            />,
+          ])}
+
           <Line type="monotone" dataKey="baseline" name="Baseline (no analyte)" stroke="hsl(200 80% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
           <Line type="monotone" dataKey="cortisol" name="With Cortisol" stroke="hsl(35 90% 55%)" strokeWidth={2} dot={false} strokeDasharray="6 3" isAnimationActive={false} />
 
-          {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
+          {!compact && isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
             <ReferenceArea x1={zoomArea.x1} x2={zoomArea.x2} strokeOpacity={0.3} fill="hsl(200 80% 55%)" fillOpacity={0.15} />
           )}
         </LineChart>
