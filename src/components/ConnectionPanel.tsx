@@ -68,7 +68,7 @@ export default function ConnectionPanel({
             onClick={() => onChangeSource("live")}
             className="font-mono text-xs h-7 px-3"
           >
-            Live (ESP32)
+            Live
           </Button>
           <Button
             size="sm"

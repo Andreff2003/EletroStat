@@ -108,7 +108,7 @@ function downloadTSV(filename: string, content: string) {
 
 function metaRow(measurementsCount: number, source: ExportSource): string {
   return toRow([
-    "HelpStat Export",
+    "ElectroStat Export",
     fmtTs(Date.now()),
     `Measurements: ${measurementsCount}`,
     `Source: ${source}`,

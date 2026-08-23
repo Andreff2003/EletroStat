@@ -1,4 +1,4 @@
-# CV WebSocket Protocol (ESP32 ↔ HelpStat)
+# CV WebSocket Protocol (ESP32 ↔ ElectroStat)
 
 All messages are JSON, framed as individual WebSocket text frames.
 Units are strict: E in volts, I in microamperes, t in seconds.

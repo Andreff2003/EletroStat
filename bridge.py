@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HelpStat bridge — WebSocket ↔ ESP32-S3 / simulated backend.
+ElectroStat bridge — WebSocket ↔ ESP32-S3 / simulated backend.
 
 Supports EIS, BioFET, CV and SWV.  SWV wire protocol:
 
