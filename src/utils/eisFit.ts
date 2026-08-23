@@ -3,7 +3,7 @@ import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
 /**
  * ============================================================
- *  HelpStat — Scientific CNLS EIS Fitting
+ *  ElectroStat — Scientific CNLS EIS Fitting
  * ============================================================
  *
  *  Implements Complex Non-Linear Least Squares fitting using
@@ -272,7 +272,7 @@ export function fitEIS(
       );
     } else converged = false;
   } catch (err) {
-    console.warn("[HelpStat] CNLS LM failed", err);
+    console.warn("[ElectroStat] CNLS LM failed", err);
     converged = false;
   }
 

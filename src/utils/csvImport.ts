@@ -1,5 +1,5 @@
 /**
- * CSV import for HelpStat overlays.
+ * CSV import for ElectroStat overlays.
  *
  * Reads a CSV previously exported by this app (individual EIS/CV/SWV export
  * or a combined session export) and reconstructs the raw curve(s) so they
@@ -492,7 +492,7 @@ export function parseImportedCsv(
     return {
       error: present
         ? `Este ficheiro não contém dados ${expectedMode.toUpperCase()}. Secções encontradas: ${present}. Usa o botão Import CSV do modo correspondente (${present}).`
-        : "Ficheiro não reconhecido como export HelpStat.",
+        : "Ficheiro não reconhecido como export ElectroStat.",
     };
   }
 

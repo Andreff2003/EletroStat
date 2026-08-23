@@ -4,7 +4,7 @@ import { fitEIS } from "@/utils/eisFit";
 
 /**
  * ============================================================
- *  HelpStat — Randles Circuit Fitting + Warburg Analysis
+ *  ElectroStat — Randles Circuit Fitting + Warburg Analysis
  * ============================================================
  *
  *  Model: Z(ω) = Rs + 1 / (jωCdl + 1/(Rct + Aw/√ω · (1-j)))
@@ -263,7 +263,7 @@ export function fitRandles(
       );
     }
   } catch (err) {
-    console.warn("[HelpStat] LM fit failed, using initial estimates", err);
+    console.warn("[ElectroStat] LM fit failed, using initial estimates", err);
     lmConverged = false;
   }
 

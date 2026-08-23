@@ -426,7 +426,7 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                 disabled={data.length === 0}
                 className="font-mono text-xs"
               >＋ Capture</Button>
-              <Hint text="Import a previously exported HelpStat SWV CSV as an overlay">
+              <Hint text="Import a previously exported ElectroStat SWV CSV as an overlay">
                 <Button
                   size="sm"
                   variant="outline"

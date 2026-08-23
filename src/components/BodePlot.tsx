@@ -52,7 +52,7 @@ const BodePlot = ({ data, overlays }: BodePlotProps) => {
     return (
       <EmptyPlotState
         title="No EIS sweep yet"
-        hint="Click Start EIS to begin a simulated sweep, or switch Data Source to Live (ESP32) to connect your device."
+        hint="Click Start EIS to begin a simulated sweep, or switch Data Source to Live to connect your device."
       />
     );
   }

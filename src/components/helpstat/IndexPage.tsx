@@ -1858,7 +1858,7 @@ const Index = () => {
       <header className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-foreground tracking-tight font-mono">
-            HelpStat
+            ElectroStat
             <span className="text-primary ml-2 text-sm font-normal">Biosensor Dashboard</span>
           </h1>
           <p className="text-xs text-muted-foreground mt-1">
@@ -2322,7 +2322,7 @@ const Index = () => {
                 disabled={eisData.length === 0}
                 className="font-mono text-xs"
               >＋ Capture</Button>
-              <Hint text="Import a previously exported HelpStat EIS CSV as an overlay">
+              <Hint text="Import a previously exported ElectroStat EIS CSV as an overlay">
                 <Button
                   size="sm"
                   variant="outline"
@@ -2789,7 +2789,7 @@ const Index = () => {
                     disabled={cvDataLive.length === 0}
                     className="font-mono text-xs"
                   >＋ Capture</Button>
-                  <Hint text="Import a previously exported HelpStat CV CSV as an overlay">
+                  <Hint text="Import a previously exported ElectroStat CV CSV as an overlay">
                     <Button
                       size="sm"
                       variant="outline"
@@ -3112,7 +3112,7 @@ const Index = () => {
       })()}
 
       <footer className="mt-8 text-center text-[10px] text-muted-foreground font-mono">
-        HelpStat Biosensor v0.2 — {dataSource === "simulated" ? "Simulated Mode" : "Live Mode"} — ESP32-S3 WebSocket
+        ElectroStat Biosensor v0.2 — {dataSource === "simulated" ? "Simulated Mode" : "Live Mode"} — ESP32-S3 WebSocket
       </footer>
     </div>
   );

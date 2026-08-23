@@ -2,7 +2,7 @@ import type { EISDataPoint } from "@/hooks/useSimulatedData";
 
 /**
  * ============================================================
- *  HelpStat — Lin-KK inspired consistency check
+ *  ElectroStat — Lin-KK inspired consistency check
  * ============================================================
  *
  *  Linear KK consistency check inspired by the Schönleber /
