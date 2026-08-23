@@ -1,6 +1,8 @@
 import type { RandlesFitResult, WarburgResult, KKResult } from "@/utils/randlesFit";
 import type { LinKKResult } from "@/utils/linKK";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { InfoHint } from "@/components/InfoHint";
+import { PARAM_HINTS } from "@/components/CNLSFitResults";
 
 interface Props {
   fit: RandlesFitResult | null;
@@ -55,7 +57,7 @@ const CircuitFitResults = ({ fit, warburg, kk, linKK }: Props) => {
 
   const rsCard = (
     <div key="rs" className="bg-secondary rounded-md p-2">
-      <div className="text-[10px] text-muted-foreground font-mono uppercase">Rs</div>
+      <div className="text-[10px] text-muted-foreground font-mono uppercase">Rs<InfoHint text={PARAM_HINTS.Rs} /></div>
       <div className="text-sm font-mono text-foreground">{fmt(fit.Rs, 1)} Ω<span className="text-[10px] text-muted-foreground">{fmtErr("Rs")}</span></div>
     </div>
   );
@@ -75,7 +77,7 @@ const CircuitFitResults = ({ fit, warburg, kk, linKK }: Props) => {
             : "text-[10px] text-muted-foreground font-mono uppercase"
         }
       >
-        Rct {rctResolved ? "★" : ""}
+        Rct {rctResolved ? "★" : ""}<InfoHint text={PARAM_HINTS.Rct} />
       </div>
       <div
         className={
@@ -95,7 +97,7 @@ const CircuitFitResults = ({ fit, warburg, kk, linKK }: Props) => {
   );
   const cdlCard = (
     <div key="cdl" className="bg-secondary rounded-md p-2">
-      <div className="text-[10px] text-muted-foreground font-mono uppercase">Cdl</div>
+      <div className="text-[10px] text-muted-foreground font-mono uppercase">Cdl<InfoHint text={PARAM_HINTS.Cdl} /></div>
       <div className="text-sm font-mono text-foreground">
         {cdlMicroF >= 0.01 ? fmt(cdlMicroF, 3) : cdlMicroF.toExponential(2)} µF
         <span className="text-[10px] text-muted-foreground">{fmtErr("Cdl")}</span>
@@ -121,7 +123,7 @@ const CircuitFitResults = ({ fit, warburg, kk, linKK }: Props) => {
             : "text-[10px] text-muted-foreground font-mono uppercase"
         }
       >
-        Aw {warburgDominated ? "★" : ""}
+        Aw {warburgDominated ? "★" : ""}<InfoHint text={PARAM_HINTS.Aw} />
       </div>
       <div
         className={

@@ -3,6 +3,18 @@ import { formatParamValue, getCircuitLabel } from "@/utils/eisFit";
 import type { RandlesFitResult, WarburgResult, KKResult } from "@/utils/randlesFit";
 import type { LinKKResult } from "@/utils/linKK";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { InfoHint } from "@/components/InfoHint";
+
+/** Short explanations for the circuit parameters shown in the fit panel. */
+export const PARAM_HINTS: Record<string, string> = {
+  Rs: "Solution resistance — series resistance between the working and reference electrodes.",
+  Rct: "Charge-transfer resistance — inversely related to the rate of electron transfer at the electrode surface. The primary signal for aptamer binding events.",
+  Cdl: "Double-layer capacitance — models the electrode/electrolyte interface capacitance.",
+  Q: "CPE magnitude — pseudo-capacitance of the constant phase element modelling a non-ideal interface.",
+  n: "CPE exponent — 1 is an ideal capacitor, lower values indicate surface heterogeneity.",
+  Aw: "Warburg coefficient — reflects diffusion-limited mass transport at low frequencies.",
+};
+
 
 interface Props {
   fit: EISFitResult | null;
@@ -112,7 +124,9 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) =
               <div className="flex flex-col">
                 <span className="text-[10px] font-mono text-muted-foreground uppercase">
                   {name}
+                  {PARAM_HINTS[name] ? <InfoHint text={PARAM_HINTS[name]} /> : null}
                 </span>
+
                 <span className="text-sm font-mono text-foreground">
                   {formatParamValue(name, v, u)}
                 </span>
@@ -134,11 +148,8 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) =
             </div>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-xs text-xs font-mono">
-            Σ wᵢ [(Z' − Z'ₑ)² + (Z'' − Z''ₑ)²] / (2N − P) with wᵢ = 1/|Zᵢ|².
-            Modulus-weighted SSR per degree of freedom — a relative quality
-            indicator; sqrt(value)·100 ≈ modulus-weighted RMSE %. SE% per
-            parameter is an approximate local uncertainty derived from the
-            covariance matrix — treat as an order-of-magnitude indicator.
+            Reduced χ² from the weighted fit. Near 1 = good fit; much higher =
+            poor fit or wrong circuit.
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
@@ -158,7 +169,11 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) =
       {hasWarburg && Number.isFinite(awValue ?? NaN) ? (
         <div className="flex items-center justify-between bg-secondary rounded-md p-2">
           <div className="flex flex-col">
-            <span className="text-[10px] font-mono text-muted-foreground uppercase">Aw</span>
+            <span className="text-[10px] font-mono text-muted-foreground uppercase">
+              Aw
+              <InfoHint text={PARAM_HINTS.Aw} />
+            </span>
+
             <span className="text-sm font-mono text-foreground">
               {awValue!.toFixed(3)} Ω/√s
             </span>
@@ -182,22 +197,20 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) =
       )}
 
       {/* f₀ characteristic */}
-      <TooltipProvider delayDuration={150}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center justify-between text-xs font-mono cursor-help">
-              <span className="text-muted-foreground">f₀ (characteristic)</span>
-              <span className="text-foreground">{f0Str} Hz</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-xs text-xs font-mono">
-            {model === "randles-cpe"
-              ? "= (Rct · Q)^(−1/n) / (2π)"
-              : "= 1 / (2π · Rct · Cdl)"}
-          </TooltipContent>
+      <div className="flex items-center justify-between text-xs font-mono">
+        <span className="text-muted-foreground">
+          f₀ (characteristic)
+          <InfoHint
+            text={
+              model === "randles-cpe"
+                ? "Characteristic frequency, f₀ = (Rct·Q)^(−1/n)/2π — marks the Rct/CPE balance point."
+                : "Characteristic frequency, f₀ = 1/(2π·Rct·Cdl) — marks the Rct/Cdl balance point."
+            }
+          />
+        </span>
+        <span className="text-foreground">{f0Str} Hz</span>
+      </div>
 
-        </Tooltip>
-      </TooltipProvider>
 
       {/* Lin-KK validation — primary consistency test */}
       {linKK && (
@@ -205,6 +218,7 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) =
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
               Lin-KK validation
+              <InfoHint text="Passing supports consistency with linear, causal, stable EIS behavior within the measured frequency range. Does NOT prove the selected equivalent circuit is correct." />
             </span>
             <span
               className={
@@ -214,7 +228,7 @@ const CNLSFitResults = ({ fit, model, randlesFit, warburg, kk, linKK }: Props) =
                     ? "inline-flex items-center rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-mono text-yellow-500"
                     : "inline-flex items-center rounded-md border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10px] font-mono text-destructive"
               }
-              title="Passing supports consistency with linear, causal, stable EIS behavior within the measured frequency range. Does NOT prove the selected equivalent circuit is correct."
+
             >
               {linKK.passed ? "✓ Pass" : linKK.residualRmsPct <= 10 ? "⚠ Warning" : "✗ Fail"}
             </span>

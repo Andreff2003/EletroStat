@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { InfoHint } from "@/components/InfoHint";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -44,8 +45,8 @@ export function getCalibrationSignal(
 
 export interface CalibrationPoint {
   concentration: number; // nM
-  signal: number; // ΔRct (Ω) for EIS, ΔVt (mV) for FET — sign-preserved
-  raw: number; // Rct (Ω) or Vt (V)
+  signal: number; // ΔRct (Ω) for EIS, ΔVt (mV) for FET, Ip (µA) for SWV — sign-preserved where applicable
+  raw: number; // Rct (Ω) or Vt (V) or raw Ip (µA)
   timestamp: number;
   measurementId?: string;
   sampleId?: string;
@@ -62,10 +63,13 @@ export interface CalibrationPoint {
   vtFitR2?: number | null;
   vtRegionPoints?: number;
   vtWarning?: string;
+  // SWV-specific traceability (optional)
+  peakPotential_V?: number | null;
+  snr?: number | null;
 }
 
 interface CalibrationPanelProps {
-  mode: "eis" | "fet";
+  mode: "eis" | "fet" | "swv";
   concentration: number;
   onChangeConcentration: (v: number) => void;
   points: CalibrationPoint[];
@@ -86,6 +90,10 @@ interface CalibrationPanelProps {
   currentVtFitR2?: number | null;
   currentVtRegionPoints?: number | null;
   currentVtWarning?: string | null;
+  /** SWV-only — current measurement values for display */
+  currentPeakCurrentRaw_uA?: number | null;
+  currentPeakCurrentCorrected_uA?: number | null;
+  currentPeakPotential_V?: number | null;
   responseMode?: FETResponseMode;
   responseSign?: 1 | -1;
   onResponseModeChange?: (mode: FETResponseMode) => void;
@@ -100,8 +108,10 @@ function findBaseline(points: CalibrationPoint[]) {
 
 /** Compute Rs (min zReal) and Rct (max-min zReal) from EIS sweep */
 export function computeEISParams(data: EISDataPoint[]): { rs: number; rct: number } | null {
-  if (data.length < 5) return null;
-  const reals = data.map((d) => d.zReal);
+  const reals = (data ?? [])
+    .map((d) => d?.zReal)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (reals.length < 5) return null;
   const minR = Math.min(...reals);
   const maxR = Math.max(...reals);
   return { rs: minR, rct: maxR - minR };
@@ -209,6 +219,70 @@ function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: numb
   return { slope, intercept, r2 };
 }
 
+/** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R². */
+function fitLinearSWV(points: CalibrationPoint[]): { slope: number; intercept: number; r2: number } | null {
+  const positive = points.filter((p) => p.concentration > 0);
+  if (positive.length < 2) return null;
+  const n = positive.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of positive) {
+    sx += p.concentration;
+    sy += p.signal;
+    sxx += p.concentration ** 2;
+    sxy += p.concentration * p.signal;
+  }
+  const denom = n * sxx - sx * sx;
+  if (Math.abs(denom) < 1e-12) return null;
+  const slope = (n * sxy - sx * sy) / denom;
+  const intercept = (sy - slope * sx) / n;
+  // R²
+  const meanY = sy / n;
+  let ssRes = 0, ssTot = 0;
+  for (const p of positive) {
+    const yPred = slope * p.concentration + intercept;
+    ssRes += (p.signal - yPred) ** 2;
+    ssTot += (p.signal - meanY) ** 2;
+  }
+  const r2 = ssTot < 1e-12 ? 1 : 1 - ssRes / ssTot;
+  return { slope, intercept, r2 };
+}
+
+/**
+ * LOD/LOQ for SWV. Uses only positive concentrations for the slope and derives
+ * σ either from blank replicates (C=0) or from the residuals of the linear fit.
+ * This intentionally mirrors the SWVMode calibration logic to preserve existing
+ * SWV behaviour when migrating to the shared panel.
+ */
+function computeLODSWV(
+  points: CalibrationPoint[],
+): { value: number; loq: number; sigmaSource: "replicates" | "residuals" } | null {
+  const positive = points.filter((p) => p.concentration > 0);
+  const fit = fitLinearSWV(points);
+  if (!fit || Math.abs(fit.slope) < 1e-12) return null;
+  const blanks = points.filter((p) => p.concentration === 0);
+  let sigmaBlank: number;
+  let sigmaSource: "replicates" | "residuals";
+  if (blanks.length >= 2) {
+    const mean = blanks.reduce((a, p) => a + p.signal, 0) / blanks.length;
+    sigmaBlank = Math.sqrt(
+      blanks.reduce((a, p) => a + (p.signal - mean) ** 2, 0) / (blanks.length - 1),
+    );
+    sigmaSource = "replicates";
+  } else {
+    const residSq = positive.reduce(
+      (a, p) => a + (p.signal - (fit.slope * p.concentration + fit.intercept)) ** 2,
+      0,
+    );
+    sigmaBlank = Math.sqrt(residSq / Math.max(1, positive.length - 2));
+    sigmaSource = "residuals";
+  }
+  return {
+    value: (3 * sigmaBlank) / Math.abs(fit.slope),
+    loq: (10 * sigmaBlank) / Math.abs(fit.slope),
+    sigmaSource,
+  };
+}
+
 /**
  * LOD = 3 σ / |slope|.
  *
@@ -261,6 +335,9 @@ const CalibrationPanel = ({
   currentVtFitR2,
   currentVtRegionPoints,
   currentVtWarning,
+  currentPeakCurrentRaw_uA,
+  currentPeakCurrentCorrected_uA,
+  currentPeakPotential_V,
   responseMode = "auto",
   responseSign = 1,
   onResponseModeChange,
@@ -275,8 +352,9 @@ const CalibrationPanel = ({
       ? "Baseline (no cortisol)"
       : `Sample — ${concentration} nM cortisol`;
 
-  const signalUnit = mode === "eis" ? "Ω" : "mV";
-  const signalKey = mode === "eis" ? "ΔRct" : "ΔVt";
+  const signalUnit = mode === "eis" ? "Ω" : mode === "fet" ? "mV" : "µA";
+  const signalKey = mode === "eis" ? "ΔRct" : mode === "fet" ? "ΔVt" : "Ip";
+  const modeLabel = mode === "eis" ? "EIS" : mode === "fet" ? "BioFET" : "SWV";
 
   // For EIS-only normalisation: ΔRct% = ΔRct / Rct_baseline * 100
   const baselineRctRaw = useMemo(
@@ -294,6 +372,7 @@ const CalibrationPanel = ({
   //   toggling the response mode in the UI updates fit and chart coherently
   //   without ever mutating raw data.
   const transformedPoints = useMemo(() => {
+    if (mode === "swv") return points;
     if (mode === "fet") {
       const sign: 1 | -1 = responseSign ?? 1;
       return points.map((p) => {
@@ -325,14 +404,21 @@ const CalibrationPanel = ({
   }, [sortedPoints]);
 
   const fit = useMemo(
-    () => (transformedPoints.length >= 4 ? fitLangmuirNLLS(transformedPoints) : null),
-    [transformedPoints],
+    () => (mode !== "swv" && transformedPoints.length >= 4 ? fitLangmuirNLLS(transformedPoints) : null),
+    [transformedPoints, mode],
   );
-  const lodResult = useMemo(() => computeLOD(transformedPoints, mode), [transformedPoints, mode]);
+  const lodResult = useMemo(
+    () => (mode === "swv" ? computeLODSWV(transformedPoints) : computeLOD(transformedPoints, mode as "eis" | "fet")),
+    [transformedPoints, mode],
+  );
   const lod = lodResult?.value ?? null;
+  const loq = "loq" in (lodResult ?? {}) ? (lodResult as { loq?: number } | null)?.loq ?? null : null;
   const linear = useMemo(
-    () => (transformedPoints.length >= 3 ? fitLinear(transformedPoints as CalibrationPoint[]) : null),
-    [transformedPoints],
+    () =>
+      mode === "swv"
+        ? (transformedPoints.filter((p) => p.concentration > 0).length >= 2 ? fitLinearSWV(transformedPoints) : null)
+        : (transformedPoints.length >= 3 ? fitLinear(transformedPoints as CalibrationPoint[]) : null),
+    [transformedPoints, mode],
   );
 
   // Build smooth Langmuir curve points using fit
@@ -405,7 +491,7 @@ const CalibrationPanel = ({
         <Beaker className="h-4 w-4 text-primary" />
         <span className="font-mono text-sm text-foreground">Concentration & Calibration</span>
         <span className="ml-auto font-mono text-[10px] text-muted-foreground uppercase">
-          {mode === "eis" ? "EIS" : "BioFET"}
+          {modeLabel}
         </span>
       </div>
 
@@ -440,7 +526,7 @@ const CalibrationPanel = ({
       )}
 
       {/* Live parameters box */}
-      {mode === "eis" ? (
+      {mode === "eis" && (
         <div className="grid grid-cols-1 gap-2">
           <div className="bg-secondary rounded-md p-2">
             <div className="text-[10px] text-muted-foreground font-mono uppercase">ΔRct</div>
@@ -454,7 +540,8 @@ const CalibrationPanel = ({
             )}
           </div>
         </div>
-      ) : (
+      )}
+      {mode === "fet" && (
         <div className="space-y-2">
           <div className="grid grid-cols-3 gap-2">
             <div className="bg-secondary rounded-md p-2">
@@ -509,6 +596,28 @@ const CalibrationPanel = ({
               )}
             </div>
           )}
+        </div>
+      )}
+      {mode === "swv" && (
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-secondary rounded-md p-2">
+            <div className="text-[10px] text-muted-foreground font-mono uppercase">Ip raw</div>
+            <div className="text-sm font-mono text-foreground">
+              {currentPeakCurrentRaw_uA != null ? `${currentPeakCurrentRaw_uA.toFixed(2)} µA` : "—"}
+            </div>
+          </div>
+          <div className="bg-secondary rounded-md p-2">
+            <div className="text-[10px] text-muted-foreground font-mono uppercase">Ip corrected</div>
+            <div className="text-sm font-mono text-foreground">
+              {currentPeakCurrentCorrected_uA != null ? `${currentPeakCurrentCorrected_uA.toFixed(2)} µA` : "—"}
+            </div>
+          </div>
+          <div className="bg-secondary rounded-md p-2">
+            <div className="text-[10px] text-muted-foreground font-mono uppercase">Ep</div>
+            <div className="text-sm font-mono text-foreground">
+              {currentPeakPotential_V != null ? `${currentPeakPotential_V.toFixed(3)} V` : "—"}
+            </div>
+          </div>
         </div>
       )}
 
@@ -617,7 +726,7 @@ const CalibrationPanel = ({
       {/* Kd estimation summary */}
       {points.length >= 4 && fit && (
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
-          <div>Estimated Kd: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
+          <div>Estimated Kd<InfoHint text="Dissociation constant from the fitted binding curve. Lower Kd = higher aptamer/analyte affinity. Fitted via nonlinear least squares on the Langmuir isotherm." />: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
           <div>Max {displayKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {displayUnit}</span></div>
           {fit.r2 < 0.9 && (
             <div className="text-[10px] text-yellow-500 mt-1">
@@ -635,20 +744,31 @@ const CalibrationPanel = ({
             </span>
           </div>
           <div>
-            R²: <span className="text-primary">{linear.r2.toFixed(4)}</span>
+            R²<InfoHint text="Coefficient of determination for the calibration fit. Closer to 1.0 indicates the model explains the concentration-response relationship well." />: <span className="text-primary">{linear.r2.toFixed(4)}</span>
           </div>
           {lod != null && (
             <div>
-              LOD (3σ/|slope|):{" "}
+              LOD (3σ/|slope|)<InfoHint text="Limit of Detection = 3σ(blank) / slope. The lowest concentration reliably distinguishable from a blank measurement." />:{" "}
               <span className="text-primary">{lod.toFixed(2)} nM</span>
-              <span className="text-muted-foreground"> · σ from {lodResult?.sigmaSource === "replicates" ? "blank replicates" : "2% baseline"}</span>
+              <span className="text-muted-foreground"> · σ from {lodResult?.sigmaSource === "replicates" ? "blank replicates" : mode === "swv" ? "residuals" : "2% baseline"}</span>
+            </div>
+          )}
+          {loq != null && (
+            <div>
+              LOQ (10σ/|slope|)<InfoHint text="Limit of Quantitation = 10σ(blank) / slope. The lowest concentration that can be quantified with acceptable precision." />:{" "}
+              <span className="text-primary">{loq.toFixed(2)} nM</span>
             </div>
           )}
         </div>
       )}
-      {points.length > 0 && points.length < 4 && (
+      {points.length > 0 && points.length < 4 && mode !== "swv" && (
         <div className="text-[11px] font-mono text-muted-foreground">
           Need {4 - points.length} more measurement(s) for Kd estimation
+        </div>
+      )}
+      {mode === "swv" && points.filter((p) => p.concentration > 0).length > 0 && points.filter((p) => p.concentration > 0).length < 2 && (
+        <div className="text-[11px] font-mono text-muted-foreground">
+          Need {2 - points.filter((p) => p.concentration > 0).length} more positive-concentration measurement(s) for linear calibration
         </div>
       )}
 
@@ -687,6 +807,13 @@ const CalibrationPanel = ({
                 <TableHead className="h-8 text-[10px] font-mono uppercase">
                   {signalKey} ({signalUnit})
                 </TableHead>
+                {mode === "swv" && (
+                  <>
+                    <TableHead className="h-8 text-[10px] font-mono uppercase">Raw (µA)</TableHead>
+                    <TableHead className="h-8 text-[10px] font-mono uppercase">Ep (V)</TableHead>
+                    <TableHead className="h-8 text-[10px] font-mono uppercase">SNR</TableHead>
+                  </>
+                )}
                 <TableHead className="h-8 text-[10px] font-mono uppercase">Sample</TableHead>
                 <TableHead className="h-8 text-[10px] font-mono uppercase">Electrode</TableHead>
                 <TableHead className="h-8 text-[10px] font-mono uppercase">Meas. ID</TableHead>
@@ -696,7 +823,7 @@ const CalibrationPanel = ({
             <TableBody>
               {points.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-[11px] font-mono text-muted-foreground py-3 text-center">
+                  <TableCell colSpan={mode === "swv" ? 9 : 6} className="text-[11px] font-mono text-muted-foreground py-3 text-center">
                     No measurements yet
                   </TableCell>
                 </TableRow>
@@ -711,6 +838,13 @@ const CalibrationPanel = ({
                     <TableRow key={`${p.timestamp}-${i}`}>
                       <TableCell className="py-1.5 text-xs font-mono">{p.concentration}</TableCell>
                       <TableCell className="py-1.5 text-xs font-mono">{p.signal.toFixed(2)}</TableCell>
+                      {mode === "swv" && (
+                        <>
+                          <TableCell className="py-1.5 text-xs font-mono">{p.raw != null ? p.raw.toFixed(2) : "—"}</TableCell>
+                          <TableCell className="py-1.5 text-xs font-mono">{p.peakPotential_V != null ? p.peakPotential_V.toFixed(3) : "—"}</TableCell>
+                          <TableCell className="py-1.5 text-xs font-mono">{p.snr != null ? p.snr.toFixed(1) : "—"}</TableCell>
+                        </>
+                      )}
                       <TableCell className="py-1.5 text-[11px] font-mono text-muted-foreground">
                         {p.sampleId ?? "—"}
                       </TableCell>

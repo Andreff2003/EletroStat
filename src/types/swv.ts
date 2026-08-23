@@ -43,6 +43,10 @@ export type SWVSimulationModel =
   | "reversible_diffusion_approx"
   | "quasi_reversible_approx";
 
+/** Physical solver choice used by useSimulatedSWVData. */
+export type SWVModel = "reversible" | "quasi-reversible" | "empirical";
+
+
 export interface SWVDataPoint {
   /** V vs reference. */
   E: number;
@@ -80,24 +84,35 @@ export interface SWVParameters {
   /** Pre-sweep quiet time, s. */
   quietTime_s: number;
   direction: SWVDirection;
-  /** Biosensor analyte concentration in nM (used for simulation / calibration). */
+  /** Biosensor analyte concentration in nM (kept for calibration UI). */
   concentration_nM?: number;
+  /** Bulk concentration of O in mM — used by the physical solvers. */
+  cMM?: number;
   /** Electrode area, cm². */
   area_cm2?: number;
   /** Number of electrons transferred (redox). */
   nElectrons?: number;
   /** Temperature, K. */
   temperature_K?: number;
+  /** Diffusion coefficient (cm²/s) — defaults to CV_DEFAULT_D_CM2_S. */
+  D_cm2_s?: number;
+  /** Formal potential E0' (V) — defaults to CV_E0_PRIME_DEFAULT_V. */
+  E0Prime_V?: number;
+  /** Heterogeneous rate constant (cm/s) — quasi-reversible only. Defaults to CV_BV_K0. */
+  k0?: number;
+  /** Charge-transfer coefficient (0–1) — quasi-reversible only. Defaults to CV_BV_ALPHA. */
+  alpha?: number;
+  /** Analyte-specific diffusion (cm²/s) — alias of D_cm2_s used by the SWV UI. */
+  diffusionCoeff?: number;
+  /** Formal potential alias used by the SWV UI (V). */
+  formalPotential?: number;
   baselineMethod?: SWVBaselineMethod;
   smoothing?: SWVSmoothingMethod;
   model?: SWVSimulationModel;
-  /**
-   * Optional simulated peak potential (V vs reference). Only used by the
-   * empirical SWV simulator; ignored for live acquisition. Not surfaced in
-   * the UI — reserved for programmatic tuning per analyte.
-   */
-  simulationEpeak_V?: number;
+  /** Physical simulation model. Default: "reversible". */
+  swvModel?: SWVModel;
 }
+
 
 export interface SWVMetrics {
   peakCurrentRaw_uA: number | null;

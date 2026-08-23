@@ -1,3 +1,4 @@
+import { EmptyPlotState } from "@/components/EmptyPlotState";
 import { useMemo, useState } from "react";
 import {
   LineChart,
@@ -15,15 +16,17 @@ import {
 import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
 import type { CVMetrics } from "@/utils/computeCVMetrics";
 
+// Live-cycle colors. Deliberately distinct hues from OVERLAY_COLORS so a
+// live cycle can never share a color with a captured overlay.
 const PALETTE = [
-  "hsl(160 70% 55%)",
-  "hsl(30 90% 60%)",
-  "hsl(200 80% 60%)",
-  "hsl(280 70% 65%)",
-  "hsl(50 90% 55%)",
-  "hsl(340 80% 60%)",
-  "hsl(120 60% 55%)",
-  "hsl(0 75% 60%)",
+  "hsl(190 85% 65%)", // cyan
+  "hsl(15 85% 60%)", // orange-red
+  "hsl(260 70% 70%)", // violet
+  "hsl(90 60% 55%)", // olive-green
+  "hsl(320 75% 65%)", // pink
+  "hsl(45 80% 55%)", // amber
+  "hsl(150 60% 50%)", // teal-green
+  "hsl(10 70% 55%)", // brick
 ];
 
 interface CVPlotProps {
@@ -45,6 +48,8 @@ interface CVPlotProps {
   overlays?: { id: string; label: string; color: string; data: CVDataPoint[] }[];
   /** Overlay baseline trace (raw mode) or zero reference (corrected mode). */
   showBaseline?: boolean;
+  /** Compact read-only rendering for the dashboard grid. */
+  compact?: boolean;
 }
 
 type ChartMouseEvent = {
@@ -62,6 +67,7 @@ const CVPlot = ({
   plotMode = "raw",
   overlays = [],
   showBaseline = false,
+  compact = false,
 }: CVPlotProps) => {
   // One series per (cycle, branch). Repeated E values across forward / reverse
   // sweeps must NOT be joined; emitting one row per acquisition sample with
@@ -204,6 +210,15 @@ const CVPlot = ({
 
   const reversed = axisConvention === "positive-left";
 
+  if (data.length === 0 && (overlays?.length ?? 0) === 0) {
+    return (
+      <EmptyPlotState
+        title="No CV scan yet"
+        hint="Click Start CV to run a cyclic voltammetry scan."
+      />
+    );
+  }
+
   return (
     <div className="w-full h-full flex flex-col" style={{ position: "relative" }}>
       {plotMode === "corrected" && !correctedAvailable && (
@@ -249,10 +264,10 @@ const CVPlot = ({
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={rows}
-            margin={{ top: 10, right: 20, bottom: 40, left: 20 }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
+            margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 10, right: 20, bottom: 40, left: 20 }}
+            onMouseDown={compact ? undefined : handleMouseDown}
+            onMouseMove={compact ? undefined : handleMouseMove}
+            onMouseUp={compact ? undefined : handleMouseUp}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 15% 15%)" />
             <XAxis
@@ -262,14 +277,14 @@ const CVPlot = ({
               domain={zoomDomain ? zoomDomain.x : ["auto", "auto"]}
               allowDataOverflow
               allowDuplicatedCategory={false}
-              label={{
+              label={compact ? undefined : {
                 value: `E / V vs reference (${reversed ? "positive-left" : "positive-right"})`,
                 position: "bottom",
                 offset: 20,
                 fill: "hsl(215 15% 50%)",
                 fontSize: 12,
               }}
-              tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+              tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
               stroke="hsl(220 15% 20%)"
               tickFormatter={(v: number) => Number(v).toFixed(2)}
             />
@@ -277,7 +292,7 @@ const CVPlot = ({
               type="number"
               domain={zoomDomain ? zoomDomain.y : ["auto", "auto"]}
               allowDataOverflow
-              label={{
+              label={compact ? undefined : {
                 value: "I / µA",
                 angle: -90,
                 position: "insideLeft",
@@ -285,7 +300,7 @@ const CVPlot = ({
                 fill: "hsl(215 15% 50%)",
                 fontSize: 12,
               }}
-              tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+              tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
               stroke="hsl(220 15% 20%)"
             />
             <Tooltip
@@ -307,7 +322,7 @@ const CVPlot = ({
               x={e0Prime}
               stroke="hsl(50 90% 55%)"
               strokeDasharray="4 3"
-              label={{
+              label={compact ? undefined : {
                 value: "E°'",
                 position: "top",
                 fill: "hsl(50 90% 55%)",
@@ -324,11 +339,14 @@ const CVPlot = ({
                 strokeDasharray={k === "__baseline" ? "3 3" : undefined}
                 dot={false}
                 isAnimationActive={false}
-                name={
-                  k === "__baseline"
-                    ? "Baseline"
-                    : k.replace(/^c(\d+)_/, "Cycle $1 · ")
-                }
+                name={(() => {
+                  if (k === "__baseline") return "Baseline";
+                  if (k.startsWith("ov_")) {
+                    const ov = overlays.find((o) => `ov_${o.id}` === k);
+                    return ov?.label ?? k;
+                  }
+                  return k.replace(/^c(\d+)_/, "Cycle $1 · ");
+                })()}
                 connectNulls={false}
               />
             ))}
@@ -375,10 +393,10 @@ const CVPlot = ({
                 }}
               />
             )}
-            {seriesKeys.length > 1 && (
+            {!compact && seriesKeys.length > 1 && (
               <Legend wrapperStyle={{ fontSize: 11, fontFamily: "monospace" }} />
             )}
-            {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
+            {!compact && isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
               <ReferenceArea
                 x1={Math.min(zoomArea.x1, zoomArea.x2)}
                 x2={Math.max(zoomArea.x1, zoomArea.x2)}

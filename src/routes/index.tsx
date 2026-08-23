@@ -6,8 +6,8 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "HelpStat — Biosensor Dashboard" },
-      { name: "description", content: "HelpStat Biosensor Dashboard" },
+      { title: "ElectroStat — Biosensor Dashboard" },
+      { name: "description", content: "ElectroStat Biosensor Dashboard" },
     ],
   }),
   component: Index,

@@ -7,6 +7,11 @@ export interface StoredEISMeasurement {
   id: string;
   mode: "eis";
   timestamp: number;
+  /** Multi-Channel traceability: 1 | 2 | 3 when captured via Multi-Channel. */
+  channelId?: number;
+  /** Multi-Channel traceability: user-editable channel name, e.g. "Sensor 2". */
+  channelLabel?: string;
+
   concentration: number;
   /** Optional human-readable measurement id (eis_YYYYMMDD_HHMMSS_<rand>). */
   measurementId?: string;
@@ -19,6 +24,9 @@ export interface StoredEISMeasurement {
     freqMax: number;
     points: number;
     amplitude: number;
+    pointDensityMode?: "total" | "perDecade";
+    pointsPerDecade?: number;
+    dcBias?: number;
   };
   data: EISDataPoint[];
   extracted: {
@@ -80,6 +88,11 @@ export interface StoredFETMeasurement {
   id: string;
   mode: "fet";
   timestamp: number;
+  /** Multi-Channel traceability: 1 | 2 | 3 when captured via Multi-Channel. */
+  channelId?: number;
+  /** Multi-Channel traceability: user-editable channel name, e.g. "Sensor 2". */
+  channelLabel?: string;
+
   concentration: number;
   measurementId?: string;
   measurementTimestamp?: number;
@@ -130,6 +143,11 @@ export interface StoredCVMeasurement {
   id: string;
   mode: "cv";
   timestamp: number;
+  /** Multi-Channel traceability: 1 | 2 | 3 when captured via Multi-Channel. */
+  channelId?: number;
+  /** Multi-Channel traceability: user-editable channel name, e.g. "Sensor 2". */
+  channelLabel?: string;
+
   concentration?: number;
   measurementId: string;
   measurementTimestamp: number;
@@ -144,6 +162,12 @@ export interface StoredCVMeasurement {
     cMM: number;
     areaCm2: number;
     cvModel: string;
+    diffusionCoeff?: number;
+    formalPotential?: number;
+    k0?: number;
+    alpha?: number;
+    stepPotential?: number;
+    quietTime?: number;
   };
   data: CVDataPoint[];
   metrics?: CVMetrics | null;
@@ -153,6 +177,11 @@ export interface StoredSWVMeasurement {
   id: string;
   mode: "swv";
   timestamp: number;
+  /** Multi-Channel traceability: 1 | 2 | 3 when captured via Multi-Channel. */
+  channelId?: number;
+  /** Multi-Channel traceability: user-editable channel name, e.g. "Sensor 2". */
+  channelLabel?: string;
+
   source: "simulated" | "live" | "imported" | "unknown";
   concentration?: number;
   measurementId?: string;

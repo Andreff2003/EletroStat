@@ -8,6 +8,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import type { SWVBaselineMethod, SWVParameters } from "@/types/swv";
+import {
+  CV_DEFAULT_D_CM2_S,
+  CV_E0_PRIME_DEFAULT_V,
+  CV_BV_K0,
+  CV_BV_ALPHA,
+} from "@/utils/cvConstants";
 
 
 /**
@@ -19,6 +25,9 @@ export interface EISParams {
   freqMax: number;
   points: number;
   amplitude: number; // mV
+  pointDensityMode: "total" | "perDecade";
+  pointsPerDecade: number;
+  dcBias: number; // Volts
 }
 
 export interface FETParams {
@@ -26,20 +35,59 @@ export interface FETParams {
   vgMax: number; // V
   vgStep: number; // mV (converted to V before sending)
   intervalMs: number;
+  // Analyte / device parameters (simulation)
+  kd_nM: number;
+  vtBaseline_V: number;
+  deltaVtMax_V: number;
+  idMax_uA: number;
+  idealityFactor: number;
+  // Time response settings
+  bindingRate_perS: number;
+  readoutBias_V: number;
+  timeDuration_s: number;
+  timeStep_s: number;
+  injectionTime_s: number;
 }
 
 export const DEFAULT_EIS_PARAMS: EISParams = {
-  freqMin: 100,
+  freqMin: 1,
   freqMax: 100000,
   points: 60,
   amplitude: 10,
+  pointDensityMode: "perDecade",
+  pointsPerDecade: 7,
+  dcBias: 0,
 };
+
+/**
+ * Compute the total number of EIS points from the current parameters,
+ * honouring the point-density mode. Result is clamped to [10, 200] to
+ * match the "Number of Points" bounds.
+ */
+export function computeEISPointCount(p: EISParams): number {
+  if (p.pointDensityMode === "perDecade") {
+    const decades = Math.max(0, Math.log10(p.freqMax / p.freqMin));
+    const raw = Math.round(p.pointsPerDecade * decades) + 1;
+    return Math.min(200, Math.max(10, raw));
+  }
+  return Math.min(200, Math.max(10, Math.round(p.points)));
+}
 
 export const DEFAULT_FET_PARAMS: FETParams = {
   vgMin: -0.5,
   vgMax: 1.5,
   vgStep: 40,
   intervalMs: 200,
+  kd_nM: 25,
+  vtBaseline_V: 0.30,
+  deltaVtMax_V: 0.40,
+  idMax_uA: 50,
+  idealityFactor: 2.0,
+  bindingRate_perS: 0.5,
+  readoutBias_V: 1.0,
+  timeDuration_s: 60,
+  timeStep_s: 0.5,
+  injectionTime_s: 10,
 };
 
 export interface CVParams {
@@ -52,6 +100,14 @@ export interface CVParams {
   cMM: number;        // mM
   areaCm2: number;    // cm²
   cvModel: "reversible" | "quasi-reversible";
+  // Analyte-specific electrochemistry
+  diffusionCoeff: number;   // cm²/s
+  formalPotential: number;  // V
+  k0: number;               // cm/s — heterogeneous rate constant (quasi-reversible only)
+  alpha: number;            // charge-transfer coefficient (quasi-reversible only)
+  // Acquisition
+  stepPotential: number;    // mV per staircase step
+  quietTime: number;        // s — equilibration at E_start
 }
 
 export const DEFAULT_CV_PARAMS: CVParams = {
@@ -64,6 +120,23 @@ export const DEFAULT_CV_PARAMS: CVParams = {
   cMM: 5,
   areaCm2: 0.0707,
   cvModel: "reversible",
+  diffusionCoeff: CV_DEFAULT_D_CM2_S,
+  formalPotential: CV_E0_PRIME_DEFAULT_V,
+  k0: CV_BV_K0,
+  alpha: CV_BV_ALPHA,
+  stepPotential: 2,
+  quietTime: 2,
+};
+
+/** Redox-probe presets — apply only D and E°', leave everything else untouched. */
+export const CV_REDOX_PRESETS: Record<
+  string,
+  { label: string; D: number; E0: number } | null
+> = {
+  custom: null,
+  ferricyanide: { label: "[Fe(CN)6]³⁻/⁴⁻", D: 7.26e-6, E0: 0.22 },
+  ruthenium: { label: "[Ru(NH3)6]³⁺/²⁺", D: 5.3e-6, E0: -0.18 },
+  ferrocenemethanol: { label: "Ferrocenemethanol", D: 7.8e-6, E0: 0.2 },
 };
 
 interface ParametersPanelProps {
@@ -146,15 +219,41 @@ const ParametersPanel = ({
       </CollapsibleTrigger>
 
       <CollapsibleContent className="border-t border-border px-3 pb-3 pt-3">
-        {mode === "eis" && (
+        {mode === "eis" && (() => {
+          const decades = Math.max(0, Math.log10(eisParams.freqMax / eisParams.freqMin));
+          const rawTotal = Math.round(eisParams.pointsPerDecade * decades) + 1;
+          const computedTotal = Math.min(200, Math.max(10, rawTotal));
+          const clamped = computedTotal !== rawTotal;
+          const dcBiasWarn = Math.abs(eisParams.dcBias) > 0.3;
+          return (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="flex flex-col gap-1 col-span-2">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                Point Density
+              </Label>
+              <select
+                disabled={disabled}
+                value={eisParams.pointDensityMode}
+                onChange={(e) =>
+                  onChangeEIS({
+                    ...eisParams,
+                    pointDensityMode: e.target.value as EISParams["pointDensityMode"],
+                  })
+                }
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="perDecade">Per decade (log-spaced)</option>
+                <option value="total">Fixed total</option>
+              </select>
+            </div>
             <NumField
               label="Frequency Min (Hz)"
               value={eisParams.freqMin}
-              min={1}
+              min={0.01}
               max={100000}
               onChange={(v) => onChangeEIS({ ...eisParams, freqMin: v })}
               disabled={disabled}
+              hint="Lower values (0.1–1 Hz) needed to capture Warburg tail"
             />
             <NumField
               label="Frequency Max (Hz)"
@@ -164,16 +263,37 @@ const ParametersPanel = ({
               onChange={(v) => onChangeEIS({ ...eisParams, freqMax: v })}
               disabled={disabled}
             />
-            <NumField
-              label="Number of Points"
-              value={eisParams.points}
-              min={10}
-              max={200}
-              step={1}
-              onChange={(v) => onChangeEIS({ ...eisParams, points: Math.round(v) })}
-              disabled={disabled}
-              hint="10 – 200"
-            />
+            {eisParams.pointDensityMode === "perDecade" ? (
+              <div className="flex flex-col gap-1">
+                <NumField
+                  label="Points per Decade"
+                  value={eisParams.pointsPerDecade}
+                  min={3}
+                  max={20}
+                  step={1}
+                  onChange={(v) =>
+                    onChangeEIS({ ...eisParams, pointsPerDecade: Math.round(v) })
+                  }
+                  disabled={disabled}
+                  hint="Recommended: 7–10 for well-resolved semicircle"
+                />
+                <span className="text-[10px] text-muted-foreground font-mono">
+                  ≈ {computedTotal} points over {decades.toFixed(1)} decades
+                  {clamped && " (clamped to 10–200)"}
+                </span>
+              </div>
+            ) : (
+              <NumField
+                label="Number of Points"
+                value={eisParams.points}
+                min={10}
+                max={200}
+                step={1}
+                onChange={(v) => onChangeEIS({ ...eisParams, points: Math.round(v) })}
+                disabled={disabled}
+                hint="10 – 200"
+              />
+            )}
             <NumField
               label="Excitation Amp (mV)"
               value={eisParams.amplitude}
@@ -182,8 +302,31 @@ const ParametersPanel = ({
               onChange={(v) => onChangeEIS({ ...eisParams, amplitude: v })}
               disabled={disabled}
             />
+            <div className="flex flex-col gap-1 col-span-2">
+              <NumField
+                label="DC Bias (V)"
+                value={eisParams.dcBias}
+                min={-1}
+                max={1}
+                step={0.01}
+                onChange={(v) => onChangeEIS({ ...eisParams, dcBias: v })}
+                disabled={disabled}
+                hint="0 V = measure at open-circuit potential (recommended)"
+              />
+              <span className="text-[10px] text-muted-foreground font-mono">
+                The AC excitation signal is superimposed on this DC offset.
+                Keep at 0 V unless deliberately polarising the electrode away
+                from its natural equilibrium potential.
+              </span>
+              {dcBiasWarn && (
+                <span className="text-[10px] font-mono text-amber-500">
+                  ⚠ Large DC bias may polarise the electrode away from OCP
+                </span>
+              )}
+            </div>
           </div>
-        )}
+          );
+        })()}
         {mode === "fet" && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <NumField
@@ -218,6 +361,93 @@ const ParametersPanel = ({
               step={1}
               onChange={(v) => onChangeFET({ ...fetParams, intervalMs: Math.round(v) })}
               disabled={disabled}
+              hint="Playback tick for the simulator; also sent as ESP32 sample interval."
+            />
+
+            {/* ── Analyte / device parameters ─────────────────────── */}
+            <div className="col-span-2 md:col-span-4 border-t border-border pt-3 mt-1 text-[10px] font-mono uppercase text-muted-foreground">
+              Analyte & Device
+            </div>
+            <NumField
+              label="Kd (nM)"
+              value={fetParams.kd_nM}
+              min={0.1} max={10000} step={0.1}
+              onChange={(v) => onChangeFET({ ...fetParams, kd_nM: v })}
+              disabled={disabled}
+              hint="Aptamer/MIP dissociation constant for your specific analyte."
+            />
+            <NumField
+              label="Vt Baseline (V)"
+              value={fetParams.vtBaseline_V}
+              min={-1} max={2} step={0.01}
+              onChange={(v) => onChangeFET({ ...fetParams, vtBaseline_V: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="ΔVt Max (V)"
+              value={fetParams.deltaVtMax_V}
+              min={0} max={1} step={0.01}
+              onChange={(v) => onChangeFET({ ...fetParams, deltaVtMax_V: v })}
+              disabled={disabled}
+              hint="Maximum threshold shift at saturating analyte concentration."
+            />
+            <NumField
+              label="Id Max (µA)"
+              value={fetParams.idMax_uA}
+              min={1} max={1000} step={1}
+              onChange={(v) => onChangeFET({ ...fetParams, idMax_uA: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Ideality Factor (n)"
+              value={fetParams.idealityFactor}
+              min={1} max={4} step={0.1}
+              onChange={(v) => onChangeFET({ ...fetParams, idealityFactor: v })}
+              disabled={disabled}
+              hint="Subthreshold slope factor. 1 = ideal MOSFET, higher = more sluggish subthreshold turn-on."
+            />
+
+            {/* ── Time response settings ──────────────────────────── */}
+            <div className="col-span-2 md:col-span-4 border-t border-border pt-3 mt-1 text-[10px] font-mono uppercase text-muted-foreground">
+              Time Response
+            </div>
+            <NumField
+              label="Binding Rate (1/s)"
+              value={fetParams.bindingRate_perS}
+              min={0.01} max={10} step={0.01}
+              onChange={(v) => onChangeFET({ ...fetParams, bindingRate_perS: v })}
+              disabled={disabled}
+              hint="Pseudo-first-order association rate constant."
+            />
+            <NumField
+              label="Readout Bias (V)"
+              value={fetParams.readoutBias_V}
+              min={-1} max={2} step={0.01}
+              onChange={(v) => onChangeFET({ ...fetParams, readoutBias_V: v })}
+              disabled={disabled}
+              hint="Fixed gate voltage at which drain current is monitored over time."
+            />
+            <NumField
+              label="Duration (s)"
+              value={fetParams.timeDuration_s}
+              min={10} max={600} step={10}
+              onChange={(v) => onChangeFET({ ...fetParams, timeDuration_s: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Time Step (s)"
+              value={fetParams.timeStep_s}
+              min={0.1} max={5} step={0.1}
+              onChange={(v) => onChangeFET({ ...fetParams, timeStep_s: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="Injection Time (s)"
+              value={fetParams.injectionTime_s}
+              min={0} max={fetParams.timeDuration_s} step={0.5}
+              onChange={(v) => onChangeFET({ ...fetParams, injectionTime_s: v })}
+              disabled={disabled}
+              hint="Simulated analyte injection onset. Also set by clicking + Add Sample before starting."
             />
           </div>
         )}
@@ -317,6 +547,127 @@ const ParametersPanel = ({
                 approximation; D apparent may be biased.
               </span>
             </div>
+
+            {/* ── Analyte-specific electrochemistry ─────────────────── */}
+            <div className="col-span-2 md:col-span-4 border-t border-border pt-3 mt-1 flex flex-col gap-1">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                Redox Probe Preset
+              </Label>
+              <select
+                disabled={disabled}
+                onChange={(e) => {
+                  const preset = CV_REDOX_PRESETS[e.target.value];
+                  if (preset) {
+                    onChangeCV({
+                      ...cvParams,
+                      diffusionCoeff: preset.D,
+                      formalPotential: preset.E0,
+                    });
+                  }
+                }}
+                defaultValue="custom"
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="custom">Custom (keep current D and E°')</option>
+                <option value="ferricyanide">
+                  [Fe(CN)6]³⁻/⁴⁻ (D=7.26e-6, E°'=0.22 V)
+                </option>
+                <option value="ruthenium">
+                  [Ru(NH3)6]³⁺/²⁺ (D=5.3e-6, E°'=-0.18 V)
+                </option>
+                <option value="ferrocenemethanol">
+                  Ferrocenemethanol (D=7.8e-6, E°'=0.20 V)
+                </option>
+              </select>
+              <span className="text-[10px] text-muted-foreground font-mono">
+                Fills D and E°' with literature values. k₀, α and acquisition
+                fields are left unchanged. "Custom" allows any analyte-specific
+                value.
+              </span>
+            </div>
+            <NumField
+              label="D (cm²/s)"
+              value={cvParams.diffusionCoeff}
+              min={1e-8}
+              max={1e-3}
+              step={1e-7}
+              onChange={(v) => onChangeCV({ ...cvParams, diffusionCoeff: v })}
+              disabled={disabled}
+              hint="Diffusion coefficient of the analyte. Default: 7.26e-6 (ferri/ferrocyanide)."
+            />
+            <NumField
+              label="E°' (V)"
+              value={cvParams.formalPotential}
+              min={-1}
+              max={1}
+              step={0.01}
+              onChange={(v) => onChangeCV({ ...cvParams, formalPotential: v })}
+              disabled={disabled}
+              hint="Formal redox potential vs reference. Default: 0.22 V (ferri/ferro vs Ag/AgCl)."
+            />
+            <NumField
+              label="k₀ (cm/s)"
+              value={cvParams.k0}
+              min={1e-6}
+              max={10}
+              step={0.001}
+              onChange={(v) => onChangeCV({ ...cvParams, k0: v })}
+              disabled={disabled || cvParams.cvModel !== "quasi-reversible"}
+              hint="Heterogeneous electron-transfer rate constant. Lower k₀ = larger ΔEp."
+            />
+            <NumField
+              label="α (transfer coeff.)"
+              value={cvParams.alpha}
+              min={0.1}
+              max={0.9}
+              step={0.05}
+              onChange={(v) => onChangeCV({ ...cvParams, alpha: v })}
+              disabled={disabled || cvParams.cvModel !== "quasi-reversible"}
+              hint="Charge-transfer coefficient (typically 0.3–0.7)."
+            />
+            <div className="col-span-2 md:col-span-4 text-[10px] font-mono text-muted-foreground">
+              k₀ and α only apply to the Quasi-reversible (Butler–Volmer) model.
+            </div>
+
+            {/* ── Acquisition: step potential & quiet time ─────────── */}
+            <NumField
+              label="Step (mV)"
+              value={cvParams.stepPotential}
+              min={0.5}
+              max={20}
+              step={0.5}
+              onChange={(v) => onChangeCV({ ...cvParams, stepPotential: v })}
+              disabled={disabled}
+              hint="Potential increment per data point (staircase approximation of the linear scan)."
+            />
+            <NumField
+              label="Quiet Time (s)"
+              value={cvParams.quietTime}
+              min={0}
+              max={60}
+              step={1}
+              onChange={(v) => onChangeCV({ ...cvParams, quietTime: v })}
+              disabled={disabled}
+              hint="Equilibration time at E Start before the scan begins."
+            />
+            {(() => {
+              const totalRangeV =
+                2 *
+                Math.abs(
+                  Math.max(cvParams.eVertex1, cvParams.eVertex2) -
+                    Math.min(cvParams.eVertex1, cvParams.eVertex2),
+                ) *
+                cvParams.nCycles;
+              const estPts =
+                cvParams.stepPotential > 0
+                  ? Math.round((totalRangeV * 1000) / cvParams.stepPotential)
+                  : 0;
+              return (
+                <div className="col-span-2 md:col-span-4 text-[10px] font-mono text-muted-foreground">
+                  ≈ {estPts} points per full sweep
+                </div>
+              );
+            })()}
           </div>
         )}
         {mode === "swv" && swvParams && onChangeSWV && (
@@ -370,14 +721,6 @@ const ParametersPanel = ({
               disabled={disabled}
             />
             <NumField
-              label="Concentration (nM)"
-              value={swvParams.concentration_nM ?? 0}
-              min={0}
-              max={1e6}
-              onChange={(v) => onChangeSWV({ ...swvParams, concentration_nM: v })}
-              disabled={disabled}
-            />
-            <NumField
               label="Area (cm²)"
               value={swvParams.area_cm2 ?? 0}
               min={1e-4}
@@ -424,6 +767,77 @@ const ParametersPanel = ({
                 <option value="polynomial">polynomial</option>
                 <option value="auto">auto</option>
               </select>
+            </div>
+
+            {/* ── Analyte-specific electrochemistry (SWV) ──────────── */}
+            <div className="col-span-2 md:col-span-4 border-t border-border pt-3 mt-1 flex flex-col gap-1">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                Redox Probe Preset
+              </Label>
+              <select
+                disabled={disabled}
+                defaultValue="custom"
+                onChange={(e) => {
+                  const preset = CV_REDOX_PRESETS[e.target.value];
+                  if (preset) {
+                    onChangeSWV({
+                      ...swvParams,
+                      diffusionCoeff: preset.D,
+                      formalPotential: preset.E0,
+                    });
+                  }
+                }}
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="custom">Custom (keep current D and E°')</option>
+                <option value="ferricyanide">[Fe(CN)6]³⁻/⁴⁻ (D=7.26e-6, E°'=0.22 V)</option>
+                <option value="ruthenium">[Ru(NH3)6]³⁺/²⁺ (D=5.3e-6, E°'=-0.18 V)</option>
+                <option value="ferrocenemethanol">Ferrocenemethanol (D=7.8e-6, E°'=0.20 V)</option>
+              </select>
+            </div>
+            <NumField
+              label="n (electrons)"
+              value={swvParams.nElectrons ?? 1}
+              min={1} max={4} step={1}
+              onChange={(v) => onChangeSWV({ ...swvParams, nElectrons: v })}
+              disabled={disabled}
+            />
+            <NumField
+              label="D (cm²/s)"
+              value={swvParams.diffusionCoeff ?? CV_DEFAULT_D_CM2_S}
+              min={1e-8} max={1e-3} step={1e-7}
+              onChange={(v) => onChangeSWV({ ...swvParams, diffusionCoeff: v })}
+              disabled={disabled}
+              hint="Diffusion coefficient of the analyte. Default: 7.26e-6 (ferri/ferrocyanide)."
+            />
+            <NumField
+              label="E°' (V)"
+              value={swvParams.formalPotential ?? CV_E0_PRIME_DEFAULT_V}
+              min={-1} max={1} step={0.01}
+              onChange={(v) => onChangeSWV({ ...swvParams, formalPotential: v })}
+              disabled={disabled}
+              hint="Formal redox potential vs reference electrode."
+            />
+            <NumField
+              label="k₀ (cm/s)"
+              value={swvParams.k0 ?? CV_BV_K0}
+              min={1e-6} max={10} step={0.001}
+              onChange={(v) => onChangeSWV({ ...swvParams, k0: v })}
+              disabled={disabled}
+              hint="Heterogeneous electron-transfer rate constant. SWV peak height and shape are sensitive to k₀, especially at higher frequencies."
+            />
+            <NumField
+              label="α (transfer coeff.)"
+              value={swvParams.alpha ?? CV_BV_ALPHA}
+              min={0.1} max={0.9} step={0.05}
+              onChange={(v) => onChangeSWV({ ...swvParams, alpha: v })}
+              disabled={disabled}
+            />
+            <div className="col-span-2 md:col-span-4 text-[10px] font-mono text-muted-foreground">
+              SWV peak current and peak potential are more sensitive to k₀ than
+              CV, since the square-wave frequency probes faster kinetics. This
+              makes SWV useful for distinguishing surface-confined
+              (aptamer-bound) electron-transfer kinetics from diffusional ones.
             </div>
           </div>
         )}

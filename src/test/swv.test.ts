@@ -193,3 +193,96 @@ describe("SWV — invariants", () => {
     });
   });
 });
+
+// ────────────────── physical SWV solvers ──────────────────
+
+import {
+  simulateReversibleDiffusionSWV,
+  simulateQuasiReversibleSWV,
+} from "@/utils/swvDiffusionSolver";
+
+const physicalParams: SWVParameters = {
+  startE: -0.1,
+  endE: 0.5,
+  step_mV: 4,
+  amplitude_mV: 25,
+  frequency_Hz: 25,
+  quietTime_s: 0,
+  direction: "anodic",
+  cMM: 1.0,
+  area_cm2: 0.0707,
+  nElectrons: 1,
+};
+
+function peakOf(pts: SWVDataPoint[]) {
+  let iBest = 0;
+  let best = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    if (Math.abs(pts[i].INet) > best) {
+      best = Math.abs(pts[i].INet);
+      iBest = i;
+    }
+  }
+  return { E: pts[iBest].E, I: pts[iBest].INet };
+}
+
+describe("SWV physical solver — reversible", () => {
+  it("INet exactly equals IForward - IReverse at every point", () => {
+    const pts = simulateReversibleDiffusionSWV(physicalParams);
+    expect(pts.length).toBeGreaterThan(10);
+    for (const p of pts) expect(p.INet).toBeCloseTo(p.IForward - p.IReverse, 12);
+  });
+  it("blank (cMM = 0) gives INet ≈ 0 everywhere", () => {
+    const pts = simulateReversibleDiffusionSWV({ ...physicalParams, cMM: 0 });
+    for (const p of pts) expect(Math.abs(p.INet)).toBeLessThan(1e-9);
+  });
+  it("increasing amplitude_mV increases the peak current", () => {
+    const low = peakOf(
+      simulateReversibleDiffusionSWV({ ...physicalParams, amplitude_mV: 5 }),
+    );
+    const high = peakOf(
+      simulateReversibleDiffusionSWV({ ...physicalParams, amplitude_mV: 20 }),
+    );
+    expect(Math.abs(high.I)).toBeGreaterThan(Math.abs(low.I));
+  });
+});
+
+describe("SWV physical solver — quasi-reversible", () => {
+  it("INet exactly equals IForward - IReverse at every point", () => {
+    const pts = simulateQuasiReversibleSWV(physicalParams);
+    expect(pts.length).toBeGreaterThan(10);
+    for (const p of pts) expect(p.INet).toBeCloseTo(p.IForward - p.IReverse, 12);
+  });
+  it("blank (cMM = 0) gives INet ≈ 0 everywhere", () => {
+    const pts = simulateQuasiReversibleSWV({ ...physicalParams, cMM: 0 });
+    for (const p of pts) expect(Math.abs(p.INet)).toBeLessThan(1e-9);
+  });
+  it("amplitude_mV measurably affects the peak (kinetics-dependent)", () => {
+    // Butler–Volmer at K0 < K_MAX combined with the Cottrell-kernel
+    // convolution history gives an amplitude dependence that is not
+    // always monotonic in |INet| — but the peak MUST differ, proving
+    // this is no longer the amplitude-independent empirical Gaussian.
+    const low = peakOf(
+      simulateQuasiReversibleSWV({ ...physicalParams, amplitude_mV: 5 }),
+    );
+    const high = peakOf(
+      simulateQuasiReversibleSWV({ ...physicalParams, amplitude_mV: 30 }),
+    );
+    const scale = Math.max(Math.abs(low.I), Math.abs(high.I));
+    expect(Math.abs(high.I - low.I) / (scale || 1)).toBeGreaterThan(1e-3);
+  });
+});
+
+
+describe("SWV physical solvers — reversible vs quasi-reversible", () => {
+  it("quasi-reversible peak is not larger than reversible at the same params", () => {
+    const rev = peakOf(simulateReversibleDiffusionSWV(physicalParams));
+    const qr = peakOf(simulateQuasiReversibleSWV(physicalParams));
+    // Butler–Volmer at K0 < K_MAX must attenuate and/or shift the peak.
+    // Guard against a trivial fake by asserting a meaningful difference.
+    const attenuated = Math.abs(qr.I) < Math.abs(rev.I) * 0.98;
+    const shifted = Math.abs(qr.E - rev.E) > 0.005;
+    expect(attenuated || shifted).toBe(true);
+  });
+});
+

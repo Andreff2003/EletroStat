@@ -27,3 +27,12 @@ export const CV_RS_PREFACTOR =
 export const CV_SOLVER_DEFAULT_STEP_V = 0.002;       // V per ramp step
 export const CV_SOLVER_DEFAULT_SPATIAL_NODES = 180;  // mesh nodes
 export const CV_SOLVER_DOMAIN_RULE = "L = 6*sqrt(D*tMax)";
+
+/**
+ * Butler–Volmer kinetic constants — shared by the quasi-reversible CV and
+ * SWV solvers so both modes agree on the same numerical regime.
+ */
+export const CV_BV_K0 = 0.01;    // cm/s — heterogeneous rate constant
+export const CV_BV_ALPHA = 0.5;  // charge-transfer coefficient
+export const CV_BV_K_MAX = 10;   // cm/s — numerical safety ceiling
+

@@ -1,18 +1,21 @@
 /**
- * Self-contained SWV Mode component.
+ * SWV Mode component.
  *
  * Owns:
  *  - parameter panel, validation and warnings
  *  - start / stop / reset / export controls (simulated + live)
  *  - SWV plot with raw/corrected/baseline/forward-reverse toggles
  *  - metrics cards
- *  - calibration table (replicates + blanks + LOD/LOQ)
- *  - SWV-only Signal Quality semaphore
  *  - measurement notes (via MeasurementNotesPanel with mode="swv")
+ *
+ * Shared components used:
+ *  - SignalQuality.tsx for the SWV signal-quality semaphore
+ *  - CalibrationPanel.tsx for calibration (replicates + blanks + LOD/LOQ)
  *
  * All exports go through the shared csvExport helpers so the session CSV
  * automatically picks up SWV measurements written to the session store.
  */
+import { Hint } from "@/components/InfoHint";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,19 +23,21 @@ import { toast } from "sonner";
 import SWVPlot from "@/components/SWVPlot";
 import SignalQuality from "@/components/SignalQuality";
 import MeasurementNotesPanel from "@/components/MeasurementNotesPanel";
+import CalibrationPanel, {
+  type CalibrationPoint,
+} from "@/components/CalibrationPanel";
 import ParametersPanel, {
   DEFAULT_EIS_PARAMS,
   DEFAULT_FET_PARAMS,
 } from "@/components/ParametersPanel";
 
-
-import { useSimulatedSWVData, SWV_SIMULATION_MODEL_ID } from "@/hooks/useSimulatedSWVData";
+import { SWV_SIMULATION_MODEL_ID } from "@/hooks/useSimulatedSWVData";
+import type { SWVModeState } from "@/hooks/useSWVModeState";
 import {
   analyzeSWV,
   validateSWVParameters,
 } from "@/utils/swvMetrics";
 import type {
-  SWVCalibrationPoint,
   SWVDataPoint,
   SWVParameters,
 } from "@/types/swv";
@@ -48,8 +53,10 @@ import {
   saveSession,
   newId,
   type StoredSWVMeasurement,
+  type StoredMeasurement,
 } from "@/utils/sessionStore";
-import { exportSWVData } from "@/utils/csvExport";
+import { exportCalibrationCSV, exportSWVData } from "@/utils/csvExport";
+import { parseImportedCsv } from "@/utils/csvImport";
 
 type LiveWs = {
   swvData?: SWVDataPoint[];
@@ -68,6 +75,8 @@ export interface SWVController {
   addCalibration: () => void;
   isRunning: boolean;
   hasData: boolean;
+  /** Latest acquired points, exposed so parent views (dashboard) can read them. */
+  data: SWVDataPoint[];
 }
 
 interface Props {
@@ -79,6 +88,19 @@ interface Props {
   /** If provided, hides internal ParametersPanel and controls row and
    *  exposes start/stop/reset/export handlers to the parent. */
   onController?: (ctrl: SWVController) => void;
+  /** If provided, SWV measurements are pushed into the parent's shared
+   *  session state (which owns localStorage persistence). Without it,
+   *  SWVMode falls back to writing directly to localStorage. */
+  onSessionUpdate?: (updater: (prev: StoredMeasurement[]) => StoredMeasurement[]) => void;
+  /** Overlay curves are owned by the parent so they survive mode switches. */
+  overlays: { id: string; label: string; color: string; data: SWVDataPoint[] }[];
+  setOverlays: React.Dispatch<
+    React.SetStateAction<{ id: string; label: string; color: string; data: SWVDataPoint[] }[]>
+  >;
+  /** Overlay auto-capture only happens during the guided demo. */
+  demoRunning: boolean;
+  /** Persistent SWV state owned by the parent (survives mode switches). */
+  state: SWVModeState;
 }
 
 const DEFAULT_PARAMS: SWVParameters = {
@@ -96,6 +118,10 @@ const DEFAULT_PARAMS: SWVParameters = {
   baselineMethod: "auto",
   smoothing: "none",
   model: "empirical_peak",
+  diffusionCoeff: 7.26e-6,
+  formalPotential: 0.22,
+  k0: 0.01,
+  alpha: 0.5,
 };
 
 
@@ -113,24 +139,27 @@ const OVERLAY_COLORS = [
 
 
 
-export default function SWVMode({ dataSource, ws, externalParams, onChangeParams, onController }: Props) {
+export default function SWVMode({ dataSource, ws, externalParams, onChangeParams, onController, onSessionUpdate, overlays, setOverlays, demoRunning, state }: Props) {
   const [internalParams, setInternalParams] = useState<SWVParameters>(DEFAULT_PARAMS);
   const params = externalParams ?? internalParams;
   const setParams = onChangeParams ?? setInternalParams;
   const isControlled = !!onController;
-  const [notes, setNotes] = useState<MeasurementNotes>({});
-  const [measurementId, setMeasurementId] = useState<string>(() => createMeasurementId("swv"));
-  const [measurementTimestamp, setMeasurementTimestamp] = useState<number>(() => Date.now());
-  const [calibration, setCalibration] = useState<SWVCalibrationPoint[]>([]);
-  const [showFR, setShowFR] = useState(false);
-  const [showBaseline, setShowBaseline] = useState(true);
-  const [plotMode, setPlotMode] = useState<"raw" | "corrected">("raw");
-  const [overlayMode, setOverlayMode] = useState(false);
-  const [overlays, setOverlays] = useState<
-    { id: string; label: string; color: string; data: SWVDataPoint[] }[]
-  >([]);
-
-  const sim = useSimulatedSWVData();
+  // All state below is owned by the parent so it survives mode switches
+  // (same lifecycle as CV/EIS).
+  const {
+    sim,
+    notes, setNotes,
+    measurementId, setMeasurementId,
+    measurementTimestamp, setMeasurementTimestamp,
+    calibration, setCalibration,
+    showFR, setShowFR,
+    showBaseline, setShowBaseline,
+    plotMode, setPlotMode,
+    overlayMode, setOverlayMode,
+    autoCapturedRef,
+    wasRunningRef,
+  } = state;
+  // overlays / setOverlays also come from props (lifted to IndexPage).
   const isLive = dataSource === "live";
   const liveData = ws?.swvData ?? [];
   const data: SWVDataPoint[] = isLive ? liveData : sim.data;
@@ -186,6 +215,19 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
   const persistMeasurement = useCallback(
     (concentration?: number) => {
       if (data.length === 0) return null;
+      // Auto-capture into the overlay comparison view (same logic as the
+      // manual "＋ Capture" button), once per measurement — demo only.
+      if (demoRunning && !autoCapturedRef.current.has(measurementId)) {
+        autoCapturedRef.current.add(measurementId);
+        const snapshot = data.slice();
+        setOverlays((prev) => {
+          const label =
+            (concentration ?? 0) > 0 ? `${concentration} nM` : `Blank ${prev.length + 1}`;
+          const color = OVERLAY_COLORS[prev.length % OVERLAY_COLORS.length];
+          const next = [...prev, { id: newId(), label, color, data: snapshot }];
+          return next.length > 8 ? next.slice(next.length - 8) : next;
+        });
+      }
       const stored: StoredSWVMeasurement = {
         id: newId(),
         mode: "swv",
@@ -200,16 +242,41 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
         correctedData: corrected,
         extracted: metrics,
       };
-      const session = loadSession();
-      const idx = session.findIndex(
-        (m) => m.mode === "swv" && (m as StoredSWVMeasurement).measurementId === measurementId,
-      );
-      if (idx >= 0) session[idx] = stored; else session.push(stored);
-      saveSession(session);
+      if (onSessionUpdate) {
+        onSessionUpdate((prev) => {
+          const idx = prev.findIndex(
+            (m) => m.mode === "swv" && (m as StoredSWVMeasurement).measurementId === measurementId,
+          );
+          if (idx >= 0) {
+            const next = prev.slice();
+            next[idx] = stored;
+            return next;
+          }
+          return [...prev, stored];
+        });
+      } else {
+        const session = loadSession();
+        const idx = session.findIndex(
+          (m) => m.mode === "swv" && (m as StoredSWVMeasurement).measurementId === measurementId,
+        );
+        if (idx >= 0) session[idx] = stored; else session.push(stored);
+        saveSession(session);
+      }
       return stored;
     },
-    [corrected, data, dataSource, measurementId, measurementTimestamp, metrics, notes, params],
+    [corrected, data, dataSource, measurementId, measurementTimestamp, metrics, notes, params, onSessionUpdate, demoRunning, setOverlays],
   );
+
+  // Persist + auto-capture as soon as a sweep finishes, so the overlay
+  // comparison view already has the just-finished scan available.
+  useEffect(() => {
+    const justFinished = wasRunningRef.current && !isRunning;
+    wasRunningRef.current = isRunning;
+    if (!justFinished || data.length === 0) return;
+    persistMeasurement(params.concentration_nM);
+  }, [isRunning, data.length, params.concentration_nM, persistMeasurement]);
+
+
 
   const handleExport = useCallback(() => {
     if (data.length === 0) {
@@ -237,13 +304,12 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
       toast.error("No peak — cannot add calibration point.");
       return;
     }
-    const point: SWVCalibrationPoint = {
-      concentration_nM: params.concentration_nM ?? 0,
-      signal_uA:
+    const point: CalibrationPoint = {
+      concentration: params.concentration_nM ?? 0,
+      signal:
         metrics?.peakCurrentCorrected_uA ?? metrics?.peakCurrentRaw_uA ?? 0,
-      raw_uA: metrics?.peakCurrentRaw_uA ?? 0,
+      raw: metrics?.peakCurrentRaw_uA ?? 0,
       peakPotential_V: metrics?.peakPotential_V ?? null,
-      baselineMethod: params.baselineMethod ?? "auto",
       snr: metrics?.snr ?? null,
       timestamp: Date.now(),
       measurementId,
@@ -253,47 +319,9 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
     };
     setCalibration((prev) => [...prev, point]);
     persistMeasurement(params.concentration_nM);
-    toast.success(`Added SWV calibration point @ ${point.concentration_nM} nM.`);
+    toast.success(`Added SWV calibration point @ ${point.concentration} nM.`);
   }, [metrics, notes, params, persistMeasurement, measurementId]);
 
-  // Linear regression on calibration for LOD/LOQ.
-  const calibFit = useMemo(() => {
-    if (calibration.length < 3) return null;
-    const positive = calibration.filter((p) => p.concentration_nM > 0);
-    if (positive.length < 2) return null;
-    const n = positive.length;
-    let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (const p of positive) {
-      sx += p.concentration_nM; sy += p.signal_uA;
-      sxx += p.concentration_nM ** 2; sxy += p.concentration_nM * p.signal_uA;
-    }
-    const denom = n * sxx - sx * sx;
-    if (Math.abs(denom) < 1e-12) return null;
-    const slope = (n * sxy - sx * sy) / denom;
-    const intercept = (sy - slope * sx) / n;
-    // sigma_blank from replicate blanks (concentration = 0) if present,
-    // else from residuals of the linear fit.
-    const blanks = calibration.filter((p) => p.concentration_nM === 0);
-    let sigmaBlank: number | null = null;
-    if (blanks.length >= 2) {
-      const mean = blanks.reduce((a, p) => a + p.signal_uA, 0) / blanks.length;
-      sigmaBlank = Math.sqrt(
-        blanks.reduce((a, p) => a + (p.signal_uA - mean) ** 2, 0) / (blanks.length - 1),
-      );
-    } else {
-      const residSq = positive.reduce(
-        (a, p) => a + (p.signal_uA - (slope * p.concentration_nM + intercept)) ** 2,
-        0,
-      );
-      sigmaBlank = Math.sqrt(residSq / Math.max(1, n - 2));
-    }
-    const lod = slope !== 0 ? (3 * sigmaBlank) / Math.abs(slope) : null;
-    const loq = slope !== 0 ? (10 * sigmaBlank) / Math.abs(slope) : null;
-    const slopeWarning = Math.abs(slope) < 1e-9
-      ? "Slope ≈ 0 — calibration not usable for quantitation."
-      : null;
-    return { slope, intercept, sigmaBlank, lod, loq, n, blanks: blanks.length, slopeWarning };
-  }, [calibration]);
 
   // Keep latest handlers in a ref so the controller identity is stable and
   // does not create an infinite setState loop in the parent.
@@ -325,8 +353,9 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
       addCalibration: () => handlersRef.current.addCalibration(),
       isRunning,
       hasData: data.length > 0,
+      data,
     });
-  }, [onController, isRunning, data.length]);
+  }, [onController, isRunning, data]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -350,8 +379,8 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             <Button size="sm" variant="destructive" onClick={stopMeasurement} disabled={!isRunning} className="font-mono text-xs">■ Stop</Button>
             <Button size="sm" variant="secondary" onClick={resetMeasurement} className="font-mono text-xs">↺ Reset</Button>
             <Button size="sm" variant="outline" onClick={handleExport} disabled={data.length === 0} className="font-mono text-xs">⬇ Export CSV</Button>
-            <Button size="sm" variant="outline" onClick={addCalibrationPoint} disabled={data.length === 0} className="font-mono text-xs">+ Calibration Point</Button>
           </div>
+
         </>
       )}
 
@@ -397,6 +426,49 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                 disabled={data.length === 0}
                 className="font-mono text-xs"
               >＋ Capture</Button>
+              <Hint text="Import a previously exported HelpStat SWV CSV as an overlay">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={async () => {
+                    const input = document.createElement("input");
+                    input.type = "file";
+                    input.accept = ".csv,text/csv";
+                    input.onchange = async () => {
+                      const f = input.files?.[0];
+                      if (!f) return;
+                      try {
+                        const text = await f.text();
+                        const r = parseImportedCsv(text, "swv");
+                        if ("error" in r) { toast.error(r.error); return; }
+                        if (r.mode !== "swv") return;
+                        const fileLabel = f.name.replace(/\.[^.]+$/, "");
+                        const multi = r.measurements.length > 1;
+                        setOverlays((prev) => {
+                          let next = prev.slice();
+                          r.measurements.forEach((m) => {
+                            const suffix = m.concentration != null ? `${m.concentration} nM` : m.id;
+                            const label = multi ? `${fileLabel} · ${suffix}` : fileLabel;
+                            const color = OVERLAY_COLORS[next.length % OVERLAY_COLORS.length];
+                            next = [...next, { id: newId(), label, color, data: m.points }];
+                          });
+                          return next.length > 8 ? next.slice(next.length - 8) : next;
+                        });
+                        if (r.skipped > 0) {
+                          toast.warning(`${r.skipped} linha(s) inválida(s) descartadas.`);
+                        }
+  
+                      } catch (err) {
+                        toast.error(
+                          `Falha ao ler CSV: ${err instanceof Error ? err.message : String(err)}`,
+                        );
+                      }
+                    };
+                    input.click();
+                  }}
+                  className="font-mono text-xs"
+                >⇪ Import CSV</Button>
+              </Hint>
               <Button
                 size="sm"
                 variant="ghost"
@@ -404,33 +476,36 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                 disabled={overlays.length === 0}
                 className="font-mono text-xs"
               >Clear ({overlays.length})</Button>
-              <Button
-                size="sm"
-                variant={showFR ? "default" : "outline"}
-                onClick={() => setShowFR((v) => !v)}
-                className="font-mono text-xs"
-                title="Show pulse-sampled forward and reverse currents"
-              >
-                Forward/Reverse {showFR ? "ON" : "OFF"}
-              </Button>
-              <Button
-                size="sm"
-                variant={showBaseline ? "default" : "outline"}
-                onClick={() => setShowBaseline((v) => !v)}
-                className="font-mono text-xs"
-                title="Overlay estimated baseline"
-              >
-                Baseline {showBaseline ? "ON" : "OFF"}
-              </Button>
-              <Button
-                size="sm"
-                variant={plotMode === "corrected" ? "default" : "outline"}
-                onClick={() => setPlotMode((m) => (m === "raw" ? "corrected" : "raw"))}
-                className="font-mono text-xs"
-                title="Toggle raw (measured) vs baseline-subtracted I_net"
-              >
-                {plotMode === "corrected" ? "Corrected" : "Raw"}
-              </Button>
+              <Hint text="Show pulse-sampled forward and reverse currents">
+                <Button
+                  size="sm"
+                  variant={showFR ? "default" : "outline"}
+                  onClick={() => setShowFR((v) => !v)}
+                  className="font-mono text-xs"
+                >
+                  Forward/Reverse {showFR ? "ON" : "OFF"}
+                </Button>
+              </Hint>
+              <Hint text="Overlay estimated baseline">
+                <Button
+                  size="sm"
+                  variant={showBaseline ? "default" : "outline"}
+                  onClick={() => setShowBaseline((v) => !v)}
+                  className="font-mono text-xs"
+                >
+                  Baseline {showBaseline ? "ON" : "OFF"}
+                </Button>
+              </Hint>
+              <Hint text="Toggle raw (measured) vs baseline-subtracted I_net">
+                <Button
+                  size="sm"
+                  variant={plotMode === "corrected" ? "default" : "outline"}
+                  onClick={() => setPlotMode((m) => (m === "raw" ? "corrected" : "raw"))}
+                  className="font-mono text-xs"
+                >
+                  {plotMode === "corrected" ? "Corrected" : "Raw"}
+                </Button>
+              </Hint>
             </div>
           </div>
           {overlayMode && overlays.length > 0 && (
@@ -444,13 +519,14 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                     style={{ background: ov.color, width: 8, height: 8, borderRadius: 999 }}
                   />
                   {ov.label}
-                  <button
-                    className="ml-1 text-muted-foreground hover:text-foreground"
-                    onClick={() =>
-                      setOverlays((prev) => prev.filter((p) => p.id !== ov.id))
-                    }
-                    title="Remove overlay"
-                  >×</button>
+                  <Hint text="Remove overlay">
+                    <button
+                      className="ml-1 text-muted-foreground hover:text-foreground"
+                      onClick={() =>
+                        setOverlays((prev) => prev.filter((p) => p.id !== ov.id))
+                      }
+                    >×</button>
+                  </Hint>
                 </span>
               ))}
             </div>
@@ -471,61 +547,6 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             Simulation model: {SWV_SIMULATION_MODEL_ID} (empirical / educational approximation).
           </div>
 
-          {/* Calibration */}
-          <Card>
-            <CardHeader className="py-3"><CardTitle className="text-sm font-mono">SWV Calibration</CardTitle></CardHeader>
-            <CardContent>
-              {calibration.length === 0 && <div className="text-xs font-mono text-muted-foreground">No calibration points yet. Run an SWV sweep and click “+ Calibration Point”.</div>}
-              {calibration.length > 0 && (
-                <div className="overflow-auto">
-                  <table className="w-full text-[11px] font-mono">
-                    <thead className="text-muted-foreground">
-                      <tr>
-                        <th className="text-left px-1">C (nM)</th>
-                        <th className="text-left px-1">signal (µA)</th>
-                        <th className="text-left px-1">raw (µA)</th>
-                        <th className="text-left px-1">Ep (V)</th>
-                        <th className="text-left px-1">SNR</th>
-                        <th className="text-left px-1">sample</th>
-                        <th className="text-left px-1">electrode</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {calibration.map((p, i) => (
-                        <tr key={i} className="border-t border-border">
-                          <td className="px-1">{p.concentration_nM.toFixed(3)}</td>
-                          <td className="px-1">{p.signal_uA.toFixed(4)}</td>
-                          <td className="px-1">{p.raw_uA.toFixed(4)}</td>
-                          <td className="px-1">{p.peakPotential_V?.toFixed(3) ?? "N/A"}</td>
-                          <td className="px-1">{p.snr?.toFixed(1) ?? "N/A"}</td>
-                          <td className="px-1">{p.sampleId ?? "—"}</td>
-                          <td className="px-1">{p.electrodeId ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {calibFit && (
-                <div className="mt-3 text-[11px] font-mono">
-                  <div>Linear: signal = {calibFit.slope.toExponential(3)}·C + {calibFit.intercept.toExponential(3)}</div>
-                  <div>σ_blank: {calibFit.sigmaBlank?.toExponential(3)} µA {calibFit.blanks >= 2 ? "(replicate blanks)" : "(fit residuals — no blank replicates)"}</div>
-                  <div>LOD: {calibFit.lod != null ? calibFit.lod.toFixed(3) + " nM" : "N/A"} | LOQ: {calibFit.loq != null ? calibFit.loq.toFixed(3) + " nM" : "N/A"}</div>
-                  {calibFit.slopeWarning && (
-                    <div className="text-destructive">⚠ {calibFit.slopeWarning}</div>
-                  )}
-                </div>
-              )}
-              {calibration.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="mt-2 h-7 text-[11px]"
-                  onClick={() => setCalibration([])}
-                >Clear calibration</Button>
-              )}
-            </CardContent>
-          </Card>
         </div>
 
         {/* Right sidebar */}
@@ -537,6 +558,20 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             fetAnalyte={[]}
             swvData={data}
             swvMetrics={metrics}
+          />
+
+          <CalibrationPanel
+            mode="swv"
+            concentration={params.concentration_nM ?? 0}
+            onChangeConcentration={(v) =>
+              setParams({ ...params, concentration_nM: v })
+            }
+            points={calibration}
+            onClear={() => setCalibration([])}
+            onExport={() => exportCalibrationCSV("swv", calibration, dataSource)}
+            currentPeakCurrentRaw_uA={metrics?.peakCurrentRaw_uA ?? null}
+            currentPeakCurrentCorrected_uA={metrics?.peakCurrentCorrected_uA ?? null}
+            currentPeakPotential_V={metrics?.peakPotential_V ?? null}
           />
 
           <Card>

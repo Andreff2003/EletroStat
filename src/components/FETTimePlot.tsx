@@ -1,16 +1,29 @@
+import { EmptyPlotState } from "@/components/EmptyPlotState";
 import { useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea,
+  Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea, Legend,
 } from "recharts";
 import type { FETTimePoint } from "@/hooks/useSimulatedData";
+
+export interface FETTimeOverlay {
+  id?: string;
+  label: string;
+  color: string;
+  data: FETTimePoint[];
+}
 
 interface FETTimePlotProps {
   data: FETTimePoint[];
   markers?: { time: number; label: string }[];
+  overlays?: FETTimeOverlay[];
+  /** Compact read-only rendering for the dashboard grid. */
+  compact?: boolean;
 }
 
-const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
+
+const FETTimePlot = ({ data, markers, overlays: overlaysProp = [], compact = false }: FETTimePlotProps) => {
+  const overlays = compact ? [] : overlaysProp;
   const lines = markers && markers.length > 0
     ? markers
     : [{ time: 10, label: "Cortisol injection" }];
@@ -47,9 +60,18 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
     setZoomArea(null);
   };
 
+  if (data.length === 0 && overlays.length === 0) {
+    return (
+      <EmptyPlotState
+        title="No time response yet"
+        hint="Click Start FET to begin monitoring Id vs time."
+      />
+    );
+  }
+
   return (
     <div className="w-full h-full" style={{ position: "relative" }}>
-      {zoomDomain && (
+      {!compact && zoomDomain && (
         <button
           onClick={() => setZoomDomain(null)}
           style={{
@@ -67,10 +89,10 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
       <ResponsiveContainer width="100%" height="100%">
         <LineChart
           data={data}
-          margin={{ top: 10, right: 20, bottom: 40, left: 20 }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+          margin={compact ? { top: 8, right: 8, bottom: 8, left: 16 } : { top: 10, right: 20, bottom: 40, left: 20 }}
+          onMouseDown={compact ? undefined : handleMouseDown}
+          onMouseMove={compact ? undefined : handleMouseMove}
+          onMouseUp={compact ? undefined : handleMouseUp}
         >
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 15% 15%)" />
           <XAxis
@@ -78,15 +100,15 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
             type="number"
             domain={zoomDomain ? zoomDomain.x : ["auto", "auto"]}
             allowDataOverflow
-            label={{ value: "Time (s)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
-            tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+            label={compact ? undefined : { value: "Time (s)", position: "bottom", offset: 20, fill: "hsl(215 15% 50%)", fontSize: 12 }}
+            tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
             stroke="hsl(220 15% 20%)"
           />
           <YAxis
             domain={zoomDomain ? zoomDomain.y : ["auto", "auto"]}
             allowDataOverflow
-            label={{ value: "Id (µA)", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(215 15% 50%)", fontSize: 12 }}
-            tick={{ fill: "hsl(215 15% 50%)", fontSize: 11 }}
+            label={compact ? undefined : { value: "Id (µA)", angle: -90, position: "insideLeft", offset: -5, fill: "hsl(215 15% 50%)", fontSize: 12 }}
+            tick={{ fill: "hsl(215 15% 50%)", fontSize: compact ? 9 : 11 }}
             stroke="hsl(220 15% 20%)"
           />
           <Tooltip
@@ -106,11 +128,30 @@ const FETTimePlot = ({ data, markers }: FETTimePlotProps) => {
               x={m.time}
               stroke="hsl(0 65% 50%)"
               strokeDasharray="4 4"
-              label={{ value: m.label, fill: "hsl(0 65% 60%)", fontSize: 11, position: "top" }}
+              label={compact ? undefined : { value: m.label, fill: "hsl(0 65% 60%)", fontSize: 11, position: "top" }}
             />
           ))}
-          <Line type="monotone" dataKey="id" stroke="hsl(200 80% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
-          {isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
+          {!compact && <Legend wrapperStyle={{ color: "hsl(215 15% 50%)", fontSize: 12 }} />}
+          {overlays.map((ov, idx) => {
+            const key = ov.id ?? `ov-${idx}`;
+            return (
+              <Line
+                key={key}
+                type="monotone"
+                data={ov.data}
+                dataKey="id"
+                name={ov.label}
+                stroke={ov.color}
+                strokeWidth={1.4}
+                strokeDasharray="6 3"
+                dot={false}
+                isAnimationActive={false}
+              />
+            );
+          })}
+          <Line type="monotone" dataKey="id" name="Id" stroke="hsl(200 80% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
+
+          {!compact && isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
             <ReferenceArea x1={zoomArea.x1} x2={zoomArea.x2} strokeOpacity={0.3} fill="hsl(200 80% 55%)" fillOpacity={0.15} />
           )}
         </LineChart>

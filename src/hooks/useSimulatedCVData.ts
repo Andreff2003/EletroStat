@@ -5,8 +5,12 @@ import {
   CV_T_DEFAULT_K as T,
   CV_DEFAULT_D_CM2_S as D,
   CV_E0_PRIME_DEFAULT_V as E0_PRIME,
+  CV_BV_K0,
+  CV_BV_ALPHA,
+  CV_BV_K_MAX,
 } from "@/utils/cvConstants";
 import { simulateReversibleDiffusionCV } from "@/utils/cvDiffusionSolver";
+
 
 /**
  * ============================================================
@@ -67,6 +71,14 @@ export interface CVSimParams {
   cMM: number;        // bulk concentration of O, mM
   areaCm2: number;    // electrode area, cm²
   cvModel?: CVModel;  // default: "reversible"
+  // Analyte / kinetic parameters (all optional — fall back to cvConstants)
+  diffusionCoeff?: number;   // cm²/s
+  formalPotential?: number;  // V
+  k0?: number;               // cm/s
+  alpha?: number;            // 0–1
+  // Acquisition
+  stepPotential?: number;    // mV
+  quietTime?: number;        // s — informational only in the simulator
 }
 
 export const DEFAULT_CV_PARAMS: CVSimParams = {
@@ -79,16 +91,19 @@ export const DEFAULT_CV_PARAMS: CVSimParams = {
   cMM: 5,
   areaCm2: 0.0707,
   cvModel: "reversible",
+  diffusionCoeff: D,
+  formalPotential: E0_PRIME,
+  k0: CV_BV_K0,
+  alpha: CV_BV_ALPHA,
+  stepPotential: 2,
+  quietTime: 2,
 };
 
-// Physical constants
-const K0 = 0.01;       // cm/s
-const ALPHA = 0.5;
-const K_MAX = 10;      // cm/s — numerical safety ceiling (educational)
-// (Capacitive baseline constant removed — reversible model now uses the
-// physical diffusion solver and does not synthesise a Cdl·v offset.)
+const K_MAX = CV_BV_K_MAX;
 
+/** Kept for backwards compatibility — default formal potential. */
 export const CV_E0_PRIME = E0_PRIME;
+
 
 const safeExp = (x: number) => Math.exp(Math.max(-60, Math.min(60, x)));
 
@@ -118,7 +133,7 @@ type Seg = { E: number; branch: "forward" | "reverse" | "return"; cycle: number;
 
 function buildPotentialProgram(params: CVSimParams): { segs: Seg[]; dt: number; stepV: number } {
   const v = params.scanRate / 1000; // V/s
-  const stepV = 0.001;              // 1 mV per step
+  const stepV = Math.max(1e-4, (params.stepPotential ?? 1) / 1000); // V per step
   const dt = stepV / v;
 
   let cur = params.eStart;
@@ -167,6 +182,9 @@ function buildReversibleCV(params: CVSimParams): CVDataPoint[] {
     n: params.n,
     areaCm2: params.areaCm2,
     cMM: params.cMM,
+    D_cm2_s: params.diffusionCoeff ?? D,
+    E0Prime_V: params.formalPotential ?? E0_PRIME,
+    stepV: Math.max(1e-4, (params.stepPotential ?? 1) / 1000),
   });
 }
 
@@ -179,8 +197,13 @@ function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
   const { segs, dt } = buildPotentialProgram(params);
   const { n, cMM, areaCm2, scanRate } = params;
 
+  const D_use = params.diffusionCoeff ?? D;
+  const E0_use = params.formalPotential ?? E0_PRIME;
+  const K0 = params.k0 ?? CV_BV_K0;
+  const ALPHA = params.alpha ?? CV_BV_ALPHA;
+
   const cBulk = cMM * 1e-6;
-  const sqrtPiD = Math.sqrt(Math.PI * D);
+  const sqrtPiD = Math.sqrt(Math.PI * D_use);
   const sqrtDt = Math.sqrt(dt);
   const noiseAmp = Math.sqrt(scanRate) * 0.005;
 
@@ -192,7 +215,7 @@ function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
 
   for (let i = 0; i < segs.length; i++) {
     const { E, branch, cycle } = segs[i];
-    const eta = E - E0_PRIME;
+    const eta = E - E0_use;
     const kRed = Math.min(K_MAX, K0 * safeExp(-ALPHA * n * F * eta / (R * T)));
     const kOx  = Math.min(K_MAX, K0 * safeExp((1 - ALPHA) * n * F * eta / (R * T)));
 
