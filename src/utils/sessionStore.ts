@@ -213,12 +213,50 @@ export function loadSession(): StoredMeasurement[] {
   }
 }
 
-export function saveSession(measurements: StoredMeasurement[]) {
+export type SessionSaveStatus = "saved" | "error";
+
+export function saveSession(
+  measurements: StoredMeasurement[],
+  onStatus?: (status: SessionSaveStatus, error?: unknown) => void,
+) {
   try {
     localStorage.setItem(KEY, JSON.stringify(measurements));
+    onStatus?.("saved");
   } catch (err) {
+    // QuotaExceededError lands here — surface it so the UI can warn the
+    // user instead of silently losing their measurement history.
     console.warn("Failed to save session", err);
+    onStatus?.("error", err);
   }
+}
+
+// Debounced writer: the session array (with full raw point arrays) is
+// expensive to stringify, so callers that fire on every state change should
+// go through this instead of saveSession directly.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function saveSessionDebounced(
+  measurements: StoredMeasurement[],
+  onStatus?: (status: SessionSaveStatus, error?: unknown) => void,
+  delayMs = 600,
+) {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveSession(measurements, onStatus);
+  }, delayMs);
+}
+
+/** Test hook — flush any pending debounced write synchronously. */
+export function flushSessionSave(
+  measurements: StoredMeasurement[],
+  onStatus?: (status: SessionSaveStatus, error?: unknown) => void,
+) {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  saveSession(measurements, onStatus);
 }
 
 export function clearSession() {
