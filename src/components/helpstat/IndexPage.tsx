@@ -515,9 +515,25 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist whenever session changes
+  // Persist whenever session changes (debounced — the raw point arrays are
+  // expensive to stringify on every keystroke-level state change).
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const autosaveFirstRunRef = useRef(true);
   useEffect(() => {
-    saveSession(sessionMeasurements);
+    if (autosaveFirstRunRef.current) {
+      autosaveFirstRunRef.current = false;
+      return;
+    }
+    setAutosaveStatus("saving");
+    saveSessionDebounced(sessionMeasurements, (status, err) => {
+      setAutosaveStatus(status);
+      if (status === "error") {
+        toast.error(
+          "Could not save the session locally — browser storage is full. Export your data to CSV to avoid losing it.",
+        );
+        console.warn("[session] autosave failed", err);
+      }
+    });
   }, [sessionMeasurements]);
 
   // Log WebSocket connection status transitions
