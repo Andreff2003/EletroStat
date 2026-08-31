@@ -475,6 +475,10 @@ const Index = () => {
     });
   };
 
+  // Last URL used to connect — lets the "connection lost" banner retry.
+  const [lastWsUrl, setLastWsUrl] = useState("");
+  const exportSessionButtonRef = useRef<HTMLButtonElement | null>(null);
+
   // Restore session on mount
   useEffect(() => {
     const stored = loadSession();
@@ -2049,7 +2053,7 @@ const Index = () => {
           onChangeSource={handleChangeSource}
           connectionStatus={ws.status}
           errorMessage={ws.errorMessage}
-          onConnect={(url) => { setHasAttemptedConnection(true); ws.connect(url); }}
+          onConnect={(url) => { setHasAttemptedConnection(true); setLastWsUrl(url); ws.connect(url); }}
           onDisconnect={ws.disconnect}
           multiConnectedCount={connectedCount}
           multiEnabledCount={enabledCount}
