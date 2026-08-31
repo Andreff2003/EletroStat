@@ -1931,6 +1931,25 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
+      {liveDropped && (
+        <div
+          role="alert"
+          className="mb-4 flex flex-col gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs font-mono text-foreground sm:flex-row sm:items-center sm:justify-between"
+        >
+          <span>
+            ⚠ Connection lost during the {mode.toUpperCase()} sweep — incoming data has stopped.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="font-mono text-xs"
+            disabled={!lastWsUrl || ws.status === "connecting"}
+            onClick={() => ws.connect(lastWsUrl)}
+          >
+            ↻ Reconnect
+          </Button>
+        </div>
+      )}
       {/* Header */}
       <header className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
