@@ -430,6 +430,14 @@ const HEADLINES: Record<Level, string> = {
   idle: "Idle",
 };
 
+/** Text equivalent of the colour coding, for assistive technologies. */
+const LEVEL_TEXT: Record<Level, string> = {
+  green: "good",
+  yellow: "acceptable",
+  red: "poor",
+  idle: "not available",
+};
+
 interface MetricRowProps {
   label: string;
   value: string;
@@ -439,7 +447,11 @@ interface MetricRowProps {
 const MetricRow = ({ label, value, level, title }: MetricRowProps & { title?: string }) => (
   <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/40 last:border-0">
     <div className="flex items-center gap-2 min-w-0">
-      <div className={`w-2 h-2 rounded-full shrink-0 ${dotClass(level)}`} />
+      <div
+        className={`w-2 h-2 rounded-full shrink-0 ${dotClass(level)}`}
+        role="img"
+        aria-label={`${label} status: ${LEVEL_TEXT[level]}`}
+      />
       <span className="text-[11px] font-mono text-muted-foreground truncate">
         {label}
         {title ? <InfoHint text={title} /> : null}
@@ -515,11 +527,15 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
 
       {/* Traffic light */}
       <div className="flex items-center gap-4 mb-4 p-3 rounded-md bg-secondary/40">
-        <div className="flex flex-col gap-2 p-2 rounded-md bg-background/60 border border-border">
+        <div
+          className="flex flex-col gap-2 p-2 rounded-md bg-background/60 border border-border"
+          role="img"
+          aria-label={`Overall signal quality: ${LEVEL_TEXT[level]}`}
+        >
           {/* Unified semaphore order across EIS / BioFET / CV: green (top) → yellow → red (bottom). */}
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("green", level === "green")}`} />
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("yellow", level === "yellow")}`} />
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("red", level === "red")}`} />
+          <div aria-hidden="true" className={`w-6 h-6 rounded-full transition-all ${lightClass("green", level === "green")}`} />
+          <div aria-hidden="true" className={`w-6 h-6 rounded-full transition-all ${lightClass("yellow", level === "yellow")}`} />
+          <div aria-hidden="true" className={`w-6 h-6 rounded-full transition-all ${lightClass("red", level === "red")}`} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-mono font-semibold text-foreground">

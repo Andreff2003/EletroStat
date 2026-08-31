@@ -110,7 +110,7 @@ import {
 } from "@/components/ui/select";
 import {
   loadSession,
-  saveSession,
+  saveSessionDebounced,
   clearSession,
   newId,
   type StoredMeasurement,
@@ -475,6 +475,10 @@ const Index = () => {
     });
   };
 
+  // Last URL used to connect — lets the "connection lost" banner retry.
+  const [lastWsUrl, setLastWsUrl] = useState("");
+  const exportSessionButtonRef = useRef<HTMLButtonElement | null>(null);
+
   // Restore session on mount
   useEffect(() => {
     const stored = loadSession();
@@ -515,9 +519,25 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist whenever session changes
+  // Persist whenever session changes (debounced — the raw point arrays are
+  // expensive to stringify on every keystroke-level state change).
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const autosaveFirstRunRef = useRef(true);
   useEffect(() => {
-    saveSession(sessionMeasurements);
+    if (autosaveFirstRunRef.current) {
+      autosaveFirstRunRef.current = false;
+      return;
+    }
+    setAutosaveStatus("saving");
+    saveSessionDebounced(sessionMeasurements, (status, err) => {
+      setAutosaveStatus(status);
+      if (status === "error") {
+        toast.error(
+          "Could not save the session locally — browser storage is full. Export your data to CSV to avoid losing it.",
+        );
+        console.warn("[session] autosave failed", err);
+      }
+    });
   }, [sessionMeasurements]);
 
   // Log WebSocket connection status transitions
@@ -1852,8 +1872,84 @@ const Index = () => {
     ws.status === "connected" ? "Live — Connected" : "Live — Not Connected"
   );
 
+  // ── Start / stop for the currently visible technique (used by shortcuts) ──
+  const startCurrentMode = () => {
+    if (mode === "eis") handleStartEIS();
+    else if (mode === "fet") handleStartFET();
+    else if (mode === "cv") handleStartCV();
+    else if (mode === "swv") swvCtrl?.start();
+  };
+  const stopCurrentMode = () => {
+    if (mode === "eis") handleStopEIS();
+    else if (mode === "fet") handleStopFET();
+    else if (mode === "cv") {
+      if (dataSource === "simulated") cv.stop();
+      else { setIsLiveCVRunning(false); ws.sendCommand("stop"); }
+    } else if (mode === "swv") swvCtrl?.stop();
+  };
+  const currentModeRunning =
+    mode === "eis" ? isEISRunning
+      : mode === "fet" ? isFETRunning
+        : mode === "cv" ? isCVRunningNow
+          : mode === "swv" ? (swvCtrl?.isRunning ?? false)
+            : false;
+
+  // Dynamic tab title while a sweep is recording.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const base = "ElectroStat — EIS, CV, SWV & BioFET Biosensor Dashboard";
+    document.title = isAnyTechniqueRunning
+      ? `● Recording ${mode.toUpperCase()} — ElectroStat`
+      : base;
+    return () => { document.title = base; };
+  }, [isAnyTechniqueRunning, mode]);
+
+  // Keyboard shortcuts: Space = start/stop current technique, E = export session.
+  const shortcutRef = useRef({ startCurrentMode, stopCurrentMode, currentModeRunning });
+  shortcutRef.current = { startCurrentMode, stopCurrentMode, currentModeRunning };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        const s = shortcutRef.current;
+        if (s.currentModeRunning) s.stopCurrentMode(); else s.startCurrentMode();
+      } else if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        exportSessionButtonRef.current?.click();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Warn when the live link drops in the middle of a running sweep.
+  const liveDropped =
+    dataSource === "live" && isAnyTechniqueRunning && ws.status !== "connected";
+
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
+      {liveDropped && (
+        <div
+          role="alert"
+          className="mb-4 flex flex-col gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs font-mono text-foreground sm:flex-row sm:items-center sm:justify-between"
+        >
+          <span>
+            ⚠ Connection lost during the {mode.toUpperCase()} sweep — incoming data has stopped.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="font-mono text-xs"
+            disabled={!lastWsUrl || ws.status === "connecting"}
+            onClick={() => ws.connect(lastWsUrl)}
+          >
+            ↻ Reconnect
+          </Button>
+        </div>
+      )}
       {/* Header */}
       <header className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -1864,10 +1960,17 @@ const Index = () => {
           <p className="text-xs text-muted-foreground mt-1">
             ESP32-S3 / AD5941 — {sourceLabel}
           </p>
+          <p className="text-[10px] text-muted-foreground/80 font-mono mt-0.5" aria-live="polite">
+            {autosaveStatus === "saving" && "Saving session…"}
+            {autosaveStatus === "saved" && "Session saved locally"}
+            {autosaveStatus === "error" && "⚠ Session not saved — storage full"}
+            {autosaveStatus === "idle" && "Space: start/stop · E: export session"}
+          </p>
         </div>
 
         <div className="flex items-center gap-2">
           <Button
+            ref={exportSessionButtonRef}
             size="sm"
             variant="outline"
             onClick={() =>
@@ -1976,7 +2079,7 @@ const Index = () => {
           onChangeSource={handleChangeSource}
           connectionStatus={ws.status}
           errorMessage={ws.errorMessage}
-          onConnect={(url) => { setHasAttemptedConnection(true); ws.connect(url); }}
+          onConnect={(url) => { setHasAttemptedConnection(true); setLastWsUrl(url); ws.connect(url); }}
           onDisconnect={ws.disconnect}
           multiConnectedCount={connectedCount}
           multiEnabledCount={enabledCount}
