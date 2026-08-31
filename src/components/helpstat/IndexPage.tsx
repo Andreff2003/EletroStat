@@ -110,7 +110,7 @@ import {
 } from "@/components/ui/select";
 import {
   loadSession,
-  saveSession,
+  saveSessionDebounced,
   clearSession,
   newId,
   type StoredMeasurement,
