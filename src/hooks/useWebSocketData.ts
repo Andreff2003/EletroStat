@@ -265,11 +265,14 @@ export function useWebSocketData(): UseWebSocketDataReturn {
               // Unknown message type — ignore
               break;
           }
-        } catch {
-          // Non-JSON message — ignore
+        } catch (err) {
+          // Non-JSON or malformed frame — surface it so bridge bugs are
+          // debuggable instead of silently dropping data.
+          console.warn("[ws] ignored malformed message frame", err, event.data);
         }
       };
-    } catch {
+    } catch (err) {
+      console.warn("[ws] failed to open WebSocket", err);
       setStatus("error");
       setErrorMessage("Invalid WebSocket URL.");
     }
