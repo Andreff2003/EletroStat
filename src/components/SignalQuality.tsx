@@ -439,7 +439,11 @@ interface MetricRowProps {
 const MetricRow = ({ label, value, level, title }: MetricRowProps & { title?: string }) => (
   <div className="flex items-center justify-between gap-3 py-1.5 border-b border-border/40 last:border-0">
     <div className="flex items-center gap-2 min-w-0">
-      <div className={`w-2 h-2 rounded-full shrink-0 ${dotClass(level)}`} />
+      <div
+        className={`w-2 h-2 rounded-full shrink-0 ${dotClass(level)}`}
+        role="img"
+        aria-label={`${label} status: ${LEVEL_TEXT[level]}`}
+      />
       <span className="text-[11px] font-mono text-muted-foreground truncate">
         {label}
         {title ? <InfoHint text={title} /> : null}
