@@ -430,6 +430,14 @@ const HEADLINES: Record<Level, string> = {
   idle: "Idle",
 };
 
+/** Text equivalent of the colour coding, for assistive technologies. */
+const LEVEL_TEXT: Record<Level, string> = {
+  green: "good",
+  yellow: "acceptable",
+  red: "poor",
+  idle: "not available",
+};
+
 interface MetricRowProps {
   label: string;
   value: string;
