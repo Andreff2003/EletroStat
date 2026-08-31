@@ -1941,10 +1941,17 @@ const Index = () => {
           <p className="text-xs text-muted-foreground mt-1">
             ESP32-S3 / AD5941 — {sourceLabel}
           </p>
+          <p className="text-[10px] text-muted-foreground/80 font-mono mt-0.5" aria-live="polite">
+            {autosaveStatus === "saving" && "Saving session…"}
+            {autosaveStatus === "saved" && "Session saved locally"}
+            {autosaveStatus === "error" && "⚠ Session not saved — storage full"}
+            {autosaveStatus === "idle" && "Space: start/stop · E: export session"}
+          </p>
         </div>
 
         <div className="flex items-center gap-2">
           <Button
+            ref={exportSessionButtonRef}
             size="sm"
             variant="outline"
             onClick={() =>
