@@ -527,11 +527,15 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
 
       {/* Traffic light */}
       <div className="flex items-center gap-4 mb-4 p-3 rounded-md bg-secondary/40">
-        <div className="flex flex-col gap-2 p-2 rounded-md bg-background/60 border border-border">
+        <div
+          className="flex flex-col gap-2 p-2 rounded-md bg-background/60 border border-border"
+          role="img"
+          aria-label={`Overall signal quality: ${LEVEL_TEXT[level]}`}
+        >
           {/* Unified semaphore order across EIS / BioFET / CV: green (top) → yellow → red (bottom). */}
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("green", level === "green")}`} />
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("yellow", level === "yellow")}`} />
-          <div className={`w-6 h-6 rounded-full transition-all ${lightClass("red", level === "red")}`} />
+          <div aria-hidden="true" className={`w-6 h-6 rounded-full transition-all ${lightClass("green", level === "green")}`} />
+          <div aria-hidden="true" className={`w-6 h-6 rounded-full transition-all ${lightClass("yellow", level === "yellow")}`} />
+          <div aria-hidden="true" className={`w-6 h-6 rounded-full transition-all ${lightClass("red", level === "red")}`} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-mono font-semibold text-foreground">
