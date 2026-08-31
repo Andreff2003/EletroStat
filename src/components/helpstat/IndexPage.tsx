@@ -1868,6 +1868,63 @@ const Index = () => {
     ws.status === "connected" ? "Live — Connected" : "Live — Not Connected"
   );
 
+  // ── Start / stop for the currently visible technique (used by shortcuts) ──
+  const startCurrentMode = () => {
+    if (mode === "eis") handleStartEIS();
+    else if (mode === "fet") handleStartFET();
+    else if (mode === "cv") handleStartCV();
+    else if (mode === "swv") swvCtrl?.start();
+  };
+  const stopCurrentMode = () => {
+    if (mode === "eis") handleStopEIS();
+    else if (mode === "fet") handleStopFET();
+    else if (mode === "cv") {
+      if (dataSource === "simulated") cv.stop();
+      else { setIsLiveCVRunning(false); ws.sendCommand("stop"); }
+    } else if (mode === "swv") swvCtrl?.stop();
+  };
+  const currentModeRunning =
+    mode === "eis" ? isEISRunning
+      : mode === "fet" ? isFETRunning
+        : mode === "cv" ? isCVRunningNow
+          : mode === "swv" ? (swvCtrl?.isRunning ?? false)
+            : false;
+
+  // Dynamic tab title while a sweep is recording.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const base = "ElectroStat — EIS, CV, SWV & BioFET Biosensor Dashboard";
+    document.title = isAnyTechniqueRunning
+      ? `● Recording ${mode.toUpperCase()} — ElectroStat`
+      : base;
+    return () => { document.title = base; };
+  }, [isAnyTechniqueRunning, mode]);
+
+  // Keyboard shortcuts: Space = start/stop current technique, E = export session.
+  const shortcutRef = useRef({ startCurrentMode, stopCurrentMode, currentModeRunning });
+  shortcutRef.current = { startCurrentMode, stopCurrentMode, currentModeRunning };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        const s = shortcutRef.current;
+        if (s.currentModeRunning) s.stopCurrentMode(); else s.startCurrentMode();
+      } else if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        exportSessionButtonRef.current?.click();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Warn when the live link drops in the middle of a running sweep.
+  const liveDropped =
+    dataSource === "live" && isAnyTechniqueRunning && ws.status !== "connected";
+
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
       {/* Header */}
