@@ -29,7 +29,6 @@ interface Props {
   /** "raw" (default) plots INet; "corrected" plots baseline-subtracted INet. */
   plotMode?: "raw" | "corrected";
   overlays?: SWVOverlay[];
-  height?: number;
   /** Compact read-only rendering for the dashboard grid. */
   compact?: boolean;
 }
@@ -50,7 +49,6 @@ export default function SWVPlot({
   showBaseline = false,
   plotMode = "raw",
   overlays = [],
-  height = 360,
   compact = false,
 }: Props) {
   const correctedAvailable =
@@ -89,8 +87,9 @@ export default function SWVPlot({
   }
 
   return (
-    <div style={{ width: "100%", height: compact ? "100%" : height }}>
-      <ResponsiveContainer>
+    <div className="w-full h-full flex flex-col">
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={rows} margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 10, right: 20, left: 10, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
           <XAxis
@@ -107,6 +106,14 @@ export default function SWVPlot({
             tickFormatter={(v: number) => v.toFixed(2)}
           />
           <Tooltip
+            contentStyle={{
+              backgroundColor: "hsl(220 18% 10%)",
+              border: "1px solid hsl(220 15% 18%)",
+              borderRadius: "6px",
+              color: "hsl(210 20% 90%)",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 12,
+            }}
             formatter={(v: number | string, name: string) => [fmt(Number(v), "µA"), name]}
             labelFormatter={(v: number) => `E = ${Number(v).toFixed(3)} V`}
           />
@@ -155,7 +162,8 @@ export default function SWVPlot({
             />
           )}
         </ComposedChart>
-      </ResponsiveContainer>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
