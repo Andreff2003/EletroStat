@@ -35,10 +35,6 @@ export interface FETParams {
   vgMax: number; // V
   vgStep: number; // mV (converted to V before sending)
   intervalMs: number;
-  // Display label only — never touches the simulation math or Live/hardware
-  // data. Defaults to "Cortisol" as the worked example; change it and every
-  // BioFET chart/label/logbook prefill in the app follows.
-  analyteName: string;
   // Analyte / device parameters (simulation)
   kd_nM: number;
   vtBaseline_V: number;
@@ -82,7 +78,6 @@ export const DEFAULT_FET_PARAMS: FETParams = {
   vgMax: 1.5,
   vgStep: 40,
   intervalMs: 200,
-  analyteName: "Cortisol",
   kd_nM: 25,
   vtBaseline_V: 0.30,
   deltaVtMax_V: 0.40,
@@ -372,23 +367,6 @@ const ParametersPanel = ({
             {/* ── Analyte / device parameters ─────────────────────── */}
             <div className="col-span-2 md:col-span-4 border-t border-border pt-3 mt-1 text-[10px] font-mono uppercase text-muted-foreground">
               Analyte & Device
-            </div>
-            <div className="flex flex-col gap-1 col-span-2">
-              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
-                Analyte Name
-              </Label>
-              <Input
-                value={fetParams.analyteName}
-                onChange={(e) => onChangeFET({ ...fetParams, analyteName: e.target.value })}
-                disabled={disabled}
-                maxLength={60}
-                className="h-8 font-mono text-xs"
-              />
-              <span className="text-[10px] text-muted-foreground font-mono">
-                Label only — the app works for any analyte. Charts, the sample
-                summary and the logbook use this name; the underlying binding
-                model is set by the parameters below, not by this text.
-              </span>
             </div>
             <NumField
               label="Kd (nM)"

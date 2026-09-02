@@ -581,6 +581,7 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             currentPeakCurrentRaw_uA={metrics?.peakCurrentRaw_uA ?? null}
             currentPeakCurrentCorrected_uA={metrics?.peakCurrentCorrected_uA ?? null}
             currentPeakPotential_V={metrics?.peakPotential_V ?? null}
+            analyteName={notes.analyte}
           />
 
           <Card>
