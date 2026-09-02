@@ -764,27 +764,6 @@ const Index = () => {
     setEisFitted(true);
 
     const rctForCalib = cnls?.params.Rct ?? fit?.Rct ?? 0;
-    if (rctForCalib > 0) {
-      const baseline = eisCalibration.find((p) => p.concentration === 0);
-      const deltaRct =
-        concentration === 0 ? 0 : rctForCalib - (baseline?.raw ?? rctForCalib);
-      // Replicates allowed — never replace points at the same concentration.
-      // Multiple measurements at the same concentration (including blanks)
-      // are required for LOD/LOQ statistics and repeatability assessment.
-      setEisCalibration((prev) => [
-        ...prev,
-        {
-          concentration,
-          signal: deltaRct,
-          raw: rctForCalib,
-          timestamp: Date.now(),
-          measurementId: eisMeasurementId,
-          sampleId: eisNotes.sampleId,
-          electrodeId: eisNotes.electrodeId,
-          notesShort: shortNotesSummary(eisNotes)?.slice(0, 80),
-        },
-      ]);
-    }
     const wssrStr = cnls ? cnls.chiSquared.toExponential(2) : "n/a";
     logActivity(
       "measurement",
@@ -876,6 +855,41 @@ const Index = () => {
     toast.success(`Fit complete — Rct = ${rctForCalib.toFixed(1)} Ω · wSSR/dof = ${wssrStr}`);
   };
 
+  // Explicit "+ Add to calibration" handler (EIS) — reads the last fit
+  // result from state rather than re-fitting, so it only ever appends the
+  // point the user is currently looking at.
+  const handleAddEisCalibrationPoint = () => {
+    const rctForCalib = cnlsFit?.params.Rct ?? randlesFit?.Rct ?? 0;
+    if (!(rctForCalib > 0)) {
+      toast.error("No EIS fit yet — fit a circuit first.");
+      return;
+    }
+    const baseline = eisCalibration.find((p) => p.concentration === 0);
+    const deltaRct =
+      concentration === 0 ? 0 : rctForCalib - (baseline?.raw ?? rctForCalib);
+    // Replicates allowed — never replace points at the same concentration.
+    // Multiple measurements at the same concentration (including blanks)
+    // are required for LOD/LOQ statistics and repeatability assessment.
+    setEisCalibration((prev) => [
+      ...prev,
+      {
+        concentration,
+        signal: deltaRct,
+        raw: rctForCalib,
+        timestamp: Date.now(),
+        measurementId: eisMeasurementId,
+        sampleId: eisNotes.sampleId,
+        electrodeId: eisNotes.electrodeId,
+        notesShort: shortNotesSummary(eisNotes)?.slice(0, 80),
+      },
+    ]);
+    logActivity(
+      "calibration",
+      `EIS calibration point added — C=${concentration} nM, ΔRct=${deltaRct.toFixed(1)} Ω`,
+    );
+    toast.success(`Added EIS point at ${concentration} nM`);
+  };
+
   // Shared FET completion logic
   const completeFETSweep = (
     finalBaseline: typeof fetBaselineData,
@@ -953,35 +967,6 @@ const Index = () => {
         vt != null ? vt.toFixed(3) : "n/a"
       } V, ΔVt=${deltaVt_mV != null ? deltaVt_mV.toFixed(1) + " mV" : "n/a"} (${metrics.vtMethod}; mode=${fetResponseMode})`,
     );
-    if (vt != null && vtBaseline != null && deltaVt_mV != null) {
-      setFetCalibration((prev) => [
-        ...prev,
-        {
-          concentration,
-          // For Langmuir fit consumption: use calibrationSignal_mV_used when
-          // present (sign already aligned), else fall back to signed ΔVt.
-          signal: calibrationSignal_mV_used ?? deltaVt_mV,
-          raw: vt,
-          timestamp: Date.now(),
-          measurementId: fetMeasurementId,
-          sampleId: fetNotes.sampleId,
-          electrodeId: fetNotes.electrodeId,
-          notesShort: shortNotesSummary(fetNotes)?.slice(0, 80),
-          deltaVt_mV_signed: deltaVt_mV_signed ?? undefined,
-          calibrationSignal_mV_used: calibrationSignal_mV_used ?? undefined,
-          responseMode: fetResponseMode,
-          responseSign: metrics.responseSign,
-          vtBaseline: vtBaseline ?? undefined,
-          vtAnalyte: vt ?? undefined,
-          vtMethod: metrics.vtMethod,
-          vtFitR2: metrics.vtFitR2 ?? null,
-          vtRegionPoints: metrics.vtRegionPoints,
-          vtWarning: metrics.vtWarning,
-        },
-      ]);
-    } else {
-      toast.warning("ΔVt unavailable — baseline/analyte Vt extraction failed");
-    }
     // Falls back to "Cortisol" when the logbook's Analyte field is blank
     // (same default as the on-screen labels), so exported/stored data never
     // has an empty analyte column.
@@ -1037,6 +1022,59 @@ const Index = () => {
     };
     if (hasAnyNotes(cleanFetNotes)) setFetPreviousNotes(cleanFetNotes!);
     setSessionMeasurements((prev) => [...prev, storedFet]);
+  };
+
+  // Explicit "+ Add to calibration" handler (BioFET) — recomputes Vt/ΔVt
+  // from the last completed sweep's data rather than depending on the
+  // sweep-completion callback, so it only appends the point currently shown.
+  const handleAddFetCalibrationPoint = () => {
+    const baselineData = frozenFetBaseline ?? fetBaselineData;
+    const analyteData = frozenFetAnalyte ?? fetAnalyteData;
+    const priorSigned = fetCalibration
+      .filter((p) => p.concentration > 0 && typeof p.deltaVt_mV_signed === "number")
+      .map((p) => p.deltaVt_mV_signed as number);
+    const inferredSign = inferFETResponseSign(priorSigned);
+    const metrics = computeFETTransferMetrics(baselineData, analyteData, {
+      responseMode: fetResponseMode,
+      responseSign: inferredSign,
+    });
+    const vt = metrics.vtAnalyte;
+    const vtBaseline = metrics.vtBaseline;
+    const deltaVt_mV = metrics.deltaVt_mV;
+    if (vt == null || vtBaseline == null || deltaVt_mV == null) {
+      toast.warning("ΔVt unavailable — run a BioFET sweep first.");
+      return;
+    }
+    setFetCalibration((prev) => [
+      ...prev,
+      {
+        concentration,
+        // For Langmuir fit consumption: use calibrationSignal_mV_used when
+        // present (sign already aligned), else fall back to signed ΔVt.
+        signal: metrics.calibrationSignal_mV_used ?? deltaVt_mV,
+        raw: vt,
+        timestamp: Date.now(),
+        measurementId: fetMeasurementId,
+        sampleId: fetNotes.sampleId,
+        electrodeId: fetNotes.electrodeId,
+        notesShort: shortNotesSummary(fetNotes)?.slice(0, 80),
+        deltaVt_mV_signed: metrics.deltaVt_mV_signed ?? undefined,
+        calibrationSignal_mV_used: metrics.calibrationSignal_mV_used ?? undefined,
+        responseMode: fetResponseMode,
+        responseSign: metrics.responseSign,
+        vtBaseline: vtBaseline ?? undefined,
+        vtAnalyte: vt ?? undefined,
+        vtMethod: metrics.vtMethod,
+        vtFitR2: metrics.vtFitR2 ?? null,
+        vtRegionPoints: metrics.vtRegionPoints,
+        vtWarning: metrics.vtWarning,
+      },
+    ]);
+    logActivity(
+      "calibration",
+      `BioFET calibration point added — C=${concentration} nM, ΔVt=${deltaVt_mV.toFixed(1)} mV`,
+    );
+    toast.success(`Added BioFET point at ${concentration} nM`);
   };
 
   const handleStartEIS = (concentrationOverride?: number) => {
@@ -1549,10 +1587,12 @@ const Index = () => {
   const latestRef = useRef({
     handleStartEIS, handleStartFET, handleStartCV,
     handleFitRandles, handleAddCvCalibrationPoint,
+    handleAddEisCalibrationPoint, handleAddFetCalibrationPoint,
   });
   latestRef.current = {
     handleStartEIS, handleStartFET, handleStartCV,
     handleFitRandles, handleAddCvCalibrationPoint,
+    handleAddEisCalibrationPoint, handleAddFetCalibrationPoint,
   };
 
   const sleep = (ms: number) =>
@@ -1611,7 +1651,9 @@ const Index = () => {
     await waitForStatus(() => eisStatusRef.current === "running", 8000);
     await waitForStatus(() => eisStatusRef.current === "complete", 20000);
     await sleep(300);
-    latestRef.current.handleFitRandles(); // also appends the EIS calibration point
+    latestRef.current.handleFitRandles();
+    await sleep(200);
+    latestRef.current.handleAddEisCalibrationPoint();
     await sleep(300);
   };
 
@@ -1643,6 +1685,8 @@ const Index = () => {
       90000,
     );
     await sleep(300);
+    swvCtrlRef.current?.addCalibration();
+    await sleep(200);
   };
 
   const runFetStep = async (conc: number) => {
@@ -1653,6 +1697,8 @@ const Index = () => {
     await waitForStatus(() => fetStatusRef.current === "running", 8000);
     await waitForStatus(() => fetStatusRef.current === "complete", 30000);
     await sleep(300);
+    latestRef.current.handleAddFetCalibrationPoint();
+    await sleep(200);
   };
 
   const eisPhaseSteps = [
@@ -2237,7 +2283,6 @@ const Index = () => {
               <Button size="sm" variant="destructive" onClick={() => { if (isMulti) { saveChannelMeasurements("swv"); broadcastCommand("stop"); return; } swvCtrl?.stop(); }} disabled={!swvCtrl?.isRunning || demoRunning} className="font-mono text-xs">■ Stop</Button>
               <Button size="sm" variant="secondary" onClick={() => { if (isMulti) { clearAllChannels(); broadcastCommand("stop"); return; } swvCtrl?.reset(); }} disabled={demoRunning} className="font-mono text-xs">↺ Reset</Button>
               <Button size="sm" variant="outline" onClick={() => swvCtrl?.exportCsv()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">⬇ Export CSV</Button>
-              <Button size="sm" variant="outline" onClick={() => swvCtrl?.addCalibration()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">+ Calibration Point</Button>
             </>
           )}
         </div>
@@ -2455,6 +2500,8 @@ const Index = () => {
             currentRct={randlesFit?.Rct ?? liveEisParams?.rct}
             geometricFallback={geometricFallback && eisStatus === "complete"}
             analyteName={eisNotes.analyte}
+            onAddCurrent={handleAddEisCalibrationPoint}
+            canAdd={(cnlsFit != null || randlesFit != null) && !isEISRunning}
           />
         </div>
         </div>
@@ -2710,6 +2757,8 @@ const Index = () => {
             responseMode={fetResponseMode}
             onResponseModeChange={setFetResponseMode}
             analyteName={fetAnalyteName}
+            onAddCurrent={handleAddFetCalibrationPoint}
+            canAdd={(fetBaselineData.length > 0 || fetAnalyteData.length > 0) && !isFETRunning}
           />
         </div>
         </div>

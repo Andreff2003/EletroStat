@@ -366,25 +366,51 @@ const CVCalibrationPanel = ({
                 <TableHead className="h-8 text-[10px] font-mono uppercase">|Ipc| (µA)</TableHead>
                 <TableHead className="h-8 text-[10px] font-mono uppercase">mean (µA)</TableHead>
                 <TableHead className="h-8 text-[10px] font-mono uppercase">ΔEp (mV)</TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Sample</TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Electrode</TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Meas. ID</TableHead>
+                <TableHead className="h-8 text-[10px] font-mono uppercase">Time</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {sortedPoints.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-[11px] font-mono text-muted-foreground py-3 text-center">
+                  <TableCell colSpan={9} className="text-[11px] font-mono text-muted-foreground py-3 text-center">
                     No calibration points yet
                   </TableCell>
                 </TableRow>
               ) : (
-                sortedPoints.map((p, i) => (
-                  <TableRow key={`${p.timestamp}-${i}`}>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.concentration_mM}</TableCell>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.Ipa_uA != null ? p.Ipa_uA.toFixed(2) : "—"}</TableCell>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.IpcAbs_uA != null ? p.IpcAbs_uA.toFixed(2) : "—"}</TableCell>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.responseMean_uA != null ? p.responseMean_uA.toFixed(2) : "—"}</TableCell>
-                    <TableCell className="py-1.5 text-xs font-mono">{p.deltaEp_mV != null ? p.deltaEp_mV.toFixed(0) : "—"}</TableCell>
-                  </TableRow>
-                ))
+                sortedPoints.map((p, i) => {
+                  const midShort = p.measurementId
+                    ? p.measurementId.length > 14
+                      ? `…${p.measurementId.slice(-13)}`
+                      : p.measurementId
+                    : "—";
+                  return (
+                    <TableRow key={`${p.timestamp}-${i}`}>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.concentration_mM}</TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.Ipa_uA != null ? p.Ipa_uA.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.IpcAbs_uA != null ? p.IpcAbs_uA.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.responseMean_uA != null ? p.responseMean_uA.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">{p.deltaEp_mV != null ? p.deltaEp_mV.toFixed(0) : "—"}</TableCell>
+                      <TableCell className="py-1.5 text-[11px] font-mono text-muted-foreground">
+                        {p.sampleId ?? "—"}
+                      </TableCell>
+                      <TableCell className="py-1.5 text-[11px] font-mono text-muted-foreground">
+                        {p.electrodeId ?? "—"}
+                      </TableCell>
+                      <TableCell
+                        className="py-1.5 text-[11px] font-mono text-muted-foreground"
+                        title={p.measurementId ?? ""}
+                      >
+                        {midShort}
+                      </TableCell>
+                      <TableCell className="py-1.5 text-xs font-mono">
+                        {new Date(p.timestamp).toLocaleTimeString()}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

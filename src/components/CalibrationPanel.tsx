@@ -102,6 +102,10 @@ interface CalibrationPanelProps {
   geometricFallback?: boolean;
   /** BioFET-only — display label for the analyte, e.g. "Cortisol". */
   analyteName?: string;
+  /** Adds the current sweep's result as a calibration point. Omit to hide the button (legacy auto-add behaviour). */
+  onAddCurrent?: () => void;
+  /** Whether there's a current result to add (mirrors CVCalibrationPanel's canAdd). */
+  canAdd?: boolean;
 }
 
 /** Find baseline (concentration === 0) point */
@@ -356,6 +360,8 @@ const CalibrationPanel = ({
   onResponseModeChange,
   geometricFallback,
   analyteName = "analyte",
+  onAddCurrent,
+  canAdd = false,
 }: CalibrationPanelProps) => {
   const baseline = findBaseline(points);
   const hasBaseline = !!baseline;
@@ -635,6 +641,23 @@ const CalibrationPanel = ({
         </div>
       )}
 
+      {onAddCurrent && (
+        <div className="flex gap-2">
+          <Button size="sm" onClick={onAddCurrent} disabled={!canAdd} className="font-mono text-xs">
+            ＋ Add current {modeLabel} to calibration
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onClear}
+            disabled={points.length === 0}
+            className="font-mono text-xs"
+          >
+            Clear
+          </Button>
+        </div>
+      )}
+
       {/* Calibration chart */}
       <div>
         <div className="flex items-center justify-between mb-1">
@@ -806,15 +829,6 @@ const CalibrationPanel = ({
               className="h-7 font-mono text-[11px]"
             >
               <Download className="h-3 w-3" /> Export CSV
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onClear}
-              disabled={points.length === 0}
-              className="h-7 font-mono text-[11px]"
-            >
-              Clear
             </Button>
           </div>
         </div>

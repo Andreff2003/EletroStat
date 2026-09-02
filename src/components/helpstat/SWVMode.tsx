@@ -625,6 +625,8 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             currentPeakCurrentCorrected_uA={metrics?.peakCurrentCorrected_uA ?? null}
             currentPeakPotential_V={metrics?.peakPotential_V ?? null}
             analyteName={notes.analyte}
+            onAddCurrent={addCalibrationPoint}
+            canAdd={data.length > 0 && !isRunning}
           />
         </div>
       </div>
