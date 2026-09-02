@@ -26,6 +26,14 @@ const HEADERS: Record<NonNullable<MeasurementNotesPanelProps["mode"]>, string> =
   swv: "SWV Logbook",
 };
 
+/** Per-mode example shown when the caller doesn't supply its own `analyteHint`. */
+const DEFAULT_ANALYTE_HINT: Record<NonNullable<MeasurementNotesPanelProps["mode"]>, string> = {
+  eis: "e.g. Fe(CN)6³⁻/⁴⁻",
+  cv: "e.g. Fe(CN)6³⁻/⁴⁻",
+  swv: "e.g. Fe(CN)6³⁻/⁴⁻",
+  fet: "e.g. Cortisol",
+};
+
 /**
  * Generic logbook / measurement notes panel shared by EIS, BioFET and CV.
  *
@@ -169,7 +177,7 @@ const MeasurementNotesPanel = ({
           <Input
             value={value.analyte ?? ""}
             onChange={(e) => update("analyte", e.target.value)}
-            placeholder={analyteHint}
+            placeholder={analyteHint ?? DEFAULT_ANALYTE_HINT[mode]}
             className="h-8 font-mono text-xs"
             maxLength={200}
           />
@@ -272,6 +280,7 @@ const MeasurementNotesPanel = ({
               onChange={(e) => update("workingElectrode", e.target.value)}
               className="h-8 font-mono text-xs"
               maxLength={200}
+              placeholder="e.g. Glassy carbon, 3 mm"
             />
           </div>
           <div>
@@ -284,6 +293,7 @@ const MeasurementNotesPanel = ({
               onChange={(e) => updateNum("temperature_C", e.target.value)}
               className="h-8 font-mono text-xs"
               step="0.1"
+              placeholder="25"
             />
           </div>
           <div>
@@ -296,6 +306,7 @@ const MeasurementNotesPanel = ({
               onChange={(e) => updateNum("pH", e.target.value)}
               className="h-8 font-mono text-xs"
               step="0.1"
+              placeholder="7.4"
             />
           </div>
         </div>

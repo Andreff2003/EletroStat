@@ -2686,7 +2686,6 @@ const Index = () => {
             hasPrevious={!!fetPreviousNotes}
             measurementId={fetMeasurementId}
             measurementTimestamp={fetMeasurementTimestamp}
-            analyteHint="e.g. Cortisol"
           />
           <CalibrationPanel
             mode="fet"
