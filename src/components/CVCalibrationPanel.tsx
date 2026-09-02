@@ -153,9 +153,6 @@ const CVCalibrationPanel = ({
             }}
             className="h-8 font-mono text-xs"
           />
-          <span className="text-[10px] font-mono text-muted-foreground">
-            Updates the simulator C — re-run CV to capture this point.
-          </span>
         </div>
         <div className="flex flex-col gap-1">
           <Label className="text-[10px] font-mono uppercase text-muted-foreground">

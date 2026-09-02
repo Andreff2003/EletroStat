@@ -19,6 +19,13 @@ import { InfoHint } from "@/components/InfoHint";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -610,17 +617,21 @@ const CalibrationPanel = ({
             </div>
           </div>
           {onResponseModeChange && (
-            <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-muted-foreground">
               <span className="uppercase">Response mode</span>
-              <select
-                className="h-6 rounded border border-border bg-background px-1 text-[10px] font-mono"
+              <Select
                 value={responseMode}
-                onChange={(e) => onResponseModeChange(e.target.value as "auto" | "signed" | "absolute")}
+                onValueChange={(v) => onResponseModeChange(v as "auto" | "signed" | "absolute")}
               >
-                <option value="auto">Auto</option>
-                <option value="signed">Signed</option>
-                <option value="absolute">Absolute</option>
-              </select>
+                <SelectTrigger className="h-6 w-[110px] font-mono text-[10px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto" className="font-mono text-xs">Auto</SelectItem>
+                  <SelectItem value="signed" className="font-mono text-xs">Signed</SelectItem>
+                  <SelectItem value="absolute" className="font-mono text-xs">Absolute</SelectItem>
+                </SelectContent>
+              </Select>
               {responseSign != null && (
                 <span>sign={responseSign > 0 ? "+1" : "-1"}</span>
               )}
