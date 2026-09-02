@@ -19,14 +19,16 @@ interface FETTimePlotProps {
   overlays?: FETTimeOverlay[];
   /** Compact read-only rendering for the dashboard grid. */
   compact?: boolean;
+  /** Display label for the default injection marker — e.g. "Cortisol". */
+  analyteName?: string;
 }
 
 
-const FETTimePlot = ({ data, markers, overlays: overlaysProp = [], compact = false }: FETTimePlotProps) => {
+const FETTimePlot = ({ data, markers, overlays: overlaysProp = [], compact = false, analyteName = "Analyte" }: FETTimePlotProps) => {
   const overlays = compact ? [] : overlaysProp;
   const lines = markers && markers.length > 0
     ? markers
-    : [{ time: 10, label: "Cortisol injection" }];
+    : [{ time: 10, label: `${analyteName} injection` }];
 
   const [zoomArea, setZoomArea] = useState<{ x1: number; x2: number } | null>(null);
   const [zoomDomain, setZoomDomain] = useState<{ x: [number, number]; y: [number, number] } | null>(null);

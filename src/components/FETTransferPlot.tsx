@@ -20,14 +20,16 @@ interface FETTransferPlotProps {
   overlays?: FETOverlay[];
   /** Compact read-only rendering for the dashboard grid. */
   compact?: boolean;
+  /** Display label for the analyte curve — e.g. "Cortisol". Never affects data. */
+  analyteName?: string;
 }
 
-const FETTransferPlot = ({ baseline, withAnalyte, overlays: overlaysProp = [], compact = false }: FETTransferPlotProps) => {
+const FETTransferPlot = ({ baseline, withAnalyte, overlays: overlaysProp = [], compact = false, analyteName = "Analyte" }: FETTransferPlotProps) => {
   const overlays = compact ? [] : overlaysProp;
   const plotData = baseline.map((b, i) => ({
     vg: b.vg,
     baseline: b.id,
-    cortisol: withAnalyte[i]?.id ?? 0,
+    analyte: withAnalyte[i]?.id ?? 0,
   }));
 
   const [zoomArea, setZoomArea] = useState<{ x1: number; x2: number } | null>(null);
@@ -53,7 +55,7 @@ const FETTransferPlot = ({ baseline, withAnalyte, overlays: overlaysProp = [], c
     const x2 = Math.max(zoomArea.x1, zoomArea.x2);
     if (Math.abs(x2 - x1) < 1e-6) { setZoomArea(null); return; }
     const visible = plotData.filter((p) => p.vg >= x1 && p.vg <= x2);
-    const ys = visible.flatMap((p) => [p.baseline, p.cortisol]).filter((v) => Number.isFinite(v));
+    const ys = visible.flatMap((p) => [p.baseline, p.analyte]).filter((v) => Number.isFinite(v));
     if (ys.length === 0) { setZoomArea(null); return; }
     const yMin = Math.min(...ys);
     const yMax = Math.max(...ys);
@@ -171,7 +173,7 @@ const FETTransferPlot = ({ baseline, withAnalyte, overlays: overlaysProp = [], c
           ])}
 
           <Line type="monotone" dataKey="baseline" name="Baseline (no analyte)" stroke="hsl(200 80% 55%)" strokeWidth={2} dot={false} isAnimationActive={false} />
-          <Line type="monotone" dataKey="cortisol" name="With Cortisol" stroke="hsl(35 90% 55%)" strokeWidth={2} dot={false} strokeDasharray="6 3" isAnimationActive={false} />
+          <Line type="monotone" dataKey="analyte" name={`With ${analyteName}`} stroke="hsl(35 90% 55%)" strokeWidth={2} dot={false} strokeDasharray="6 3" isAnimationActive={false} />
 
           {!compact && isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
             <ReferenceArea x1={zoomArea.x1} x2={zoomArea.x2} strokeOpacity={0.3} fill="hsl(200 80% 55%)" fillOpacity={0.15} />

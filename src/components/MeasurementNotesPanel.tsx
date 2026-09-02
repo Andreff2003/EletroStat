@@ -15,6 +15,8 @@ export interface MeasurementNotesPanelProps {
   previousNotes?: MeasurementNotes | null;
   measurementId?: string;
   measurementTimestamp?: number;
+  /** Shown as the Analyte field's placeholder when the user hasn't typed one — e.g. the BioFET "Analyte Name" parameter. Saved/exported only once the user types (or the caller fills it in at save time). */
+  analyteHint?: string;
 }
 
 const HEADERS: Record<NonNullable<MeasurementNotesPanelProps["mode"]>, string> = {
@@ -41,6 +43,7 @@ const MeasurementNotesPanel = ({
   previousNotes,
   measurementId,
   measurementTimestamp,
+  analyteHint,
 }: MeasurementNotesPanelProps) => {
   const [showConditions, setShowConditions] = useState(false);
   const [tagsDraft, setTagsDraft] = useState<string>(
@@ -219,6 +222,7 @@ const MeasurementNotesPanel = ({
             <Input
               value={value.analyte ?? ""}
               onChange={(e) => update("analyte", e.target.value)}
+              placeholder={analyteHint}
               className="h-8 font-mono text-xs"
               maxLength={200}
             />

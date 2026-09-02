@@ -566,7 +566,7 @@ const SignalQuality = ({ mode, eisData, fetBaseline, fetAnalyte, cnlsChiSquared,
         {mode === "fet" && (
           <>
             <MetricRow label="Ion / Ioff Ratio" title="On/off current ratio — higher means a cleaner switching response, independent of analyte binding." value={ready ? fetMetrics.ionIoff.toFixed(1) : pending} level={fetMetrics.ionLevel} />
-            <MetricRow label="ΔVt" title="Threshold voltage shift between baseline and analyte curves — the main signal for cortisol binding." value={deltaVtStr} level={deltaVtLevel} />
+            <MetricRow label="ΔVt" title="Threshold voltage shift between baseline and analyte curves — the main signal for analyte binding." value={deltaVtStr} level={deltaVtLevel} />
             <MetricRow
               label="Subthreshold Slope"
               title="How sharply current turns on with gate voltage. Lower = sharper response. Approximate (quadratic fit)."

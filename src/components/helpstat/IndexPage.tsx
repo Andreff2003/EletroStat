@@ -982,7 +982,13 @@ const Index = () => {
     } else {
       toast.warning("ΔVt unavailable — baseline/analyte Vt extraction failed");
     }
-    const cleanFetNotes = sanitizeMeasurementNotes(fetNotes);
+    // Fall back to the "Analyte Name" parameter when the user left the
+    // logbook's Analyte field blank, so exported/stored data always records
+    // what was actually simulated instead of an empty column.
+    const cleanFetNotes = sanitizeMeasurementNotes({
+      ...fetNotes,
+      analyte: fetNotes.analyte || fetParams.analyteName,
+    });
     const storedFet: StoredFETMeasurement = {
       id: newId(),
       mode: "fet",
@@ -2111,7 +2117,14 @@ const Index = () => {
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  const meta = { notes: sanitizeMeasurementNotes(fetNotes), measurementId: fetMeasurementId, measurementTimestamp: fetMeasurementTimestamp };
+                  const meta = {
+                    notes: sanitizeMeasurementNotes({
+                      ...fetNotes,
+                      analyte: fetNotes.analyte || fetParams.analyteName,
+                    }),
+                    measurementId: fetMeasurementId,
+                    measurementTimestamp: fetMeasurementTimestamp,
+                  };
                   const priorSigned = fetCalibration
                     .filter((p) => p.concentration > 0 && typeof p.deltaVt_mV_signed === "number")
                     .map((p) => p.deltaVt_mV_signed as number);
@@ -2547,6 +2560,7 @@ const Index = () => {
                 baseline={fetBaselineData}
                 withAnalyte={fetAnalyteData}
                 overlays={fetOverlayMode ? fetOverlays : []}
+                analyteName={fetParams.analyteName}
               />
             </div>
           </div>
@@ -2598,7 +2612,7 @@ const Index = () => {
               </div>
             </div>
             <div className="rounded-lg border border-border bg-card p-3 h-[300px] md:h-[350px]">
-              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} overlays={fetOverlayMode ? fetTimeOverlays : []} />
+              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} overlays={fetOverlayMode ? fetTimeOverlays : []} analyteName={fetParams.analyteName} />
 
             </div>
             {fetMarkers.length > 0 && (
@@ -2671,6 +2685,7 @@ const Index = () => {
             hasPrevious={!!fetPreviousNotes}
             measurementId={fetMeasurementId}
             measurementTimestamp={fetMeasurementTimestamp}
+            analyteHint={fetParams.analyteName}
           />
           <CalibrationPanel
             mode="fet"
@@ -2694,6 +2709,7 @@ const Index = () => {
             }
             responseMode={fetResponseMode}
             onResponseModeChange={setFetResponseMode}
+            analyteName={fetParams.analyteName}
           />
         </div>
         </div>
@@ -3061,10 +3077,10 @@ const Index = () => {
               <SWVPlot data={swvCtrl?.data ?? []} overlays={[]} compact />
             </DashboardCell>
             <DashboardCell title="BioFET — Id vs Vg" status={mapStatus(fetStatus)} onOpen={() => setMode("fet")}>
-              <FETTransferPlot baseline={fetBaselineData} withAnalyte={fetAnalyteData} overlays={[]} compact />
+              <FETTransferPlot baseline={fetBaselineData} withAnalyte={fetAnalyteData} overlays={[]} compact analyteName={fetParams.analyteName} />
             </DashboardCell>
             <DashboardCell title="BioFET — Id vs Time" status={mapStatus(fetStatus)} onOpen={() => setMode("fet")}>
-              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} overlays={[]} compact />
+              <FETTimePlot data={fetTimeDataArr} markers={fetMarkers} overlays={[]} compact analyteName={fetParams.analyteName} />
             </DashboardCell>
           </div>
           </DashboardErrorBoundary>

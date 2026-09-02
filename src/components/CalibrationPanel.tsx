@@ -100,6 +100,8 @@ interface CalibrationPanelProps {
   onResponseModeChange?: (mode: FETResponseMode) => void;
   /** True when randles fit did not converge and geometric estimate is shown */
   geometricFallback?: boolean;
+  /** BioFET-only — display label for the analyte, e.g. "Cortisol". */
+  analyteName?: string;
 }
 
 /** Find baseline (concentration === 0) point */
@@ -353,6 +355,7 @@ const CalibrationPanel = ({
   responseSign = 1,
   onResponseModeChange,
   geometricFallback,
+  analyteName = "analyte",
 }: CalibrationPanelProps) => {
   const baseline = findBaseline(points);
   const hasBaseline = !!baseline;
@@ -360,8 +363,8 @@ const CalibrationPanel = ({
 
   const sampleLabel =
     concentration === 0
-      ? "Baseline (no cortisol)"
-      : `Sample — ${concentration} nM cortisol`;
+      ? `Baseline (no ${analyteName})`
+      : `Sample — ${concentration} nM ${analyteName}`;
 
   const signalUnit = mode === "eis" ? "Ω" : mode === "fet" ? "mV" : "µA";
   const signalKey = mode === "eis" ? "ΔRct" : mode === "fet" ? "ΔVt" : "Ip";
