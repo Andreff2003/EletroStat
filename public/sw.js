@@ -57,7 +57,22 @@ self.addEventListener("fetch", (event) => {
         // still opens instead of showing the browser's own offline page.
         const shell = await caches.match("/");
         if (shell) return shell;
-        throw new Error("offline and nothing cached");
+        // Truly nothing cached yet (first-ever visit happened offline, or
+        // this exact deploy was never loaded online before going offline).
+        // Return a real Response instead of rejecting — a rejected fetch
+        // event shows up as a generic ERR_FAILED page and a console error;
+        // this at least explains what happened.
+        return new Response(
+          "<!doctype html><meta charset=utf-8>" +
+            "<body style=\"font-family:sans-serif;background:#0f172a;color:#e2e8f0;" +
+            "display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">" +
+            "<div style=\"max-width:26rem;text-align:center\">" +
+            "<h1 style=\"font-size:1.1rem\">ElectroStat — offline</h1>" +
+            "<p>This device hasn't loaded ElectroStat online yet, so there's no offline copy saved. " +
+            "Connect to the internet once, open the app, then offline mode will work.</p>" +
+            "</div></body>",
+          { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
+        );
       }),
   );
 });
