@@ -2271,7 +2271,7 @@ const Index = () => {
                 onClick={() => setOverlayMode((v) => !v)}
                 className="font-mono text-xs"
               >
-                Overlay Mode {overlayMode ? "ON" : "OFF"}
+                Overlay {overlayMode ? "ON" : "OFF"}
               </Button>
               <Button
                 size="sm"
@@ -2526,7 +2526,7 @@ const Index = () => {
                   onClick={() => setFetOverlays([])}
                   disabled={fetOverlays.length === 0}
                   className="font-mono text-xs"
-                >Clear ({fetOverlays.length})</Button>
+                >Clear All ({fetOverlays.length})</Button>
 
                 <StatusIndicator
                   isRunning={isFETRunning && fetBaselineData.length > 0}
@@ -2604,7 +2604,7 @@ const Index = () => {
                   onClick={() => setFetTimeOverlays([])}
                   disabled={fetTimeOverlays.length === 0}
                   className="font-mono text-xs"
-                >Clear ({fetTimeOverlays.length})</Button>
+                >Clear All ({fetTimeOverlays.length})</Button>
                 <StatusIndicator
                   isRunning={isFETRunning && fetTimeDataArr.length > 0}
                   label={isFETRunning && fetTimeDataArr.length > 0 ? "Recording..." : "Idle"}
@@ -2793,7 +2793,7 @@ const Index = () => {
                     onClick={() => setCvOverlays([])}
                     disabled={cvOverlays.length === 0}
                     className="font-mono text-xs"
-                  >Clear ({cvOverlays.length})</Button>
+                  >Clear All ({cvOverlays.length})</Button>
                   <Button
                     size="sm"
                     variant={cvPlotMode === "corrected" ? "default" : "outline"}

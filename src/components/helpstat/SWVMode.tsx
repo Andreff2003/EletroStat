@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import SWVPlot from "@/components/SWVPlot";
 import SignalQuality from "@/components/SignalQuality";
+import StatusIndicator from "@/components/StatusIndicator";
 import MeasurementNotesPanel from "@/components/MeasurementNotesPanel";
 import CalibrationPanel, {
   type CalibrationPoint,
@@ -480,7 +481,7 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                 onClick={() => setOverlays([])}
                 disabled={overlays.length === 0}
                 className="font-mono text-xs"
-              >Clear ({overlays.length})</Button>
+              >Clear All ({overlays.length})</Button>
               <Hint text="Show pulse-sampled forward and reverse currents">
                 <Button
                   size="sm"
@@ -511,6 +512,11 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                   {plotMode === "corrected" ? "Corrected" : "Raw"}
                 </Button>
               </Hint>
+              <StatusIndicator
+                isRunning={isRunning && data.length > 0}
+                label={isRunning && data.length > 0 ? "Sweeping..." : "Idle"}
+                dataPoints={data.length}
+              />
             </div>
           </div>
           {overlayMode && overlays.length > 0 && (
@@ -569,21 +575,6 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             swvMetrics={metrics}
           />
 
-          <CalibrationPanel
-            mode="swv"
-            concentration={params.concentration_nM ?? 0}
-            onChangeConcentration={(v) =>
-              setParams({ ...params, concentration_nM: v })
-            }
-            points={calibration}
-            onClear={() => setCalibration([])}
-            onExport={() => exportCalibrationCSV("swv", calibration, dataSource)}
-            currentPeakCurrentRaw_uA={metrics?.peakCurrentRaw_uA ?? null}
-            currentPeakCurrentCorrected_uA={metrics?.peakCurrentCorrected_uA ?? null}
-            currentPeakPotential_V={metrics?.peakPotential_V ?? null}
-            analyteName={notes.analyte}
-          />
-
           <Card>
             <CardHeader className="py-3"><CardTitle className="text-sm font-mono">SWV Metrics</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-2 gap-2 text-[11px] font-mono">
@@ -608,6 +599,21 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             mode="swv"
             measurementId={measurementId}
             measurementTimestamp={measurementTimestamp}
+          />
+
+          <CalibrationPanel
+            mode="swv"
+            concentration={params.concentration_nM ?? 0}
+            onChangeConcentration={(v) =>
+              setParams({ ...params, concentration_nM: v })
+            }
+            points={calibration}
+            onClear={() => setCalibration([])}
+            onExport={() => exportCalibrationCSV("swv", calibration, dataSource)}
+            currentPeakCurrentRaw_uA={metrics?.peakCurrentRaw_uA ?? null}
+            currentPeakCurrentCorrected_uA={metrics?.peakCurrentCorrected_uA ?? null}
+            currentPeakPotential_V={metrics?.peakPotential_V ?? null}
+            analyteName={notes.analyte}
           />
         </div>
       </div>
