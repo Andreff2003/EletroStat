@@ -27,10 +27,6 @@ import MeasurementNotesPanel from "@/components/MeasurementNotesPanel";
 import CalibrationPanel, {
   type CalibrationPoint,
 } from "@/components/CalibrationPanel";
-import ParametersPanel, {
-  DEFAULT_EIS_PARAMS,
-  DEFAULT_FET_PARAMS,
-} from "@/components/ParametersPanel";
 
 import { simulationModelId } from "@/hooks/useSimulatedSWVData";
 import type { SWVModeState } from "@/hooks/useSWVModeState";
@@ -86,8 +82,9 @@ interface Props {
   /** If provided, externally controls the SWV parameters (lifted state). */
   externalParams?: SWVParameters;
   onChangeParams?: (p: SWVParameters) => void;
-  /** If provided, hides internal ParametersPanel and controls row and
-   *  exposes start/stop/reset/export handlers to the parent. */
+  /** Exposes start/stop/reset/export handlers to the parent. Always
+   *  provided in practice — IndexPage renders its own shared Parameters
+   *  panel and Start/Stop/Reset/Export row for every mode, SWV included. */
   onController?: (ctrl: SWVController) => void;
   /** If provided, SWV measurements are pushed into the parent's shared
    *  session state (which owns localStorage persistence). Without it,
@@ -147,7 +144,6 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
   const [internalParams, setInternalParams] = useState<SWVParameters>(DEFAULT_PARAMS);
   const params = externalParams ?? internalParams;
   const setParams = onChangeParams ?? setInternalParams;
-  const isControlled = !!onController;
   // All state below is owned by the parent so it survives mode switches
   // (same lifecycle as CV/EIS).
   const {
@@ -365,31 +361,6 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
 
   return (
     <div className="flex flex-col gap-4">
-      {!isControlled && (
-        <>
-          {/* Measurement Parameters — shared component, same look as CV */}
-          <ParametersPanel
-            mode="swv"
-            eisParams={DEFAULT_EIS_PARAMS}
-            fetParams={DEFAULT_FET_PARAMS}
-            swvParams={params}
-            onChangeEIS={() => {}}
-            onChangeFET={() => {}}
-            onChangeSWV={setParams}
-            disabled={isRunning}
-          />
-
-          {/* Controls row — same alignment as CV mode */}
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={startMeasurement} disabled={isRunning} className="font-mono text-xs">▶ Start SWV</Button>
-            <Button size="sm" variant="destructive" onClick={stopMeasurement} disabled={!isRunning} className="font-mono text-xs">■ Stop</Button>
-            <Button size="sm" variant="secondary" onClick={resetMeasurement} className="font-mono text-xs">↺ Reset</Button>
-            <Button size="sm" variant="outline" onClick={handleExport} disabled={data.length === 0} className="font-mono text-xs">⬇ Export CSV</Button>
-          </div>
-
-        </>
-      )}
-
       {(validation.errors.length > 0 || validation.warnings.length > 0) && (
         <div className="text-[11px] font-mono">
           {validation.errors.map((e) => <div key={e} className="text-destructive">Error: {e}</div>)}
