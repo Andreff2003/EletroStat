@@ -162,6 +162,30 @@ const MeasurementNotesPanel = ({
             maxLength={200}
           />
         </div>
+        <div>
+          <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+            Analyte
+          </Label>
+          <Input
+            value={value.analyte ?? ""}
+            onChange={(e) => update("analyte", e.target.value)}
+            placeholder={analyteHint}
+            className="h-8 font-mono text-xs"
+            maxLength={200}
+          />
+        </div>
+        <div>
+          <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+            Electrolyte
+          </Label>
+          <Input
+            value={value.electrolyte ?? ""}
+            onChange={(e) => update("electrolyte", e.target.value)}
+            className="h-8 font-mono text-xs"
+            maxLength={200}
+            placeholder="e.g. PBS pH 7.4"
+          />
+        </div>
         <div className="col-span-2">
           <Label className="text-[10px] font-mono uppercase text-muted-foreground">
             Operator
@@ -210,35 +234,11 @@ const MeasurementNotesPanel = ({
         onClick={() => setShowConditions((v) => !v)}
         className="text-[10px] font-mono text-muted-foreground hover:text-foreground"
       >
-        {showConditions ? "▾" : "▸"} Conditions (analyte, electrolyte, electrodes, T, pH)
+        {showConditions ? "▾" : "▸"} Advanced conditions (electrodes, T, pH)
       </button>
 
       {showConditions && (
         <div className="grid grid-cols-2 gap-2 pt-1">
-          <div className="col-span-2">
-            <Label className="text-[10px] font-mono uppercase text-muted-foreground">
-              Analyte
-            </Label>
-            <Input
-              value={value.analyte ?? ""}
-              onChange={(e) => update("analyte", e.target.value)}
-              placeholder={analyteHint}
-              className="h-8 font-mono text-xs"
-              maxLength={200}
-            />
-          </div>
-          <div className="col-span-2">
-            <Label className="text-[10px] font-mono uppercase text-muted-foreground">
-              Electrolyte
-            </Label>
-            <Input
-              value={value.electrolyte ?? ""}
-              onChange={(e) => update("electrolyte", e.target.value)}
-              className="h-8 font-mono text-xs"
-              maxLength={200}
-              placeholder="e.g. PBS pH 7.4"
-            />
-          </div>
           <div>
             <Label className="text-[10px] font-mono uppercase text-muted-foreground">
               Reference
