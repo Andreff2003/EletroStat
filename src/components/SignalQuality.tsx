@@ -13,7 +13,21 @@ import { InfoHint } from "@/components/InfoHint";
  * ============================================================
  */
 
-type Level = "green" | "yellow" | "red" | "idle";
+export type Level = "green" | "yellow" | "red" | "idle";
+
+/**
+ * Shared "worst wins" rollup: green only if every level is green, red if any
+ * is red, yellow otherwise. "idle" entries (metric not yet computable) are
+ * ignored; if every entry is idle, the rollup itself is idle. Used by every
+ * mode (EIS/FET/SWV) so the rule can't silently drift between them.
+ */
+export function worstOf(levels: Level[]): Level {
+  const relevant = levels.filter((l) => l !== "idle");
+  if (relevant.length === 0) return "idle";
+  if (relevant.every((l) => l === "green")) return "green";
+  if (relevant.some((l) => l === "red")) return "red";
+  return "yellow";
+}
 
 interface SignalQualityProps {
   mode: "eis" | "fet" | "cv" | "swv";
@@ -197,15 +211,10 @@ function computeEISMetrics(
     else linKKLevel = "red";
   }
 
-  // Overall: green only if every essential metric is green; red if any is
-  // red; yellow otherwise. Lin-KK is essential when available. The legacy
-  // Approx-KK metric is informational only and never drives overall.
-  const essentials = [semicircleLevel, noiseLevel, rsLevel, pointsLevel];
-  if (linKKLevel !== "idle") essentials.push(linKKLevel);
-  let level: Level;
-  if (essentials.every((l) => l === "green")) level = "green";
-  else if (essentials.some((l) => l === "red")) level = "red";
-  else level = "yellow";
+  // Overall via the shared worst-of rollup. Lin-KK is essential when
+  // available (worstOf ignores it otherwise). The legacy Approx-KK metric is
+  // informational only and never drives overall.
+  const level = worstOf([semicircleLevel, noiseLevel, rsLevel, pointsLevel, linKKLevel]);
 
   return {
     level,
@@ -315,15 +324,10 @@ function computeFETMetrics(analyte: FETTransferPoint[], baseline: FETTransferPoi
   const ssLevel: Level = ss > 0 && ss < 200 ? "green" : ss > 0 && ss < 400 ? "yellow" : "red";
   const ioffLevel: Level = ioff < 1 ? "green" : ioff < 5 ? "yellow" : "red";
 
-  // Overall = worst-of all per-metric levels (includes SS).
-  const levels: Level[] = [ionLevel, ssLevel, ioffLevel, stabilityLevel].filter(
-    (l) => l !== "idle",
-  ) as Level[];
-  let level: Level;
-  if (levels.length === 0) level = "idle";
-  else if (levels.every((l) => l === "green")) level = "green";
-  else if (levels.some((l) => l === "red")) level = "red";
-  else level = "yellow";
+  // Overall via the shared worst-of rollup (includes SS). Note: ΔVt is the
+  // biological result, not an electrode-quality metric — it deliberately
+  // stays out of this rollup and is only shown on its own MetricRow.
+  const level = worstOf([ionLevel, ssLevel, ioffLevel, stabilityLevel]);
 
   return {
     level,
@@ -394,11 +398,7 @@ function computeSWVMetrics(
   const baselineLevel: Level =
     relNoise == null ? "yellow" : relNoise < 0.1 ? "green" : relNoise < 0.3 ? "yellow" : "red";
 
-  const all = [peakLevel, snrLevel, widthLevel, pointsLevel, baselineLevel];
-  let level: Level;
-  if (all.every((l) => l === "green")) level = "green";
-  else if (all.some((l) => l === "red")) level = "red";
-  else level = "yellow";
+  const level = worstOf([peakLevel, snrLevel, widthLevel, pointsLevel, baselineLevel]);
   return {
     level,
     ready: true,

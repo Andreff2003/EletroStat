@@ -1,0 +1,81 @@
+import { describe, it, expect } from "vitest";
+import { render, screen } from "@testing-library/react";
+import SignalQuality, { worstOf } from "@/components/SignalQuality";
+import { fetDrainCurrent } from "@/utils/fetModel";
+import type { FETTransferPoint } from "@/hooks/useSimulatedData";
+
+describe("worstOf", () => {
+  it("is green only when every level is green", () => {
+    expect(worstOf(["green", "green", "green"])).toBe("green");
+  });
+
+  it("is red if any level is red, even surrounded by greens", () => {
+    expect(worstOf(["green", "red", "green"])).toBe("red");
+  });
+
+  it("is yellow when mixed without any red", () => {
+    expect(worstOf(["green", "yellow", "green"])).toBe("yellow");
+  });
+
+  it("ignores idle entries instead of treating them as failures", () => {
+    expect(worstOf(["idle", "green", "idle"])).toBe("green");
+    expect(worstOf(["idle", "red"])).toBe("red");
+  });
+
+  it("is idle when every entry is idle, or the list is empty", () => {
+    expect(worstOf(["idle", "idle"])).toBe("idle");
+    expect(worstOf([])).toBe("idle");
+  });
+});
+
+/** Clean sigmoidal transfer curve from the same model the app's simulator uses. */
+function transferCurve(vt: number, npts = 51): FETTransferPoint[] {
+  const out: FETTransferPoint[] = [];
+  for (let i = 0; i < npts; i++) {
+    const vg = -0.5 + (2.0 * i) / (npts - 1);
+    out.push({ vg, id: fetDrainCurrent(vg, vt, { K: 50, n: 2 }) });
+  }
+  return out;
+}
+
+describe("SignalQuality — BioFET overall vs ΔVt", () => {
+  it("keeps the overall semaphore green even when ΔVt's own row is red — ΔVt is the biological result (may legitimately be small), not an electrode-quality metric", () => {
+    const curve = transferCurve(0.5);
+    render(
+      <SignalQuality
+        mode="fet"
+        eisData={[]}
+        fetBaseline={curve}
+        fetAnalyte={curve}
+        fetVtBaseline={0.3}
+        fetVtAnalyte={0.307} // 7 mV shift: |7| is not > 10 → red on its own row
+      />,
+    );
+
+    expect(screen.getByText("Good Signal")).toBeInTheDocument();
+    expect(screen.getByText("+7 mV")).toBeInTheDocument();
+  });
+
+  it("turns the overall semaphore red when an actual electrode-quality metric is bad, independent of ΔVt", () => {
+    // Off-region current far above the clean-electrode threshold (Ioff < 1 µA
+    // for green, red at >= 5 µA) — a genuinely leaky baseline, not biology.
+    const noisyBaseline: FETTransferPoint[] = transferCurve(0.5).map((p) => ({
+      ...p,
+      id: p.id + 10,
+    }));
+
+    render(
+      <SignalQuality
+        mode="fet"
+        eisData={[]}
+        fetBaseline={noisyBaseline}
+        fetAnalyte={noisyBaseline}
+        fetVtBaseline={0.3}
+        fetVtAnalyte={0.36} // 60 mV shift → green on its own row
+      />,
+    );
+
+    expect(screen.getByText("Poor Signal")).toBeInTheDocument();
+    expect(screen.getByText("+60 mV")).toBeInTheDocument();
+  });
+});
