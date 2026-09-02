@@ -521,6 +521,8 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
                   {ov.label}
                   <Hint text="Remove overlay">
                     <button
+                      type="button"
+                      aria-label={`Remove overlay: ${ov.label}`}
                       className="ml-1 text-muted-foreground hover:text-foreground"
                       onClick={() =>
                         setOverlays((prev) => prev.filter((p) => p.id !== ov.id))

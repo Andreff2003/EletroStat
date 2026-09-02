@@ -5,17 +5,6 @@ import SWVMode, { type SWVController } from "@/components/helpstat/SWVMode";
 import type { SWVParameters } from "@/types/swv";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import NyquistPlot from "@/components/NyquistPlot";
 import BodePlot from "@/components/BodePlot";
 import FETTransferPlot from "@/components/FETTransferPlot";
@@ -52,7 +41,7 @@ import {
   exportCVCalibrationCSV,
 } from "@/utils/csvExport";
 import { parseImportedCsv } from "@/utils/csvImport";
-import { useWebSocketData } from "@/hooks/useWebSocketData";
+import { useWebSocketData, useChannelReconnect } from "@/hooks/useWebSocketData";
 import ParametersPanel, {
   DEFAULT_EIS_PARAMS,
   DEFAULT_FET_PARAMS,
@@ -121,6 +110,8 @@ import {
 } from "@/utils/sessionStore";
 import { logActivity, clearActivityLog } from "@/utils/activityLog";
 import type { EISDataPoint } from "@/hooks/useSimulatedData";
+import { type DemoPhase, PHASE_ORDER, PHASE_LABEL } from "@/components/helpstat/demoPhases";
+import DashboardHeader from "@/components/helpstat/DashboardHeader";
 
 // 8-color palette for overlays
 const OVERLAY_COLORS = [
@@ -154,18 +145,6 @@ interface SWVOverlayCurve {
   color: string;
   data: import("@/types/swv").SWVDataPoint[];
 }
-
-type DemoPhase = "idle" | "eis" | "cv" | "swv" | "fet" | "done";
-const PHASE_ORDER: DemoPhase[] = ["eis", "cv", "swv", "fet"];
-const PHASE_LABEL: Record<DemoPhase, string> = {
-  idle: "",
-  eis: "EIS",
-  cv: "CV",
-  swv: "SWV",
-  fet: "BioFET",
-  done: "",
-};
-
 
 interface FETOverlayCurve {
   id: string;
@@ -244,38 +223,6 @@ function importOverlayCsv(
 }
 
 
-
-/**
- * Per-channel auto-reconnect with exponential backoff (1s → 30s), mirroring
- * bridge.py's WiFi retry loop. Purely a connection concern — no measurement
- * data or math is touched.
- */
-function useChannelReconnect(
-  active: boolean,
-  url: string,
-  status: ReturnType<typeof useWebSocketData>["status"],
-  connect: (url: string) => void,
-) {
-  const attemptRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (status === "connected") {
-      attemptRef.current = 0;
-      return;
-    }
-    if (!active || !url) return;
-    if (status === "connecting") return;
-    const delay = Math.min(30000, 1000 * 2 ** attemptRef.current);
-    timerRef.current = setTimeout(() => {
-      attemptRef.current += 1;
-      connect(url);
-    }, delay);
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = null;
-    };
-  }, [active, url, status, connect]);
-}
 
 type DashStatus = "idle" | "running" | "complete" | "error";
 
@@ -1951,126 +1898,31 @@ const Index = () => {
         </div>
       )}
       {/* Header */}
-      <header className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground tracking-tight font-mono">
-            ElectroStat
-            <span className="text-primary ml-2 text-sm font-normal">Biosensor Dashboard</span>
-          </h1>
-          <p className="text-xs text-muted-foreground mt-1">
-            ESP32-S3 / AD5941 — {sourceLabel}
-          </p>
-          <p className="text-[10px] text-muted-foreground/80 font-mono mt-0.5" aria-live="polite">
-            {autosaveStatus === "saving" && "Saving session…"}
-            {autosaveStatus === "saved" && "Session saved locally"}
-            {autosaveStatus === "error" && "⚠ Session not saved — storage full"}
-            {autosaveStatus === "idle" && "Space: start/stop · E: export session"}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            ref={exportSessionButtonRef}
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              exportSessionCSV(sessionMeasurements, {
-                source: exportSource,
-                calibration: [
-                  ...eisCalibration.map((p) => ({ ...p, mode: "eis" as const })),
-                  ...fetCalibration.map((p) => ({ ...p, mode: "fet" as const })),
-                ],
-              })
-            }
-            disabled={sessionMeasurements.length === 0}
-            className="font-mono text-xs"
-          >
-            ⬇ Export Session CSV ({sessionMeasurements.length})
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={sessionMeasurements.length === 0}
-                className="font-mono text-xs"
-              >
-                Clear Session
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Clear all stored measurements?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Are you sure? This cannot be undone. All saved EIS/BioFET sweeps and the calibration history will be removed.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={handleClearSession}>
-                  Yes, clear everything
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-          <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground ml-2">
-            <div className={`w-2 h-2 rounded-full ${
-              dataSource === "simulated"
-                ? "bg-graph-alt"
-                : ws.status === "connected"
-                  ? "bg-graph-primary"
-                  : ws.status === "error"
-                    ? "bg-destructive"
-                    : "bg-muted-foreground"
-            }`} />
-            <span>{dataSource === "simulated" ? "Simulated" : ws.status === "connected" ? "Live" : "Offline"}</span>
-          </div>
-          {dataSource === "simulated" && (
-            <>
-              {demoPhase === "idle" && !demoRunning && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => runDemoPhase("eis")}
-                  className="font-mono text-xs"
-                >
-                  ▶ Try Demo Data
-                </Button>
-              )}
-              {demoRunning && (
-                <>
-                  <Button size="sm" variant="outline" disabled className="font-mono text-xs">
-                    ▶ Running {PHASE_LABEL[demoPhase === "idle" ? "eis" : demoPhase]}… ({demoStep}/3)
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={cancelDemo} className="font-mono text-xs">
-                    ✕ Cancel Demo
-                  </Button>
-                </>
-              )}
-              {!demoRunning && demoPhase !== "idle" && demoPhase !== "done" && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => runDemoPhase(demoPhase)}
-                  className="font-mono text-xs"
-                >
-                  Continue to {PHASE_LABEL[demoPhase]} Mode →
-                </Button>
-              )}
-              {!demoRunning && demoPhase === "done" && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setDemoPhase("idle")}
-                  className="font-mono text-xs"
-                >
-                  ✓ Demo complete — reset
-                </Button>
-              )}
-            </>
-          )}
-        </div>
-      </header>
+      <DashboardHeader
+        sourceLabel={sourceLabel}
+        autosaveStatus={autosaveStatus}
+        exportSessionButtonRef={exportSessionButtonRef}
+        onExportSession={() =>
+          exportSessionCSV(sessionMeasurements, {
+            source: exportSource,
+            calibration: [
+              ...eisCalibration.map((p) => ({ ...p, mode: "eis" as const })),
+              ...fetCalibration.map((p) => ({ ...p, mode: "fet" as const })),
+            ],
+          })
+        }
+        sessionMeasurementsCount={sessionMeasurements.length}
+        onClearSession={handleClearSession}
+        dataSource={dataSource}
+        wsStatus={ws.status}
+        demoPhase={demoPhase}
+        demoRunning={demoRunning}
+        demoStep={demoStep}
+        onStartDemo={() => runDemoPhase("eis")}
+        onContinueDemo={() => runDemoPhase(demoPhase)}
+        onCancelDemo={cancelDemo}
+        onResetDemo={() => setDemoPhase("idle")}
+      />
 
       {/* Connection Panel */}
       <div className="mb-4 space-y-2">
@@ -2678,6 +2530,8 @@ const Index = () => {
                     {ov.label}
                     <Hint text="Remove overlay">
                       <button
+                        type="button"
+                        aria-label={`Remove overlay: ${ov.label}`}
                         className="ml-1 text-muted-foreground hover:text-foreground"
                         onClick={() => setFetOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
                       >×</button>
@@ -2986,6 +2840,8 @@ const Index = () => {
                       {ov.label}
                       <Hint text="Remove overlay">
                         <button
+                          type="button"
+                          aria-label={`Remove overlay: ${ov.label}`}
                           className="ml-1 text-muted-foreground hover:text-foreground"
                           onClick={() => setCvOverlays((prev) => prev.filter((p) => p.id !== ov.id))}
                         >×</button>

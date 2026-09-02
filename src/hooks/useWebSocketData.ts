@@ -336,3 +336,35 @@ export function useWebSocketData(): UseWebSocketDataReturn {
   };
 }
 
+/**
+ * Per-channel auto-reconnect with exponential backoff (1s → 30s), mirroring
+ * bridge.py's WiFi retry loop. Purely a connection concern — no measurement
+ * data or math is touched. Lives alongside useWebSocketData since it always
+ * drives one of that hook's `connect`/`status` pairs.
+ */
+export function useChannelReconnect(
+  active: boolean,
+  url: string,
+  status: ConnectionStatus,
+  connect: (url: string) => void,
+) {
+  const attemptRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (status === "connected") {
+      attemptRef.current = 0;
+      return;
+    }
+    if (!active || !url) return;
+    if (status === "connecting") return;
+    const delay = Math.min(30000, 1000 * 2 ** attemptRef.current);
+    timerRef.current = setTimeout(() => {
+      attemptRef.current += 1;
+      connect(url);
+    }, delay);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [active, url, status, connect]);
+}
