@@ -31,7 +31,7 @@ import ParametersPanel, {
   DEFAULT_FET_PARAMS,
 } from "@/components/ParametersPanel";
 
-import { SWV_SIMULATION_MODEL_ID } from "@/hooks/useSimulatedSWVData";
+import { simulationModelId } from "@/hooks/useSimulatedSWVData";
 import type { SWVModeState } from "@/hooks/useSWVModeState";
 import {
   analyzeSWV,
@@ -117,7 +117,10 @@ const DEFAULT_PARAMS: SWVParameters = {
   temperature_K: 298.15,
   baselineMethod: "auto",
   smoothing: "none",
-  model: "empirical_peak",
+  // Physical solver actually used by useSimulatedSWVData. Previously this
+  // object carried `model: "empirical_peak"`, which selected nothing (the
+  // solver reads `swvModel`) and mislabelled stored sessions.
+  swvModel: "reversible",
   diffusionCoeff: 7.26e-6,
   formalPotential: 0.22,
   k0: 0.01,
@@ -294,7 +297,9 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
       measurementTimestamp,
       notes: sanitizeMeasurementNotes(notes),
       calibration,
-      simulationModel: dataSource === "simulated" ? SWV_SIMULATION_MODEL_ID : undefined,
+      // Derived from the params that actually ran, so the exported provenance
+      // follows the model the user picked instead of a hardcoded constant.
+      simulationModel: dataSource === "simulated" ? simulationModelId(params) : undefined,
     });
     toast.success("SWV CSV exported.");
   }, [calibration, corrected, data, dataSource, measurementId, measurementTimestamp, metrics, notes, params, persistMeasurement]);
@@ -546,7 +551,9 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
           </div>
 
           <div className="text-[11px] font-mono text-muted-foreground border border-border bg-secondary/40 rounded-md p-2">
-            Simulation model: {SWV_SIMULATION_MODEL_ID} (empirical / educational approximation).
+            {dataSource === "simulated"
+              ? `Simulation model: ${simulationModelId(params)} (educational approximation).`
+              : "Live acquisition — no in-app solver was used for this trace."}
           </div>
 
         </div>

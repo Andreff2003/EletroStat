@@ -251,13 +251,21 @@ export function simulateQuasiReversibleSWV(
   // are separate points feeding the next step's convolution.
   const Iamps: number[] = [];
 
+  // Cottrell product-integration weights 2·(√k − √(k−1)) depend only on the
+  // lag k — precompute them instead of two sqrt calls per inner iteration.
+  // Two half-pulses are pushed per staircase step, hence the 2× sizing.
+  const maxHistory = 2 * prog.length + 1;
+  const cottrellW = new Float64Array(maxHistory + 1);
+  for (let k = 1; k <= maxHistory; k++) {
+    cottrellW[k] = 2 * (Math.sqrt(k) - Math.sqrt(k - 1));
+  }
+
   const solveHalfPulse = (Epulse: number): number => {
     const { kRed, kOx } = rate(Epulse);
 
     let sumHist = 0;
     for (let j = 0; j < Iamps.length; j++) {
-      const k = Iamps.length - j;
-      sumHist += Iamps[j] * 2 * (Math.sqrt(k) - Math.sqrt(k - 1));
+      sumHist += Iamps[j] * cottrellW[Iamps.length - j];
     }
     const convKnown = (sumHist * sqrtDt) / (Afac * sqrtPiD);
 

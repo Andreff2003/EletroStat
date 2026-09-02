@@ -213,6 +213,16 @@ function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
   const Iamps: number[] = [];
   const out: CVDataPoint[] = [];
 
+  // Cottrell product-integration weights 2·(√k − √(k−1)) depend only on the
+  // lag k, so precompute them once instead of calling sqrt twice per inner
+  // iteration. The convolution itself is still O(n²) — the kernel decays as
+  // 1/√k and truncating it would change the physics — so dense sweeps remain
+  // expensive; the parameters panel warns before that becomes noticeable.
+  const cottrellW = new Float64Array(segs.length + 1);
+  for (let k = 1; k <= segs.length; k++) {
+    cottrellW[k] = 2 * (Math.sqrt(k) - Math.sqrt(k - 1));
+  }
+
   for (let i = 0; i < segs.length; i++) {
     const { E, branch, cycle } = segs[i];
     const eta = E - E0_use;
@@ -221,8 +231,7 @@ function buildQuasiReversibleCV(params: CVSimParams): CVDataPoint[] {
 
     let sumHist = 0;
     for (let j = 0; j < i; j++) {
-      const k = i - j;
-      sumHist += Iamps[j] * 2 * (Math.sqrt(k) - Math.sqrt(k - 1));
+      sumHist += Iamps[j] * cottrellW[i - j];
     }
     const convKnown = (sumHist * sqrtDt) / (Afac * sqrtPiD);
 

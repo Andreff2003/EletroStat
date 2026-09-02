@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { levenbergMarquardt } from "ml-levenberg-marquardt";
 import { AlertTriangle, Beaker, Download } from "lucide-react";
 import {
   LineChart,
@@ -123,14 +124,22 @@ export function computeFETVt(curve: FETTransferPoint[]): number | null {
 }
 
 /**
- * Direct nonlinear least-squares Langmuir fit:
+ * Nonlinear least-squares Langmuir fit:
  *   Signal = Smax * C / (C + Kd)
- * Minimises Σ(model − signal)² via gradient descent with adaptive learning rate.
- * Returns kd, sMax, and r² goodness-of-fit.
+ *
+ * Solved with Levenberg-Marquardt — the same solver already used for the EIS
+ * CNLS fits — in LOG-space for both parameters. Log-space keeps Smax and Kd
+ * strictly positive without bounds, and makes the step behaviour independent
+ * of the signal scale, which differs by orders of magnitude between modes
+ * (Ω for EIS ΔRct vs mV for BioFET ΔVt).
+ *
+ * `converged` is false when LM failed outright or did not improve on the
+ * initial estimate — the caller must surface that, because a stalled fit
+ * can still produce a respectable-looking R².
  */
 function fitLangmuirNLLS(
   points: { concentration: number; signal: number }[],
-): { kd: number; sMax: number; r2: number } | null {
+): { kd: number; sMax: number; r2: number; converged: boolean } | null {
   // Signals are already transformed by the caller (responseMode applied).
   // For "signed" mode with mixed-sign points, Langmuir is fit on magnitude
   // (documented behaviour); auto/absolute already produce non-negative values.
@@ -140,8 +149,9 @@ function fitLangmuirNLLS(
   const Ss = data.map((p) => Math.abs(p.signal));
   const sortedC = [...Cs].sort((a, b) => a - b);
   const medianC = sortedC[Math.floor(sortedC.length / 2)];
-  let sMax = Math.max(...Ss) * 1.5;
-  let kd = Math.max(medianC, 1e-6);
+  const sMax0 = Math.max(...Ss) * 1.5;
+  const kd0 = Math.max(medianC, 1e-6);
+  if (!(sMax0 > 0) || !(kd0 > 0)) return null;
 
   const sse = (sM: number, k: number) => {
     let s = 0;
@@ -153,34 +163,35 @@ function fitLangmuirNLLS(
     return s;
   };
 
-  let lr = 0.01;
-  let prev = sse(sMax, kd);
-  for (let it = 0; it < 500; it++) {
-    let gS = 0;
-    let gK = 0;
-    for (let i = 0; i < Cs.length; i++) {
-      const c = Cs[i];
-      const denom = c + kd;
-      const m = (sMax * c) / denom;
-      const r = m - Ss[i];
-      gS += 2 * r * (c / denom);
-      gK += 2 * r * (-sMax * c / (denom * denom));
+  // Clamped exponentials so a wandering LM step can never produce Infinity
+  // (which would poison the residuals and abort the fit).
+  const expSafe = (v: number) => Math.exp(Math.max(-60, Math.min(60, v)));
+  const modelFn = ([lsMax, lkd]: number[]) => (c: number) =>
+    (expSafe(lsMax) * c) / (c + expSafe(lkd));
+
+  let sMax = sMax0;
+  let kd = kd0;
+  let converged = false;
+  try {
+    const r = levenbergMarquardt({ x: Cs, y: Ss }, modelFn, {
+      initialValues: [Math.log(sMax0), Math.log(kd0)],
+      damping: 1e-3,
+      maxIterations: 500,
+      errorTolerance: 1e-10,
+    });
+    const pv = r?.parameterValues;
+    if (pv && pv.length === 2 && pv.every((v: number) => Number.isFinite(v))) {
+      const fittedSMax = expSafe(pv[0]);
+      const fittedKd = expSafe(pv[1]);
+      // Only accept the LM result if it actually beat the starting guess.
+      if (sse(fittedSMax, fittedKd) <= sse(sMax0, kd0)) {
+        sMax = fittedSMax;
+        kd = fittedKd;
+        converged = true;
+      }
     }
-    // Normalise gradient direction by parameter scale so lr is comparable
-    const stepS = lr * gS * Math.max(Math.abs(sMax), 1);
-    const stepK = lr * gK * Math.max(Math.abs(kd), 1);
-    const newSMax = sMax - stepS;
-    const newKd = Math.max(kd - stepK, 1e-9);
-    const cur = sse(newSMax, newKd);
-    if (cur < prev) {
-      sMax = newSMax;
-      kd = newKd;
-      prev = cur;
-      lr *= 1.05;
-    } else {
-      lr *= 0.5;
-      if (lr < 1e-12) break;
-    }
+  } catch (err) {
+    console.warn("[ElectroStat] Langmuir LM fit failed — keeping initial estimate", err);
   }
 
   if (!Number.isFinite(kd) || !Number.isFinite(sMax) || kd <= 0 || sMax <= 0) return null;
@@ -194,7 +205,7 @@ function fitLangmuirNLLS(
     ssTot += (Ss[i] - meanY) ** 2;
   }
   const r2 = ssTot < 1e-12 ? 1 : 1 - ssRes / ssTot;
-  return { kd, sMax, r2 };
+  return { kd, sMax, r2, converged };
 }
 
 /** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R². */
@@ -728,7 +739,12 @@ const CalibrationPanel = ({
         <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground">
           <div>Estimated Kd<InfoHint text="Dissociation constant from the fitted binding curve. Lower Kd = higher aptamer/analyte affinity. Fitted via nonlinear least squares on the Langmuir isotherm." />: <span className="text-primary">{fit.kd.toFixed(2)} nM</span> <span className="text-muted-foreground">(R² = {fit.r2.toFixed(3)})</span></div>
           <div>Max {displayKey}: <span className="text-primary">{fit.sMax.toFixed(2)} {displayUnit}</span></div>
-          {fit.r2 < 0.9 && (
+          {!fit.converged && (
+            <div className="text-[10px] text-destructive mt-1">
+              ⚠ Langmuir fit did not converge — Kd is a rough starting estimate, not a fitted value
+            </div>
+          )}
+          {fit.converged && fit.r2 < 0.9 && (
             <div className="text-[10px] text-yellow-500 mt-1">
               ⚠ Poor Langmuir fit (R² &lt; 0.90) — more calibration points recommended
             </div>

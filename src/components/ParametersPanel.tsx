@@ -662,9 +662,24 @@ const ParametersPanel = ({
                 cvParams.stepPotential > 0
                   ? Math.round((totalRangeV * 1000) / cvParams.stepPotential)
                   : 0;
+              // The quasi-reversible solver convolves the full current history
+              // at every step, so its cost grows with the SQUARE of the point
+              // count and it runs synchronously. Warn before the browser tab
+              // locks up for seconds on a dense sweep.
+              const heavyQuasi =
+                cvParams.cvModel === "quasi-reversible" && estPts > 8000;
               return (
-                <div className="col-span-2 md:col-span-4 text-[10px] font-mono text-muted-foreground">
-                  ≈ {estPts} points per full sweep
+                <div className="col-span-2 md:col-span-4 text-[10px] font-mono space-y-1">
+                  <div className="text-muted-foreground">
+                    ≈ {estPts} points per full sweep
+                  </div>
+                  {heavyQuasi && (
+                    <div className="text-yellow-500">
+                      ⚠ {estPts} points with the quasi-reversible model is slow —
+                      this solver scales quadratically and will freeze the page
+                      while it runs. Increase the step or reduce cycles.
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -767,6 +782,33 @@ const ParametersPanel = ({
                 <option value="polynomial">polynomial</option>
                 <option value="auto">auto</option>
               </select>
+            </div>
+
+            <div className="flex flex-col gap-1 col-span-2">
+              <Label className="text-[10px] font-mono uppercase text-muted-foreground">
+                SWV Model
+              </Label>
+              <select
+                disabled={disabled}
+                value={swvParams.swvModel ?? "reversible"}
+                onChange={(e) =>
+                  onChangeSWV({
+                    ...swvParams,
+                    swvModel: e.target.value as NonNullable<SWVParameters["swvModel"]>,
+                  })
+                }
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+              >
+                <option value="reversible">Reversible (diffusion + Nernst)</option>
+                <option value="quasi-reversible">
+                  Quasi-reversible (Butler–Volmer)
+                </option>
+              </select>
+              <span className="text-[10px] text-muted-foreground font-mono">
+                Default: reversible diffusion solver, same physics as the CV
+                reversible model applied per half-pulse. Quasi-reversible is an
+                educational approximation and is much slower on dense sweeps.
+              </span>
             </div>
 
             {/* ── Analyte-specific electrochemistry (SWV) ──────────── */}

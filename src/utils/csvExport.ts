@@ -1441,8 +1441,11 @@ export function exportSWVData(opts: ExportSWVOptions) {
     fmtStr(metrics?.baselineMethodUsed ?? metrics?.baselineMethod ?? params.baselineMethod ?? "none"),
   ]));
   meta.push(toRow(["smoothing", fmtStr(params.smoothing ?? "none")]));
+  // Never invent a provenance label: the caller passes the model that actually
+  // ran. `params.model` is a legacy metadata field that did not select any
+  // solver, so it is only used as a last-resort echo, never defaulted.
   const effectiveSimModel =
-    simulationModel ?? (source === "simulated" ? (params.model ?? "empirical_peak") : null);
+    simulationModel ?? (source === "simulated" ? (params.model ?? null) : null);
   if (effectiveSimModel) meta.push(toRow(["simulation_model", effectiveSimModel]));
   if (cleanNotes) {
     meta.push(toRow(["notes_title", fmtStr(cleanNotes.title)]));

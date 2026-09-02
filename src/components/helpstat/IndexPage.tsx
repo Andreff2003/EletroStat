@@ -250,7 +250,9 @@ const Index = () => {
     startE: -0.2, endE: 0.6, step_mV: 2, amplitude_mV: 25, frequency_Hz: 25,
     quietTime_s: 2, direction: "anodic", concentration_nM: 10, area_cm2: 0.0707,
     nElectrons: 1, temperature_K: 298.15, baselineMethod: "auto",
-    smoothing: "none", model: "empirical_peak",
+    // `swvModel` is what the solver actually reads; the old `model:
+    // "empirical_peak"` selected nothing and mislabelled stored sessions.
+    smoothing: "none", swvModel: "reversible",
     diffusionCoeff: 7.26e-6, formalPotential: 0.22, k0: 0.01, alpha: 0.5,
   });
   const [swvCtrl, setSwvCtrl] = useState<SWVController | null>(null);
