@@ -15,10 +15,9 @@
  * All exports go through the shared csvExport helpers so the session CSV
  * automatically picks up SWV measurements written to the session store.
  */
-import { Hint } from "@/components/InfoHint";
+import { Hint, InfoHint } from "@/components/InfoHint";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import SWVPlot from "@/components/SWVPlot";
 import SignalQuality from "@/components/SignalQuality";
@@ -527,11 +526,69 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             />
           </div>
 
-          <div className="text-[11px] font-mono text-muted-foreground border border-border bg-secondary/40 rounded-md p-2">
-            {dataSource === "simulated"
-              ? `Simulation model: ${simulationModelId(params)} (educational approximation).`
-              : "Live acquisition — no in-app solver was used for this trace."}
-          </div>
+          {(() => {
+            const modelId = dataSource === "simulated" ? simulationModelId(params) : null;
+            const modelInfo: Record<string, { name: string; desc: string }> = {
+              reversible_diffusion_approx: {
+                name: "Reversible diffusion model",
+                desc: "solves 1-D semi-infinite diffusion with a Nernst surface boundary independently at each forward/reverse half-pulse — the same solver as CV's reversible model, applied per pulse. I_net = I_forward − I_reverse falls out of the physics, never fabricated from a peak shape.",
+              },
+              quasi_reversible_approx: {
+                name: "Quasi-reversible model",
+                desc: "Butler–Volmer kinetics + Cottrell-kernel convolution, same K0/α regime as the CV quasi-reversible model. Educational approximation only — not a full finite-difference solver.",
+              },
+              empirical_swv_peak_langmuir: {
+                name: "Empirical peak model",
+                desc: "Gaussian peak shape scaled by a Langmuir binding curve — a legacy fallback kept for tuning, not solved from diffusion physics.",
+              },
+            };
+            const info = modelId ? modelInfo[modelId] : null;
+            return (
+              <div className="text-[11px] font-mono text-muted-foreground border border-border bg-secondary/40 rounded-md p-2">
+                {info ? (
+                  <>
+                    <span className="text-foreground">{info.name}</span>
+                    {" — "}
+                    {info.desc}
+                  </>
+                ) : (
+                  "Live acquisition — no in-app solver was used for this trace."
+                )}
+              </div>
+            );
+          })()}
+
+          {data.length > 0 && metrics && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {[
+                  { label: "Ep", value: metrics.peakPotential_V != null ? `${metrics.peakPotential_V.toFixed(3)} V` : "—", t: "Peak potential — where the differential current I_net peaks." },
+                  { label: "Ip raw", value: metrics.peakCurrentRaw_uA != null ? `${metrics.peakCurrentRaw_uA.toFixed(4)} µA` : "—", t: "Uncorrected peak current." },
+                  { label: "Ip corr", value: metrics.peakCurrentCorrected_uA != null ? `${metrics.peakCurrentCorrected_uA.toFixed(4)} µA` : "—", t: "Baseline-corrected peak current — the analytical signal used for calibration." },
+                  { label: "Half-width", value: metrics.halfPeakWidth_mV != null ? `${metrics.halfPeakWidth_mV.toFixed(1)} mV` : "—", t: "Full width at half maximum of the corrected peak. Depends on amplitude, frequency and kinetics." },
+                  { label: "SNR", value: metrics.snr != null ? metrics.snr.toFixed(2) : "—", t: "Peak current (corrected) ÷ RMS noise from the non-peak region." },
+                  { label: "Noise RMS", value: metrics.noiseRms_uA != null ? `${metrics.noiseRms_uA.toExponential(2)} µA` : "—", t: "Robust (MAD-based) noise estimate from the off-peak region." },
+                  { label: "Polarity", value: metrics.peakPolarity, t: "Anodic (oxidation) or cathodic (reduction) peak." },
+                  { label: "Peak detected", value: metrics.peakDetected ? "Yes" : "No", t: "Requires SNR ≥ 3 and |peak| above the noise floor." },
+                  { label: "Peak area", value: metrics.peakArea_uA_V != null ? `${metrics.peakArea_uA_V.toExponential(2)} µA·V` : "—", t: "Trapezoidal area under the corrected peak, ± a band around it. Informational only." },
+                  { label: "Baseline", value: metrics.baselineMethodUsed ?? metrics.baselineMethod ?? "none", t: "Baseline correction method actually used for this sweep." },
+                ].map((it) => (
+                  <div key={it.label} className="bg-secondary rounded-md p-2">
+                    <div className="text-[10px] text-muted-foreground font-mono uppercase">
+                      {it.label}
+                      {it.t ? <InfoHint text={it.t} /> : null}
+                    </div>
+                    <div className="text-sm font-mono text-foreground">{it.value}</div>
+                  </div>
+                ))}
+              </div>
+              {metrics.warnings.length > 0 && (
+                <div className="text-[11px] font-mono text-muted-foreground border border-border rounded-md p-2 bg-secondary/40">
+                  ⚠ {metrics.warnings.join(" · ")}
+                </div>
+              )}
+            </>
+          )}
 
         </div>
 
@@ -545,23 +602,6 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
             swvData={data}
             swvMetrics={metrics}
           />
-
-          <Card>
-            <CardHeader className="py-3"><CardTitle className="text-sm font-mono">SWV Metrics</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-              <div>Ep: {metrics?.peakPotential_V?.toFixed(3) ?? "N/A"} V</div>
-              <div>Ip (raw): {metrics?.peakCurrentRaw_uA?.toFixed(4) ?? "N/A"} µA</div>
-              <div>Ip (corr): {metrics?.peakCurrentCorrected_uA?.toFixed(4) ?? "N/A"} µA</div>
-              <div>Half-width: {metrics?.halfPeakWidth_mV?.toFixed(1) ?? "N/A"} mV</div>
-              <div>SNR: {metrics?.snr?.toFixed(2) ?? "N/A"}</div>
-              <div>Noise RMS: {metrics?.noiseRms_uA?.toExponential(2) ?? "N/A"} µA</div>
-              <div>Polarity: {metrics?.peakPolarity ?? "N/A"}</div>
-              <div>Baseline used: {metrics?.baselineMethodUsed ?? metrics?.baselineMethod ?? "none"}</div>
-              <div className="col-span-2 text-muted-foreground">
-                {(metrics?.warnings ?? []).map((w) => <div key={w}>⚠ {w}</div>)}
-              </div>
-            </CardContent>
-          </Card>
 
           <MeasurementNotesPanel
             value={notes}
