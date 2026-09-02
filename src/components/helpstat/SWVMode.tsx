@@ -187,6 +187,12 @@ export default function SWVMode({ dataSource, ws, externalParams, onChangeParams
     if (isLive) {
       ws?.clearSWV?.();
       ws?.sendCommand?.("start_swv", {
+        // Spread the redox-probe/analyte fields too (nElectrons,
+        // diffusionCoeff, formalPotential, k0, alpha) — matches how
+        // Multi-Channel's start_swv already sends the full params object.
+        // Previously only the 8 core sweep fields went through, so the
+        // "Redox Probe Preset" had no effect on the bridge/live simulation.
+        ...params,
         startE: params.startE,
         endE: params.endE,
         step_mV: params.step_mV,

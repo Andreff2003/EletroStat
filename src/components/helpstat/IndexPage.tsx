@@ -1139,6 +1139,22 @@ const Index = () => {
       "measurement",
       `BioFET measurement started — concentration=${conc} nM, source=${dataSource}`,
     );
+    // Analyte/device overrides — shared by every path (simulated, live,
+    // multi-channel) so changing Kd/Vt/Id/etc. in the parameters panel
+    // actually reaches the bridge/hardware, not just the in-browser
+    // simulator. Field names match bridge.py's start_fet reader exactly.
+    const overrides = {
+      kd_nM: fetParams.kd_nM,
+      vtBaseline_V: fetParams.vtBaseline_V,
+      deltaVtMax_V: fetParams.deltaVtMax_V,
+      idMax_uA: fetParams.idMax_uA,
+      idealityFactor: fetParams.idealityFactor,
+      bindingRate_perS: fetParams.bindingRate_perS,
+      readoutBias_V: fetParams.readoutBias_V,
+      timeDuration_s: fetParams.timeDuration_s,
+      timeStep_s: fetParams.timeStep_s,
+      injectionTime_s: fetParams.injectionTime_s,
+    };
     if (isMulti) {
       clearAllChannels();
       broadcastCommand("start_fet", {
@@ -1147,22 +1163,11 @@ const Index = () => {
         vgStep: fetParams.vgStep / 1000,
         intervalMs: fetParams.intervalMs,
         concentration: conc,
+        ...overrides,
       });
       return;
     }
     if (dataSource === "simulated") {
-      const overrides = {
-        kd_nM: fetParams.kd_nM,
-        vtBaseline_V: fetParams.vtBaseline_V,
-        deltaVtMax_V: fetParams.deltaVtMax_V,
-        idMax_uA: fetParams.idMax_uA,
-        idealityFactor: fetParams.idealityFactor,
-        bindingRate_perS: fetParams.bindingRate_perS,
-        readoutBias_V: fetParams.readoutBias_V,
-        timeDuration_s: fetParams.timeDuration_s,
-        timeStep_s: fetParams.timeStep_s,
-        injectionTime_s: fetParams.injectionTime_s,
-      };
       fetTransfer.start(
         conc,
         fetParams.vgMin,
@@ -1179,6 +1184,7 @@ const Index = () => {
         vgStep: fetParams.vgStep / 1000, // mV → V
         intervalMs: fetParams.intervalMs,
         concentration: conc,
+        ...overrides,
       });
     }
   };
