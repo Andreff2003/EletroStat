@@ -428,42 +428,18 @@ const Index = () => {
   const [lastWsUrl, setLastWsUrl] = useState("");
   const exportSessionButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  // Restore session on mount
+  // Restore session on mount. Calibration curves are NOT rebuilt from
+  // stored measurements here — adding a point to calibration is now a
+  // deliberate "+ Add" click in every mode (EIS/BioFET/CV/SWV alike), so
+  // silently reconstructing "every measurement that could be a calibration
+  // point" on reload would undo that curation and disagree with how CV/SWV
+  // already behave (their calibration has never survived a reload either).
+  // The raw measurements themselves are untouched — full data is still in
+  // sessionMeasurements and the Session CSV export.
   useEffect(() => {
     const stored = loadSession();
     if (stored.length === 0) return;
     setSessionMeasurements(stored);
-    const eisBaselineRct = stored.find(
-      (m): m is StoredEISMeasurement => m.mode === "eis" && m.concentration === 0,
-    )?.extracted.Rct;
-    const fetBaselineVt = stored.find(
-      (m): m is StoredFETMeasurement => m.mode === "fet" && m.concentration === 0,
-    )?.extracted.Vt;
-    const eisCal: CalibrationPoint[] = [];
-    const fetCal: CalibrationPoint[] = [];
-    for (const m of stored) {
-      if (m.mode === "eis" && m.extracted.Rct != null) {
-        const delta =
-          m.concentration === 0 ? 0 : m.extracted.Rct - (eisBaselineRct ?? m.extracted.Rct);
-        eisCal.push({
-          concentration: m.concentration,
-          signal: delta,
-          raw: m.extracted.Rct,
-          timestamp: m.timestamp,
-        });
-      } else if (m.mode === "fet" && m.extracted.Vt != null) {
-        const delta =
-          m.concentration === 0 ? 0 : (m.extracted.Vt - (fetBaselineVt ?? m.extracted.Vt)) * 1000;
-        fetCal.push({
-          concentration: m.concentration,
-          signal: delta,
-          raw: m.extracted.Vt,
-          timestamp: m.timestamp,
-        });
-      }
-    }
-    setEisCalibration(eisCal);
-    setFetCalibration(fetCal);
     toast.success(`Restored ${stored.length} measurement(s) from previous session`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
