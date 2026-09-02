@@ -571,7 +571,13 @@ const CalibrationPanel = ({
         </div>
       </div>
 
-      {!hasBaseline && (
+      {/* EIS-only: ΔRct is computed relative to the stored 0 nM row
+          (eisCalibration.find concentration===0) — without it every point
+          silently falls back to ΔRct=0. BioFET's ΔVt comes from the
+          baseline/analyte curves of the SAME sweep (no dependency on a
+          stored calibration row) and SWV's signal is the peak current
+          itself, so this warning would be a false alarm for either. */}
+      {mode === "eis" && !hasBaseline && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs font-mono text-destructive">
           <AlertTriangle className="h-4 w-4" />
           Please measure baseline (0 nM) first
