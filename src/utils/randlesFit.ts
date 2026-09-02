@@ -674,7 +674,12 @@ export function kramersKronigTest(data: EISDataPoint[]): KKResult {
       const dW    = (wNext - wPrev) / 2;
       sum += ((zRe[i] - zRe[k]) / denom) * dW;
     }
-    predIm[k] = -(2 / Math.PI) * sum;
+    // Standard subtractive KK relation: Z''(w0) = -(2*w0/pi) * integral(...).
+    // The w0 factor was previously missing, making predIm wrong by orders of
+    // magnitude across a multi-decade sweep (this check is CSV-export-only /
+    // informational — see file header — so it never affected the app's
+    // displayed signal-quality result, which uses the separate Lin-KK test).
+    predIm[k] = -(2 / Math.PI) * w0 * sum;
   }
 
   const edgeSkip = Math.max(2, Math.floor(n * 0.1));
