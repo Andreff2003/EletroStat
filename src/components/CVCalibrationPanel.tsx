@@ -124,7 +124,7 @@ const CVCalibrationPanel = ({
 
   const qualityColor =
     summary.quality === "green"
-      ? "text-[var(--ok)]"
+      ? "text-graph-eis"
       : summary.quality === "yellow"
         ? "text-yellow-500"
         : "text-destructive";
@@ -199,7 +199,7 @@ const CVCalibrationPanel = ({
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={onAddCurrent} disabled={!canAdd} className="font-mono text-xs">
           ＋ Add current CV to calibration
         </Button>

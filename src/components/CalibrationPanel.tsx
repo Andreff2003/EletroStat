@@ -214,8 +214,8 @@ function fitLangmuirNLLS(
   return { kd, sMax, r2, converged };
 }
 
-/** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R². */
-function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: number; r2: number } | null {
+/** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R², nPoints. */
+function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: number; r2: number; nPoints: number } | null {
   const used = points.filter((p) => p.concentration >= 0);
   if (used.length < 2) return null;
   const xs = used.map((p) => p.concentration);
@@ -233,11 +233,11 @@ function fitLinear(points: CalibrationPoint[]): { slope: number; intercept: numb
   const slope = sxy / sxx;
   const intercept = meanY - slope * meanX;
   const r2 = syy < 1e-12 ? 1 : 1 - (syy - slope * sxy) / syy;
-  return { slope, intercept, r2 };
+  return { slope, intercept, r2, nPoints: n };
 }
 
-/** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R². */
-function fitLinearSWV(points: CalibrationPoint[]): { slope: number; intercept: number; r2: number } | null {
+/** Linear fit Signal = m * C + b on points with C > 0. Returns slope, intercept, R², nPoints. */
+function fitLinearSWV(points: CalibrationPoint[]): { slope: number; intercept: number; r2: number; nPoints: number } | null {
   const positive = points.filter((p) => p.concentration > 0);
   if (positive.length < 2) return null;
   const n = positive.length;
@@ -261,7 +261,7 @@ function fitLinearSWV(points: CalibrationPoint[]): { slope: number; intercept: n
     ssTot += (p.signal - meanY) ** 2;
   }
   const r2 = ssTot < 1e-12 ? 1 : 1 - ssRes / ssTot;
-  return { slope, intercept, r2 };
+  return { slope, intercept, r2, nPoints: n };
 }
 
 /**
@@ -440,6 +440,32 @@ const CalibrationPanel = ({
         : (transformedPoints.length >= 3 ? fitLinear(transformedPoints as CalibrationPoint[]) : null),
     [transformedPoints, mode],
   );
+
+  // Same at-a-glance verdict CV's calibration panel already computes:
+  // combines fit quality (R²), a positive slope, and enough points into one
+  // GREEN/YELLOW/RED read, instead of leaving the user to eyeball R²/LOD
+  // themselves.
+  const quality = useMemo(() => {
+    const reasons: string[] = [];
+    const r2 = linear?.r2 ?? 0;
+    const n = linear?.nPoints ?? 0;
+    const slope = linear?.slope ?? 0;
+    if (!linear || slope <= 0) reasons.push("slope ≤ 0");
+    if (n < 3) reasons.push(`only ${n} usable point${n === 1 ? "" : "s"}`);
+    let level: "green" | "yellow" | "red";
+    if (n >= 5 && r2 >= 0.995 && slope > 0 && lod != null) {
+      level = "green";
+    } else if (n >= 3 && r2 >= 0.98 && slope > 0) {
+      level = "yellow";
+      if (lod == null) reasons.push("LOD requires blank replicates or ≥3 fit points");
+    } else {
+      level = "red";
+      if (linear && r2 < 0.98) reasons.push(`R² = ${r2.toFixed(3)} below 0.98`);
+    }
+    return { level, reasons };
+  }, [linear, lod]);
+  const qualityColor =
+    quality.level === "green" ? "text-graph-eis" : quality.level === "yellow" ? "text-yellow-500" : "text-destructive";
 
   // Build smooth Langmuir curve points using fit
   const fitCurve = useMemo(() => {
@@ -642,7 +668,7 @@ const CalibrationPanel = ({
       )}
 
       {onAddCurrent && (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={onAddCurrent} disabled={!canAdd} className="font-mono text-xs">
             ＋ Add current {modeLabel} to calibration
           </Button>
@@ -801,6 +827,13 @@ const CalibrationPanel = ({
               <span className="text-primary">{loq.toFixed(2)} nM</span>
             </div>
           )}
+          <div>
+            quality<InfoHint text="At-a-glance verdict combining R², a positive slope, and point count. Green requires ≥5 points, R² ≥ 0.995 and an LOD. Yellow needs ≥3 points and R² ≥ 0.98." />:{" "}
+            <span className={`uppercase ${qualityColor}`}>{quality.level}</span>
+            {quality.reasons.length > 0 && (
+              <span className="text-muted-foreground"> · {quality.reasons.join(" · ")}</span>
+            )}
+          </div>
         </div>
       )}
       {points.length > 0 && points.length < 4 && mode !== "swv" && (
