@@ -670,7 +670,7 @@ const CalibrationPanel = ({
       {onAddCurrent && (
         <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={onAddCurrent} disabled={!canAdd} className="font-mono text-xs">
-            ＋ Add current {modeLabel} to calibration
+            ＋ Add Calibration Point
           </Button>
           <Button
             size="sm"
@@ -803,39 +803,36 @@ const CalibrationPanel = ({
           )}
         </div>
       )}
-      {linear && (
-        <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground space-y-0.5">
-          <div>
-            Sensitivity:{" "}
-            <span className="text-primary">
-              {linear.slope.toFixed(3)} {displayUnit}/nM
-            </span>
-          </div>
-          <div>
-            R²<InfoHint text="Coefficient of determination for the calibration fit. Closer to 1.0 indicates the model explains the concentration-response relationship well." />: <span className="text-primary">{linear.r2.toFixed(4)}</span>
-          </div>
-          {lod != null && (
-            <div>
-              LOD (3σ/|slope|)<InfoHint text="Limit of Detection = 3σ(blank) / slope. The lowest concentration reliably distinguishable from a blank measurement." />:{" "}
-              <span className="text-primary">{lod.toFixed(2)} nM</span>
-              <span className="text-muted-foreground"> · σ from {lodResult?.sigmaSource === "replicates" ? "blank replicates" : mode === "swv" ? "residuals" : "2% baseline"}</span>
-            </div>
-          )}
-          {loq != null && (
-            <div>
-              LOQ (10σ/|slope|)<InfoHint text="Limit of Quantitation = 10σ(blank) / slope. The lowest concentration that can be quantified with acceptable precision." />:{" "}
-              <span className="text-primary">{loq.toFixed(2)} nM</span>
-            </div>
-          )}
-          <div>
-            quality<InfoHint text="At-a-glance verdict combining R², a positive slope, and point count. Green requires ≥5 points, R² ≥ 0.995 and an LOD. Yellow needs ≥3 points and R² ≥ 0.98." />:{" "}
-            <span className={`uppercase ${qualityColor}`}>{quality.level}</span>
-            {quality.reasons.length > 0 && (
-              <span className="text-muted-foreground"> · {quality.reasons.join(" · ")}</span>
-            )}
-          </div>
+      <div className="rounded-md bg-secondary/60 p-2 text-xs font-mono text-foreground space-y-0.5">
+        <div>
+          Sensitivity:{" "}
+          <span className="text-primary">
+            {linear ? `${linear.slope.toFixed(3)} ${displayUnit}/nM` : "—"}
+          </span>
         </div>
-      )}
+        <div>
+          R²<InfoHint text="Coefficient of determination for the calibration fit. Closer to 1.0 indicates the model explains the concentration-response relationship well." />:{" "}
+          <span className="text-primary">{linear ? linear.r2.toFixed(4) : "—"}</span>
+        </div>
+        <div>
+          LOD (3σ/|slope|)<InfoHint text="Limit of Detection = 3σ(blank) / slope. The lowest concentration reliably distinguishable from a blank measurement." />:{" "}
+          <span className="text-primary">{lod != null ? `${lod.toFixed(2)} nM` : "—"}</span>
+          {lod != null && (
+            <span className="text-muted-foreground"> · σ from {lodResult?.sigmaSource === "replicates" ? "blank replicates" : mode === "swv" ? "residuals" : "2% baseline"}</span>
+          )}
+        </div>
+        <div>
+          LOQ (10σ/|slope|)<InfoHint text="Limit of Quantitation = 10σ(blank) / slope. The lowest concentration that can be quantified with acceptable precision." />:{" "}
+          <span className="text-primary">{loq != null ? `${loq.toFixed(2)} nM` : "—"}</span>
+        </div>
+        <div>
+          quality<InfoHint text="At-a-glance verdict combining R², a positive slope, and point count. Green requires ≥5 points, R² ≥ 0.995 and an LOD. Yellow needs ≥3 points and R² ≥ 0.98." />:{" "}
+          <span className={`uppercase ${qualityColor}`}>{quality.level}</span>
+          {quality.reasons.length > 0 && (
+            <span className="text-muted-foreground"> · {quality.reasons.join(" · ")}</span>
+          )}
+        </div>
+      </div>
       {points.length > 0 && points.length < 4 && mode !== "swv" && (
         <div className="text-[11px] font-mono text-muted-foreground">
           Need {4 - points.length} more measurement(s) for Kd estimation

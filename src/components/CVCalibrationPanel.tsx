@@ -201,7 +201,7 @@ const CVCalibrationPanel = ({
 
       <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={onAddCurrent} disabled={!canAdd} className="font-mono text-xs">
-          ＋ Add current CV to calibration
+          ＋ Add Calibration Point
         </Button>
         <Button
           size="sm"
