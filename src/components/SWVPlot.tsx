@@ -1,9 +1,10 @@
 import { EmptyPlotState } from "@/components/EmptyPlotState";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   ComposedChart,
   CartesianGrid,
   Line,
+  ReferenceArea,
   ReferenceDot,
   ResponsiveContainer,
   Tooltip,
@@ -12,6 +13,11 @@ import {
   Legend,
 } from "recharts";
 import type { SWVDataPoint, SWVMetrics } from "@/types/swv";
+
+type ChartMouseEvent = {
+  activeLabel?: number | string;
+  activePayload?: Array<{ payload?: { E?: number } }>;
+};
 
 interface SWVOverlay {
   id: string;
@@ -77,6 +83,60 @@ export default function SWVPlot({
     }));
   }, [data, corrected, effectiveMode]);
 
+  const [zoomArea, setZoomArea] = useState<{ x1: number; x2: number } | null>(null);
+  const [zoomDomain, setZoomDomain] = useState<{
+    x: [number, number];
+    y: [number, number];
+  } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+
+  const getX = (e: ChartMouseEvent | null | undefined): number | null => {
+    if (!e) return null;
+    if (typeof e.activeLabel === "number") return e.activeLabel;
+    const p = e.activePayload?.[0]?.payload;
+    if (p && typeof p.E === "number") return p.E;
+    return null;
+  };
+
+  const handleMouseDown = (e: ChartMouseEvent) => {
+    const x = getX(e);
+    if (x == null) return;
+    setIsSelecting(true);
+    setZoomArea({ x1: x, x2: x });
+  };
+  const handleMouseMove = (e: ChartMouseEvent) => {
+    if (!isSelecting) return;
+    const x = getX(e);
+    if (x == null) return;
+    setZoomArea((prev) => (prev ? { ...prev, x2: x } : null));
+  };
+  const handleMouseUp = () => {
+    if (!isSelecting || !zoomArea) {
+      setIsSelecting(false);
+      return;
+    }
+    setIsSelecting(false);
+    const x1 = Math.min(zoomArea.x1, zoomArea.x2);
+    const x2 = Math.max(zoomArea.x1, zoomArea.x2);
+    if (Math.abs(x2 - x1) < 1e-6) {
+      setZoomArea(null);
+      return;
+    }
+    const ys = rows
+      .filter((r) => r.E >= x1 && r.E <= x2)
+      .map((r) => r.INet)
+      .filter((v): v is number => Number.isFinite(v));
+    if (ys.length === 0) {
+      setZoomArea(null);
+      return;
+    }
+    const yMin = Math.min(...ys);
+    const yMax = Math.max(...ys);
+    const pad = (yMax - yMin) * 0.05 || Math.abs(yMax) * 0.05 || 1;
+    setZoomDomain({ x: [x1, x2], y: [yMin - pad, yMax + pad] });
+    setZoomArea(null);
+  };
+
   if (data.length === 0 && overlays.length === 0) {
     return (
       <EmptyPlotState
@@ -87,20 +147,44 @@ export default function SWVPlot({
   }
 
   return (
-    <div className="w-full h-full flex flex-col">
+    <div className="w-full h-full flex flex-col" style={{ position: "relative" }}>
+      {!compact && zoomDomain && (
+        <button
+          onClick={() => setZoomDomain(null)}
+          style={{
+            position: "absolute", top: 8, right: 8, zIndex: 10,
+            fontSize: "11px", padding: "3px 10px",
+            borderRadius: "4px", cursor: "pointer",
+            background: "hsl(220 18% 14%)",
+            border: "1px solid hsl(220 15% 22%)",
+            color: "hsl(210 20% 80%)",
+          }}
+        >
+          Reset Zoom
+        </button>
+      )}
       <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={rows} margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 10, right: 20, left: 10, bottom: 20 }}>
+        <ComposedChart
+          data={rows}
+          margin={compact ? { top: 8, right: 8, bottom: 8, left: 8 } : { top: 10, right: 20, left: 10, bottom: 20 }}
+          onMouseDown={compact ? undefined : handleMouseDown}
+          onMouseMove={compact ? undefined : handleMouseMove}
+          onMouseUp={compact ? undefined : handleMouseUp}
+        >
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
           <XAxis
             dataKey="E"
             type="number"
-            domain={["auto", "auto"]}
+            domain={zoomDomain ? zoomDomain.x : ["auto", "auto"]}
+            allowDataOverflow
             label={compact ? undefined : { value: "E / V", position: "insideBottom", offset: -5 }}
             tick={{ fontSize: compact ? 9 : 11 }}
             tickFormatter={(v: number) => v.toFixed(2)}
           />
           <YAxis
+            domain={zoomDomain ? zoomDomain.y : ["auto", "auto"]}
+            allowDataOverflow
             label={compact ? undefined : { value: "I / µA", angle: -90, position: "insideLeft" }}
             tick={{ fontSize: compact ? 9 : 11 }}
             tickFormatter={(v: number) => v.toFixed(2)}
@@ -159,6 +243,15 @@ export default function SWVPlot({
               fill="#f59e0b"
               stroke="#78350f"
               label={{ value: "peak", position: "top", fill: "#f59e0b", fontSize: 10 }}
+            />
+          )}
+          {!compact && isSelecting && zoomArea && zoomArea.x1 !== zoomArea.x2 && (
+            <ReferenceArea
+              x1={Math.min(zoomArea.x1, zoomArea.x2)}
+              x2={Math.max(zoomArea.x1, zoomArea.x2)}
+              strokeOpacity={0.3}
+              fill="hsl(160 70% 55%)"
+              fillOpacity={0.15}
             />
           )}
         </ComposedChart>

@@ -82,13 +82,29 @@ const NyquistPlot = ({
   const [zoomDomain, setZoomDomain] = useState<{ x: [number, number]; y: [number, number] } | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
 
+  // ScatterChart, unlike LineChart, only populates activePayload when the
+  // cursor is directly over a rendered dot (there's no "nearest x" index
+  // tracking for continuous scatter data) — so a drag-to-zoom relying on
+  // activePayload alone only registers right on top of existing points and
+  // does nothing anywhere else on the plot. Convert the raw pixel position
+  // via the X axis's own scale first; that works everywhere in the chart
+  // area, with activePayload kept only as a fallback for older/edge cases.
   const getX = (e: any) => {
+    try {
+      const axisMap = e?.xAxisMap;
+      if (axisMap && typeof e?.chartX === "number") {
+        const axis = Object.values(axisMap)[0] as { scale?: (v: number) => number } | undefined;
+        if (axis?.scale) {
+          const val = axis.scale.invert ? (axis.scale as any).invert(e.chartX) : null;
+          if (typeof val === "number" && Number.isFinite(val)) return val;
+        }
+      }
+    } catch {
+      // fall through to the activePayload-based fallback below
+    }
     const p = e?.activePayload?.[0]?.payload;
     if (p && typeof p.x === "number") return p.x;
     if (typeof e?.xValue === "number") return e.xValue;
-    if (typeof e?.chartX === "number" && e?.xAxisMap) {
-      // fallback no-op
-    }
     return null;
   };
 
