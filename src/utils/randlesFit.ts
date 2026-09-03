@@ -385,10 +385,31 @@ export function splitRegionsAuto(data: EISDataPoint[]): SplitRegionsResult {
   // Smooth for SELECTION ONLY; the returned regions use raw points.
   const absIm = movingMedian3(absImRaw);
 
-  // First local maximum walking high → low frequency.
+  // Walk high → low frequency looking for the first PROMINENT local maximum
+  // of |Im(Z)| — the real semicircle peak. A plain "first local maximum" is
+  // fragile: near the high-frequency onset the true |Im(Z)| sits close to
+  // zero, so a small noise wiggle easily satisfies "local maximum" long
+  // before the genuine peak — sending the separator (and the CNLS fit
+  // region) off a false start right after Rs. Require each candidate to
+  // rise meaningfully above its immediate neighbourhood before accepting
+  // it (the same prominence test that used to run only AFTER the fact,
+  // diagnostically); otherwise keep walking toward lower frequency.
+  const globalMaxAbsIm = Math.max(...absIm);
+  const prominenceAt = (i: number) => {
+    const winLo = Math.max(0, i - 3);
+    const winHi = Math.min(n - 1, i + 3);
+    let localMin = absIm[i];
+    for (let k = winLo; k <= winHi; k++) if (absIm[k] < localMin) localMin = absIm[k];
+    return absIm[i] - localMin;
+  };
   let peakIdx: number | null = null;
   for (let i = 1; i < n - 1; i++) {
-    if (absIm[i] > absIm[i - 1] && absIm[i] > absIm[i + 1]) {
+    if (
+      absIm[i] > absIm[i - 1] &&
+      absIm[i] > absIm[i + 1] &&
+      absIm[i] > 0 &&
+      prominenceAt(i) >= 0.05 * Math.max(globalMaxAbsIm, 1e-12)
+    ) {
       peakIdx = i;
       break;
     }
@@ -396,7 +417,8 @@ export function splitRegionsAuto(data: EISDataPoint[]): SplitRegionsResult {
   let uncertain = false;
   const warnings: string[] = [];
   if (peakIdx === null) {
-    // No local max: fall back to global max — but mark uncertain.
+    // No sufficiently prominent local max: fall back to global max — but
+    // mark uncertain, since it may itself be a noise spike.
     let best = 0;
     for (let i = 1; i < n; i++) if (absIm[i] > absIm[best]) best = i;
     peakIdx = best;
@@ -422,19 +444,6 @@ export function splitRegionsAuto(data: EISDataPoint[]): SplitRegionsResult {
       separatorWarning:
         "Automatic separator uncertain — no measurable Warburg tail after the peak.",
     };
-  }
-
-  // ── Prominence check: peak must rise meaningfully above its neighbourhood.
-  const peakVal = absIm[peakIdx];
-  let localMin = peakVal;
-  const winLo = Math.max(0, peakIdx - 3);
-  const winHi = Math.min(n - 1, peakIdx + 3);
-  for (let i = winLo; i <= winHi; i++) if (absIm[i] < localMin) localMin = absIm[i];
-  const globalMaxAbsIm = Math.max(...absIm);
-  const prominence = peakVal - localMin;
-  if (peakVal <= 0 || prominence < 0.05 * Math.max(globalMaxAbsIm, 1e-12)) {
-    uncertain = true;
-    warnings.push("Semicircle peak prominence is low — separator may be unreliable.");
   }
 
   // After the peak (walking toward LOWER frequency), find the GLOBAL
