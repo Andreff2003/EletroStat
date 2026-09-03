@@ -513,6 +513,10 @@ const Index = () => {
   // Avoid double-firing the auto-stop
   const eisAutoStopFiredRef = useRef(false);
   const fetAutoStopFiredRef = useRef(false);
+  // Same idea, but for Multi-Channel CV/SWV, which complete via per-channel
+  // status ("done") rather than a point count.
+  const cvMultiSavedRef = useRef(false);
+  const swvMultiSavedRef = useRef(false);
 
   // Inactivity timers for completion when expected point count is wrong
   const eisInactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -537,6 +541,13 @@ const Index = () => {
     if (eisAutoStopFiredRef.current) return;
     eisAutoStopFiredRef.current = true;
     clearEisInactivity();
+    if (isMulti) {
+      broadcastCommand("stop");
+      saveChannelMeasurements("eis");
+      setEisStatus("complete");
+      toast.success("Multi-Channel EIS sweep complete — all channels saved.");
+      return;
+    }
     if (dataSource === "simulated") {
       eis.stop();
     } else {
@@ -1359,6 +1370,19 @@ const Index = () => {
     return () => clearEisInactivity();
   }, [eisData, eisStatus]);
 
+  // Auto-completion detection — EIS (Multi-Channel: every enabled channel
+  // must reach the expected point count on its own WebSocket).
+  useEffect(() => {
+    if (!isMulti || eisStatus !== "running") return;
+    if (eisAutoStopFiredRef.current) return;
+    const active = channels.filter((c) => c.enabled);
+    if (active.length === 0 || expectedEisPoints <= 0) return;
+    const allDone = channels.every(
+      (c, i) => !c.enabled || wsChannels[i].eisData.length >= expectedEisPoints,
+    );
+    if (allDone) completeEISSweep(eisData);
+  }, [channels, ws1.eisData, ws2.eisData, ws3.eisData, isMulti, eisStatus, expectedEisPoints]);
+
   // Auto-completion detection — BioFET (all 3 phases done)
   useEffect(() => {
     if (fetStatus !== "running") return;
@@ -1400,6 +1424,31 @@ const Index = () => {
     }, 2000);
     return () => clearFetInactivity();
   }, [fetBaselineData, fetAnalyteData, fetTimeDataArr, fetStatus]);
+
+  // Auto-completion detection — BioFET (Multi-Channel: every enabled channel
+  // must finish all 3 phases on its own WebSocket).
+  useEffect(() => {
+    if (!isMulti || fetStatus !== "running") return;
+    if (fetAutoStopFiredRef.current) return;
+    const active = channels.filter((c) => c.enabled);
+    if (active.length === 0) return;
+    const allDone = channels.every((c, i) => {
+      if (!c.enabled) return true;
+      const chan = wsChannels[i];
+      return (
+        chan.fetBaseline.length >= expectedFetTransferPoints &&
+        chan.fetAnalyte.length >= expectedFetTransferPoints &&
+        chan.fetTimeData.length >= expectedFetTimePoints
+      );
+    });
+    if (allDone) completeFETSweep(fetBaselineData, fetAnalyteData, fetTimeDataArr);
+  }, [
+    channels,
+    ws1.fetBaseline, ws1.fetAnalyte, ws1.fetTimeData,
+    ws2.fetBaseline, ws2.fetAnalyte, ws2.fetTimeData,
+    ws3.fetBaseline, ws3.fetAnalyte, ws3.fetTimeData,
+    isMulti, fetStatus, expectedFetTransferPoints, expectedFetTimePoints,
+  ]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1482,6 +1531,46 @@ const Index = () => {
     cvMeasurementId, cvMeasurementTimestamp, cvParams, cvBaselineMethod, cvNotes,
     demoRunning,
   ]);
+
+  // CV auto-save — Multi-Channel. CV has no point-count target (scan range
+  // varies), so completion is "every enabled channel's bridge reported done"
+  // rather than a count, mirroring the single-channel cv_status watcher above.
+  useEffect(() => {
+    if (!isMulti) return;
+    const active = channels.filter((c) => c.enabled);
+    if (active.length === 0) {
+      cvMultiSavedRef.current = false;
+      return;
+    }
+    const allDone = channels.every((c, i) => !c.enabled || wsChannels[i].cvStatus === "done");
+    if (!allDone) {
+      cvMultiSavedRef.current = false;
+      return;
+    }
+    if (cvMultiSavedRef.current) return;
+    cvMultiSavedRef.current = true;
+    saveChannelMeasurements("cv");
+    toast.success("Multi-Channel CV sweep complete — all channels saved.");
+  }, [channels, ws1.cvStatus, ws2.cvStatus, ws3.cvStatus, isMulti]);
+
+  // SWV auto-save — Multi-Channel. Same "all channels done" status watcher.
+  useEffect(() => {
+    if (!isMulti) return;
+    const active = channels.filter((c) => c.enabled);
+    if (active.length === 0) {
+      swvMultiSavedRef.current = false;
+      return;
+    }
+    const allDone = channels.every((c, i) => !c.enabled || wsChannels[i].swvStatus === "done");
+    if (!allDone) {
+      swvMultiSavedRef.current = false;
+      return;
+    }
+    if (swvMultiSavedRef.current) return;
+    swvMultiSavedRef.current = true;
+    saveChannelMeasurements("swv");
+    toast.success("Multi-Channel SWV sweep complete — all channels saved.");
+  }, [channels, ws1.swvStatus, ws2.swvStatus, ws3.swvStatus, isMulti]);
 
   // "Running" now means status === running, not just connected/animating
   const isEISRunning = eisStatus === "running";
@@ -2211,7 +2300,7 @@ const Index = () => {
                 size="sm"
                 variant="destructive"
                 onClick={() => {
-                  if (isMulti) { saveChannelMeasurements("cv"); broadcastCommand("stop"); return; }
+                  if (isMulti) { cvMultiSavedRef.current = true; saveChannelMeasurements("cv"); broadcastCommand("stop"); return; }
                   if (dataSource === "simulated") cv.stop();
                   else { setIsLiveCVRunning(false); ws.sendCommand("stop"); }
                 }}
@@ -2262,7 +2351,7 @@ const Index = () => {
           {mode === "swv" && (
             <>
               <Button size="sm" onClick={() => { if (isMulti) { clearAllChannels(); broadcastCommand("start_swv", { ...swvParams }); return; } swvCtrl?.start(); }} disabled={isMulti ? !anyChannelConnected : (!swvCtrl || swvCtrl.isRunning || demoRunning)} className="font-mono text-xs">▶ Start SWV</Button>
-              <Button size="sm" variant="destructive" onClick={() => { if (isMulti) { saveChannelMeasurements("swv"); broadcastCommand("stop"); return; } swvCtrl?.stop(); }} disabled={!swvCtrl?.isRunning || demoRunning} className="font-mono text-xs">■ Stop</Button>
+              <Button size="sm" variant="destructive" onClick={() => { if (isMulti) { swvMultiSavedRef.current = true; saveChannelMeasurements("swv"); broadcastCommand("stop"); return; } swvCtrl?.stop(); }} disabled={!swvCtrl?.isRunning || demoRunning} className="font-mono text-xs">■ Stop</Button>
               <Button size="sm" variant="secondary" onClick={() => { if (isMulti) { clearAllChannels(); broadcastCommand("stop"); return; } swvCtrl?.reset(); }} disabled={demoRunning} className="font-mono text-xs">↺ Reset</Button>
               <Button size="sm" variant="outline" onClick={() => swvCtrl?.exportCsv()} disabled={!swvCtrl?.hasData} className="font-mono text-xs">⬇ Export CSV</Button>
             </>
