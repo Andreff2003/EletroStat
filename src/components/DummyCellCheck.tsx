@@ -24,9 +24,12 @@ const VERDICT_LABEL: Record<DummyCellVerdict, string> = {
 };
 
 export function DummyCellCheck({ measured }: Props) {
-  const [rsExpected, setRsExpected] = useState(100);
-  const [rctExpected, setRctExpected] = useState(10000);
-  const [cdlExpectedNF, setCdlExpectedNF] = useState(100);
+  // Defaults match the built-in Simulated-mode model (Rs=200Ω, Rct≈300Ω at
+  // 0 concentration, Cdl=20µF) so the check is meaningful out of the box;
+  // swap these for your real dummy cell's known component values.
+  const [rsExpected, setRsExpected] = useState(200);
+  const [rctExpected, setRctExpected] = useState(300);
+  const [cdlExpectedNF, setCdlExpectedNF] = useState(20000);
   const [result, setResult] = useState<DummyCellCheckResult | null>(null);
 
   const runCheck = () => {
