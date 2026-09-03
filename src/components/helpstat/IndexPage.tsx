@@ -2546,15 +2546,6 @@ const Index = () => {
         <div className="space-y-4">
           <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} cnlsChiSquared={cnlsFit?.chiSquared ?? null} separatorZReal={separatorZReal} separatorFreq={(() => { if (separatorZReal == null || sqEisData.length === 0) return null; const c = sqEisData.reduce((b, d) => Math.abs(d.zReal - separatorZReal) < Math.abs(b.zReal - separatorZReal) ? d : b, sqEisData[0]); return c.frequency; })()} linKKResidualPct={linKK?.residualRmsPct ?? null} linKKPassed={linKK?.passed ?? null} />
           <CNLSFitResults fit={cnlsFit} model={circuitModel} randlesFit={randlesFit} warburg={warburg} kk={kk} linKK={linKK} />
-          <DummyCellCheck
-            measured={
-              cnlsFit && circuitModel !== "randles-cpe" && cnlsFit.params.Cdl != null
-                ? { Rs: cnlsFit.params.Rs, Rct: cnlsFit.params.Rct, Cdl: cnlsFit.params.Cdl }
-                : randlesFit
-                  ? { Rs: randlesFit.Rs, Rct: randlesFit.Rct, Cdl: randlesFit.Cdl }
-                  : null
-            }
-          />
           <MeasurementNotesPanel
             mode="eis"
             value={eisNotes}
@@ -2583,6 +2574,15 @@ const Index = () => {
             analyteName={eisNotes.analyte}
             onAddCurrent={handleAddEisCalibrationPoint}
             canAdd={(cnlsFit != null || randlesFit != null) && !isEISRunning}
+          />
+          <DummyCellCheck
+            measured={
+              cnlsFit && circuitModel !== "randles-cpe" && cnlsFit.params.Cdl != null
+                ? { Rs: cnlsFit.params.Rs, Rct: cnlsFit.params.Rct, Cdl: cnlsFit.params.Cdl }
+                : randlesFit
+                  ? { Rs: randlesFit.Rs, Rct: randlesFit.Rct, Cdl: randlesFit.Cdl }
+                  : null
+            }
           />
         </div>
         </div>
