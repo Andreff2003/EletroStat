@@ -26,6 +26,7 @@ import { useSWVModeState } from "@/hooks/useSWVModeState";
 import CVPlot from "@/components/CVPlot";
 import { DashboardCell } from "@/components/DashboardCell";
 import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
+import { DummyCellCheck } from "@/components/DummyCellCheck";
 
 import type { CVDataPoint } from "@/hooks/useSimulatedCVData";
 import { computeCVMetrics } from "@/utils/computeCVMetrics";
@@ -2545,6 +2546,15 @@ const Index = () => {
         <div className="space-y-4">
           <SignalQuality mode="eis" eisData={sqEisData} fetBaseline={sqFetBaseline} fetAnalyte={sqFetAnalyte} cnlsChiSquared={cnlsFit?.chiSquared ?? null} separatorZReal={separatorZReal} separatorFreq={(() => { if (separatorZReal == null || sqEisData.length === 0) return null; const c = sqEisData.reduce((b, d) => Math.abs(d.zReal - separatorZReal) < Math.abs(b.zReal - separatorZReal) ? d : b, sqEisData[0]); return c.frequency; })()} linKKResidualPct={linKK?.residualRmsPct ?? null} linKKPassed={linKK?.passed ?? null} />
           <CNLSFitResults fit={cnlsFit} model={circuitModel} randlesFit={randlesFit} warburg={warburg} kk={kk} linKK={linKK} />
+          <DummyCellCheck
+            measured={
+              cnlsFit && circuitModel !== "randles-cpe" && cnlsFit.params.Cdl != null
+                ? { Rs: cnlsFit.params.Rs, Rct: cnlsFit.params.Rct, Cdl: cnlsFit.params.Cdl }
+                : randlesFit
+                  ? { Rs: randlesFit.Rs, Rct: randlesFit.Rct, Cdl: randlesFit.Cdl }
+                  : null
+            }
+          />
           <MeasurementNotesPanel
             mode="eis"
             value={eisNotes}
