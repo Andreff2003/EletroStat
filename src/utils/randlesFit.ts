@@ -404,9 +404,20 @@ export function splitRegionsAuto(data: EISDataPoint[]): SplitRegionsResult {
     warnings.push("No clear semicircle peak found — using global maximum.");
   }
   if (peakIdx >= n - 2) {
-    // Peak at the very low-frequency end — no room for a separator.
+    // Peak at the very low-frequency end — no measurable Warburg tail in
+    // this sweep, so there's no reliable place to cut; treat the whole
+    // sweep as semicircle. Still report a separator position (at the
+    // lowest-frequency point, i.e. the low-Z' end of the arc) instead of
+    // null, so the UI has a sensible starting point for manual dragging —
+    // returning null here used to make the caller fall back to a separate,
+    // buggier "minimum |Im(Z)| over the whole sweep" search that almost
+    // always landed at the very first (highest-frequency) point instead,
+    // i.e. Z' ≈ Rs, which looked like the separator ignoring the auto-fit.
     return {
-      ...noSplit,
+      separatorZReal: sorted[n - 1].zReal,
+      separatorFrequency: sorted[n - 1].frequency,
+      semicircle: data.slice(),
+      warburg: [] as EISDataPoint[],
       separatorUncertain: true,
       separatorWarning:
         "Automatic separator uncertain — no measurable Warburg tail after the peak.",

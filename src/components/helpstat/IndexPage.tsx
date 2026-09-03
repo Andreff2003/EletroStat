@@ -558,24 +558,20 @@ const Index = () => {
     setEisStatus("complete");
     toast.success(`Sweep complete — ${finalData.length} points collected. Auto-fit ready; drag the separator and click Fit to refine.`);
 
-    // Auto-detect semicircle/Warburg split & seed the default separator with it.
+    // Auto-detect semicircle/Warburg split & seed the default separator with
+    // it. splitRegionsAuto always returns a usable separator position now
+    // (falling back to the lowest-frequency point when no Warburg tail is
+    // visible), so a second, separate fallback here is no longer needed —
+    // the old one searched the whole sweep for the minimum |Im(Z)|, which
+    // almost always sits at the very first (highest-frequency) point, i.e.
+    // Z' ≈ Rs, making the separator look stuck there regardless of what the
+    // auto-fit actually found.
     let defaultSep: number | null = null;
     let autoSemiCircle: typeof finalData = finalData;
     if (finalData.length > 0) {
       const split = splitRegionsAuto(finalData);
       autoSemiCircle = split.semicircle.length >= 5 ? split.semicircle : finalData;
-      if (split.separatorZReal != null) {
-        defaultSep = split.separatorZReal;
-      } else {
-        // Fallback: zReal at point of minimum |zImag| (right side of semicircle).
-        let minIdx = 0;
-        for (let i = 1; i < finalData.length; i++) {
-          if (Math.abs(finalData[i].zImag) < Math.abs(finalData[minIdx].zImag)) minIdx = i;
-        }
-        const maxZ = Math.max(...finalData.map(d => d.zReal));
-        const candidate = finalData[minIdx].zReal;
-        defaultSep = Number.isFinite(candidate) ? candidate : maxZ * 0.6;
-      }
+      defaultSep = split.separatorZReal;
     }
     setSeparatorZReal(defaultSep);
     setEisFitted(false);
