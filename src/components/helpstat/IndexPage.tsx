@@ -592,12 +592,22 @@ const Index = () => {
     // and provides a rigorous data-consistency check independent of the
     // chosen equivalent circuit.
     const autoLinKK = linKKTest(finalData);
+    // Also populate the CNLS Fit panel automatically, using the same
+    // auto-detected region and the currently selected circuit model — it
+    // used to be left null here, so the detailed fit panel always showed
+    // "click Fit" even though a valid auto-fit had already run, making
+    // automatic detection look broken. Re-fitting manually still works and
+    // simply replaces this result.
+    const autoCnls = autoSemiCircle.length >= 4
+      ? fitEIS(autoSemiCircle, circuitModel, finalData)
+      : null;
     setRandlesFit(autoFit);
     setWarburg(autoWb);
     setKk(autoKk);
     setLinKK(autoLinKK);
-    setCnlsFit(null);
+    setCnlsFit(autoCnls);
     setGeometricFallback(autoFit == null || autoFit.fitErrorPct === -1);
+    setEisFitted(autoCnls != null);
     if (autoFit?.separatorUncertain) {
       toast.warning(autoFit.separatorWarning ?? "Automatic separator uncertain — adjust manually.");
     }
