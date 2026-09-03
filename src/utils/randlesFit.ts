@@ -426,28 +426,36 @@ export function splitRegionsAuto(data: EISDataPoint[]): SplitRegionsResult {
     warnings.push("Semicircle peak prominence is low — separator may be unreliable.");
   }
 
-  // After the peak (walking toward LOWER frequency), find the local minimum
-  // of |Im(Z)| — that's the bottom of the semicircle, i.e. the separator.
-  let sepIdx = peakIdx;
-  let foundMin = false;
-  for (let i = peakIdx + 1; i < n - 1; i++) {
-    if (absIm[i] <= absIm[i - 1] && absIm[i] <= absIm[i + 1]) {
+  // After the peak (walking toward LOWER frequency), find the GLOBAL
+  // minimum of |Im(Z)| — that's the bottom of the semicircle, i.e. the
+  // separator. A "first local minimum" walk (the previous approach) is
+  // fragile: on real, noisy hardware data a single downward wiggle right
+  // after the peak already satisfies "local minimum" and ends the search
+  // there, cutting the semicircle selection far too short and feeding the
+  // CNLS fit an undersized, wrong region — this is what forced manual
+  // separator dragging to always be more reliable than the automatic
+  // detection. The GLOBAL minimum over the whole post-peak region is the
+  // textbook semicircle/Warburg crossover (|Im(Z)| falls across the arc,
+  // then rises again once the Warburg tail takes over at lower frequency)
+  // and is far less sensitive to a single noisy point.
+  let sepIdx = peakIdx + 1;
+  let minVal = absIm[sepIdx];
+  for (let i = peakIdx + 2; i < n; i++) {
+    if (absIm[i] < minVal) {
+      minVal = absIm[i];
       sepIdx = i;
-      foundMin = true;
-      break;
     }
-    sepIdx = i;
   }
-  if (!foundMin) {
+  if (sepIdx >= n - 2) {
+    // The minimum sits at (or right next to) the lowest measured frequency
+    // — no Warburg tail was actually resolved, so the crossover is
+    // uncertain. Fall back to a conservative split so a fit can still run.
     uncertain = true;
-    warnings.push("No clear minimum after the semicircle peak.");
-    // Conservative fallback: use the 35th-percentile frequency on the
-    // low-frequency side (avoids cutting too aggressively).
-    const fallbackIdx = Math.min(
+    warnings.push("No clear minimum after the semicircle peak — sweep may not extend low enough in frequency.");
+    sepIdx = Math.min(
       n - 2,
       Math.max(peakIdx + 1, Math.floor(peakIdx + 0.35 * (n - peakIdx))),
     );
-    sepIdx = fallbackIdx;
   }
   if (sepIdx <= peakIdx) return noSplit;
 
