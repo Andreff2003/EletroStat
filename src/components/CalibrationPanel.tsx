@@ -602,7 +602,7 @@ const CalibrationPanel = ({
       )}
       {mode === "fet" && (
         <div className="space-y-2">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <div className="bg-secondary rounded-md p-2">
               <div className="text-[10px] text-muted-foreground font-mono uppercase">Vt baseline</div>
               <div className="text-sm font-mono text-foreground">
@@ -662,7 +662,7 @@ const CalibrationPanel = ({
         </div>
       )}
       {mode === "swv" && (
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           <div className="bg-secondary rounded-md p-2">
             <div className="text-[10px] text-muted-foreground font-mono uppercase">Ip raw</div>
             <div className="text-sm font-mono text-foreground">

@@ -2156,7 +2156,7 @@ const Index = () => {
 
       {/* Mode selection */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant={mode === "eis" ? "default" : "secondary"}
             size="sm"
@@ -2215,7 +2215,7 @@ const Index = () => {
 
 
         {/* Controls */}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {mode === "eis" && (
             <>
               <Button size="sm" onClick={() => handleStartEIS()} disabled={isEISRunning || demoRunning || liveNotReady} className="font-mono text-xs">▶ Start EIS</Button>
@@ -2387,7 +2387,7 @@ const Index = () => {
               <TabsTrigger value="nyquist" className="font-mono text-xs">Nyquist Plot</TabsTrigger>
               <TabsTrigger value="bode" className="font-mono text-xs">Bode Plot</TabsTrigger>
             </TabsList>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
                 variant={overlayMode ? "default" : "outline"}
@@ -2601,7 +2601,7 @@ const Index = () => {
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Transfer Curve — Id vs Vg</h2>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   variant={fetOverlayMode ? "default" : "outline"}
@@ -2704,7 +2704,7 @@ const Index = () => {
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <h2 className="text-sm font-mono text-muted-foreground">Time Response — Id vs Time</h2>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   variant="default"
@@ -2875,7 +2875,7 @@ const Index = () => {
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-mono text-muted-foreground">Cyclic Voltammogram — I vs E</h2>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     size="sm"
                     variant={cvOverlayMode ? "default" : "outline"}

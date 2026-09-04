@@ -71,7 +71,7 @@ export default function DashboardHeader({
         </p>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           ref={exportSessionButtonRef}
           size="sm"

@@ -51,9 +51,9 @@ export default function ConnectionPanel({
 
   return (
     <div className="rounded-lg border border-border bg-card p-3 space-y-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-mono text-muted-foreground uppercase">Data Source:</span>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           <Button
             size="sm"
             variant={dataSource === "simulated" ? "default" : "outline"}
